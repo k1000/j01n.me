@@ -316,7 +316,7 @@ function roomPageStyles(): string {
   .board-edit-form input, .board-edit-form textarea { width: 100%; box-sizing: border-box; font: inherit; border: 2px solid #000; background: #fff; color: #000; }
   .board-edit-form textarea { min-height: 8rem; resize: vertical; }
   .board-edit-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: end; }
-  .board-status, .message-compose-status { min-height: 1.2em; margin: 0; font-size: 0.9rem; opacity: 0.72; }
+  .board-status, .message-compose-status, .room-ttl-status { min-height: 1.2em; margin: 0; font-size: 0.9rem; opacity: 0.72; }
   .kanban-board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin: 1rem 0; }
   .kanban-column { background: color-mix(in srgb, currentColor 6%, transparent); padding: 0.75rem; min-height: 6rem; }
   .kanban-column-title { margin: 0 0 0.5rem; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.72; }
@@ -397,6 +397,7 @@ function roomPageScript(roomId: string): string {
   }
 
   const participantId = String(invite.participant_id || invite.host_id || "human");
+  const isHost = participantId === String(invite.host_id || "");
   let roomEvents;
   let hostKeyPair;
   let hostPublicKey = "";
@@ -429,6 +430,25 @@ function roomPageScript(roomId: string): string {
     hostPublicKey = await exportRawPublicKey(hostKeyPair.publicKey);
   }
 
+  function authToken() {
+    return invite.participant_token || joinSecret;
+  }
+
+  function authHeaders(json = false) {
+    const token = authToken();
+    return {
+      authorization: "Bearer " + token,
+      ...(token === joinSecret ? { "x-participant-id": participantId } : {}),
+      ...(json ? { "content-type": "application/json" } : {}),
+    };
+  }
+
+  function rememberParticipantToken(token) {
+    if (!token || invite.participant_token === token) return;
+    invite = { ...invite, participant_token: token };
+    persistInvite(rid, invite);
+  }
+
   async function ensureHostJoined() {
     const body = { state: "free", status: "joined via room UI", public_key: hostPublicKey };
     const joinUrl = \`/r/\${encodeURIComponent(rid)}/participants/\${encodeURIComponent(participantId)}\`;
@@ -437,11 +457,15 @@ function roomPageScript(roomId: string): string {
       headers: { authorization: "Bearer " + joinSecret, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (response.ok) return;
+    if (response.ok) {
+      const json = await response.json().catch(() => ({}));
+      rememberParticipantToken(json.participant_token);
+      return;
+    }
     if (response.status === 409) {
       const patch = await fetch(joinUrl, {
         method: "PATCH",
-        headers: { authorization: "Bearer " + joinSecret, "x-participant-id": participantId, "content-type": "application/json" },
+        headers: authHeaders(true),
         body: JSON.stringify(body),
       });
       if (patch.ok) return;
@@ -456,14 +480,14 @@ function roomPageScript(roomId: string): string {
     if (sessionStorage.getItem(flagKey)) return;
     const response = await fetch(\`/r/\${encodeURIComponent(rid)}\`, {
       method: "POST",
-      headers: { authorization: "Bearer " + joinSecret, "x-participant-id": participantId, "content-type": "application/json" },
+      headers: authHeaders(true),
       body: JSON.stringify({ to: "all", intent: "key.exchange", body: { public_key: hostPublicKey } }),
     });
     if (response.ok) sessionStorage.setItem(flagKey, "1");
   }
 
   async function refreshRoom() {
-    const headers = { authorization: "Bearer " + joinSecret, "x-participant-id": participantId };
+    const headers = authHeaders();
     const [status, board, read] = await Promise.all([
       fetch(\`/r/\${encodeURIComponent(rid)}/status\`, { headers }),
       fetch(\`/r/\${encodeURIComponent(rid)}/board\`, { headers }),
@@ -553,7 +577,7 @@ function roomPageScript(roomId: string): string {
 
   function subscribeRoomEvents() {
     if (roomEvents || typeof EventSource === "undefined") return;
-    const eventUrl = \`/r/\${encodeURIComponent(rid)}/events?s=\${encodeURIComponent(joinSecret)}&participant_id=\${encodeURIComponent(participantId)}&include_self=true\`;
+    const eventUrl = \`/r/\${encodeURIComponent(rid)}/events?s=\${encodeURIComponent(authToken())}&participant_id=\${encodeURIComponent(participantId)}&include_self=true\`;
     updateConnectionStatus("connecting");
     roomEvents = new EventSource(eventUrl);
     roomEvents.addEventListener("open", () => updateConnectionStatus("connected"));
@@ -612,16 +636,44 @@ function roomPageScript(roomId: string): string {
     const messagesHtml = messages.length === 0
       ? \`<p class="board-empty">No messages yet.</p>\`
       : (await Promise.all(messages.map((m) => renderMessage(m, messages)))).join("");
+    const extendControls = isHost ? \` <button class="button button-small" type="button" data-extend-room title="Extend invite by 30 minutes">Extend 30 min</button><p class="room-ttl-status" data-room-ttl-status aria-live="polite"></p>\` : "";
 
-    root.innerHTML = \`\n<h1>\${esc(room.name || "Room")} <span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></h1>\n<dl class="room-meta">\n<dt>room URL</dt><dd><code>\${esc("https://j01n.me/r/" + rid)}</code> <button class="button button-small" type="button" data-copy-room-url title="Copy room URL">Copy URL</button></dd>\n<dt>purpose</dt><dd>\${esc(room.purpose || "—")}</dd>\n<dt>host</dt><dd>\${esc(room.host_id || "—")}</dd>\n<dt>phase</dt><dd>\${esc(phase || "—")}</dd>\n<dt>expires</dt><dd>\${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}</dd>\n</dl>\n<section class="room-board"><h3>Board</h3><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>\${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>\${isKanban ? '<form class="kanban-add-task" data-kanban-add-task><label>Title<input name="task_title" placeholder="Task title" /></label><label>Column<select name="task_column"><option value="todo">To Do</option><option value="doing" selected>Doing</option><option value="review">Review</option><option value="done">Done</option></select></label><button class="button" type="submit">Add task</button></form>' : ""}\${boardHtml}</section>\n<section class="room-participants"><h3>Participants</h3>\${participantsHtml}</section>\n<section class="room-messages"><h3>Messages</h3>\${messagesHtml}<form class="message-composer" data-message-form><label>to<select name="to">\${recipientOptions}</select></label><label>message<textarea name="message" placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><button class="button" type="submit">Send</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>\`;
+    root.innerHTML = \`\n<h1>\${esc(room.name || "Room")} <span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></h1>\n<dl class="room-meta">\n<dt>room URL</dt><dd><code>\${esc("https://j01n.me/r/" + rid)}</code> <button class="button button-small" type="button" data-copy-room-url title="Copy room URL">Copy URL</button></dd>\n<dt>purpose</dt><dd>\${esc(room.purpose || "—")}</dd>\n<dt>host</dt><dd>\${esc(room.host_id || "—")}</dd>\n<dt>phase</dt><dd>\${esc(phase || "—")}</dd>\n<dt>expires</dt><dd>\${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}\${extendControls}</dd>\n</dl>\n<section class="room-board"><h3>Board</h3><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>\${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>\${isKanban ? '<form class="kanban-add-task" data-kanban-add-task><label>Title<input name="task_title" placeholder="Task title" /></label><label>Column<select name="task_column"><option value="todo">To Do</option><option value="doing" selected>Doing</option><option value="review">Review</option><option value="done">Done</option></select></label><button class="button" type="submit">Add task</button></form>' : ""}\${boardHtml}</section>\n<section class="room-participants"><h3>Participants</h3>\${participantsHtml}</section>\n<section class="room-messages"><h3>Messages</h3>\${messagesHtml}<form class="message-composer" data-message-form><label>to<select name="to">\${recipientOptions}</select></label><label>message<textarea name="message" placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><button class="button" type="submit">Send</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>\`;
     updateConnectionStatus(connectionState);
     root.querySelector("[data-copy-room-url]")?.addEventListener("click", () => {
       const url = "https://j01n.me/r/" + rid;
       navigator.clipboard.writeText(url).catch(() => {});
     });
+    wireExtendInvite();
     wireBoardEditor(board);
     wireKanbanAddTask();
     wireMessageComposer(participants, messages);
+  }
+
+  function wireExtendInvite() {
+    const button = root?.querySelector("[data-extend-room]");
+    const status = root?.querySelector("[data-room-ttl-status]");
+    if (!button) return;
+    button.addEventListener("click", async () => {
+      try {
+        button.textContent = "Extending...";
+        const response = await fetch(\`/r/\${encodeURIComponent(rid)}/extend\`, {
+          method: "POST",
+          headers: authHeaders(true),
+          body: JSON.stringify({ extend_ms: 30 * 60 * 1000 }),
+        });
+        const json = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(json.error || "failed to extend invite");
+        invite = { ...invite, expires_at: json.expires_at };
+        persistInvite(rid, invite);
+        if (status) status.textContent = "Extended until " + new Date(json.expires_at).toLocaleString();
+        await refreshRoom();
+      } catch (error) {
+        if (status) status.textContent = error instanceof Error ? error.message : String(error);
+      } finally {
+        button.textContent = "Extend 30 min";
+      }
+    });
   }
 
   function wireKanbanAddTask() {
@@ -639,7 +691,7 @@ function roomPageScript(roomId: string): string {
       // Read current board state
       try {
         const boardRes = await fetch(\`/r/\${encodeURIComponent(rid)}/board\`, {
-          headers: { authorization: "Bearer " + joinSecret, "x-participant-id": participantId }
+          headers: authHeaders()
         });
         const boardData = await boardRes.json();
         const currentColumns = boardData?.board?.columns?.value || {};
@@ -657,7 +709,7 @@ function roomPageScript(roomId: string): string {
         const patchBody = { columns: wrapBoardValue(newColumns), tasks: wrapBoardValue(newTasks) };
         await fetch(\`/r/\${encodeURIComponent(rid)}/board\`, {
           method: "PATCH",
-          headers: { authorization: "Bearer " + joinSecret, "x-participant-id": participantId, "content-type": "application/json" },
+          headers: authHeaders(true),
           body: JSON.stringify(patchBody),
         });
         await refreshRoom();
@@ -696,7 +748,7 @@ function roomPageScript(roomId: string): string {
         if (submit) submit.textContent = "Saving...";
         const response = await fetch(\`/r/\${encodeURIComponent(rid)}/board/\${encodeURIComponent(key)}\`, {
           method: "PUT",
-          headers: { authorization: "Bearer " + joinSecret, "x-participant-id": participantId, "content-type": "application/json" },
+          headers: authHeaders(true),
           body: JSON.stringify(wrapBoardValue(parsedValue)),
         });
         const json = await response.json().catch(() => ({}));
@@ -727,7 +779,7 @@ function roomPageScript(roomId: string): string {
         const encryptedBody = await encryptMessageBody(to, { text }, participants, messages);
         const response = await fetch(\`/r/\${encodeURIComponent(rid)}\`, {
           method: "POST",
-          headers: { authorization: "Bearer " + joinSecret, "x-participant-id": participantId, "content-type": "application/json" },
+          headers: authHeaders(true),
           body: JSON.stringify({ to, body: encryptedBody }),
         });
         const json = await response.json().catch(() => ({}));

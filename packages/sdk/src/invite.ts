@@ -16,6 +16,7 @@ function buildApiLinks(roomUrl: string): Invite["api"] {
     board: `${roomUrl}/board`,
     participants: `${roomUrl}/participants`,
     status: `${roomUrl}/status`,
+    extend: `${roomUrl}/extend`,
     export: `${roomUrl}/export`,
     leave: `${roomUrl}/participants/{participant_id}`,
     kick: `${roomUrl}/participants/{target_id}`,
@@ -51,6 +52,7 @@ export function normalizeInvite(invite: RoomAccess): Invite {
     ...(invite.suggested_id ? { suggested_id: invite.suggested_id } : {}),
     ...(invite.suggested_model ? { suggested_model: invite.suggested_model } : {}),
     ...(invite.suggested_skills ? { suggested_skills: invite.suggested_skills } : {}),
+    ...(invite.participant_token ? { participant_token: invite.participant_token } : {}),
     ...(invite.host_joined ? { host_joined: true } : {}),
     ...(typeof invite.cursor === "number" ? { cursor: invite.cursor } : {}),
   };

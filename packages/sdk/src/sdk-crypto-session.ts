@@ -53,7 +53,7 @@ export async function createSdkCryptoSession(
   }
 
   function recipientIdsFor(to: Recipient): string[] {
-    if (to === "all") return [...peerKeys.keys()];
+    if (to === "all") return [...peerKeys.keys()].filter((id) => id !== participantId);
     const ids = Array.isArray(to) ? to : [to];
     return [...new Set(ids)];
   }
@@ -118,7 +118,7 @@ export async function createSdkCryptoSession(
     async encryptForSend(plainBody, to) {
       const recipientIds = recipientIdsFor(to);
       const plaintext = JSON.stringify(plainBody);
-      if (recipientIds.length === 1 && recipientIds[0] !== participantId) return encryptDirectBody(plaintext, recipientIds[0]);
+      if (to !== "all" && recipientIds.length === 1 && recipientIds[0] !== participantId) return encryptDirectBody(plaintext, recipientIds[0]);
       return encryptWrappedBody(plaintext, recipientIds);
     },
 

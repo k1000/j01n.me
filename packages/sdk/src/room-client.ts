@@ -50,6 +50,7 @@ export interface Invite {
     board: string;
     participants: string;
     status: string;
+    extend: string;
     leave: string;
     kick: string;
     close: string;
@@ -103,6 +104,7 @@ export interface RoomClient {
   kick(targetId: string): Promise<{ ok: true; kicked: string }>;
   close(): Promise<{ ok: true; closed: boolean }>;
   transition(event: string): Promise<{ ok: true; from: string; event: string; to: string }>;
+  extend(options?: { extendMs?: number }): Promise<{ ok: true; extended_ms: number; expires_at: string }>;
   export(): Promise<RoomExportResponse>;
 }
 
@@ -242,6 +244,13 @@ export async function buildRoomClient(
         `${invite.room_url}/transition`,
         invite,
         { method: "POST", participantId, body: { event } },
+      );
+    },
+    async extend(options = {}) {
+      return request<{ ok: true; extended_ms: number; expires_at: string }>(
+        invite.api.extend ?? `${invite.room_url}/extend`,
+        invite,
+        { method: "POST", participantId, body: options.extendMs === undefined ? {} : { extend_ms: options.extendMs } },
       );
     },
     async export() {

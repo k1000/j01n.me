@@ -24,6 +24,7 @@ describe("SDK HTTP client", () => {
       board: "https://j01n.me/r/invite/board",
       participants: "https://j01n.me/r/invite/participants",
       status: "https://j01n.me/r/invite/status",
+      extend: "https://j01n.me/r/invite/extend",
       leave: "https://j01n.me/r/invite/participants/{participant_id}",
       kick: "https://j01n.me/r/invite/participants/{target_id}",
       close: "https://j01n.me/r/invite",
@@ -132,6 +133,29 @@ describe("SDK HTTP client", () => {
     expect(requests[1].url).toBe("https://j01n.me/r/invite/board/enabled");
     expect(requests[1].init?.headers).toMatchObject({ "content-type": "application/json" });
     expect(requests[1].init?.body).toBe("false");
+  });
+
+  it("extends room TTL using the participant token", async () => {
+    const invite = makeInvite();
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(url), init });
+      const body = String(url).endsWith("/participants/host")
+        ? { ok: true, cursor: 0, participant_token: "host-token" }
+        : { ok: true, extended_ms: 600000, expires_at: new Date(Date.now() + 600000).toISOString() };
+      return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    await withFetch(impl, async () => {
+      const room = await joinRoom(invite, "host");
+      requests.length = 0;
+      await room.extend({ extendMs: 600000 });
+    });
+
+    expect(requests[0].url).toBe("https://j01n.me/r/invite/extend");
+    expect(requests[0].init?.method).toBe("POST");
+    expect(requests[0].init?.headers).toMatchObject({ authorization: "Bearer host-token" });
+    expect(requests[0].init?.body).toBe(JSON.stringify({ extend_ms: 600000 }));
   });
 
   it("sets view=all param when reading retained history", async () => {

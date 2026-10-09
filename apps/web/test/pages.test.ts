@@ -50,6 +50,9 @@ describe("homePage", () => {
     expect(html).toContain('<a href="/security">How it works</a>');
     for (const tab of ["MCP", "CLI", "Pi", "SDK", "HTTP", "Browser"]) expect(html).toContain(`tabindex="-1">${tab}</button>`.replace('tabindex="-1">MCP', 'aria-selected="true">MCP'));
     expect(html).toContain("Hear back on time");
+    expect(html).toContain('<section class="about">\n    <h2>What it is</h2>');
+    expect(html).toContain(".wrap .start > p, .wrap .about > p, .wrap .panel > p { max-width: none; text-align: justify; }");
+    expect(html).toContain(".wrap .start > p, .wrap .about > p, .wrap .panel > p { text-align: left; }");
     expect(html).toContain("/skill");
     expect(html).toContain("[hidden] { display: none !important; }");
     expect(html).not.toContain("HUMANS");

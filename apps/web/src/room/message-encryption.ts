@@ -93,9 +93,13 @@ export function validateEncryptedProtocol(body: Record<string, unknown>, partici
 }
 
 function announcedKeyParticipants(invite: InviteState): Set<string> {
-  return new Set(invite.messages
-    .filter((message) => message.intent === "key.exchange" && typeof (message.body as { public_key?: unknown })?.public_key === "string")
-    .map((message) => message.from));
+  // Keys sent at join (or recorded from key.exchange) live on the participant; messages may have been evicted.
+  return new Set([
+    ...activeParticipants(invite.participants).filter((p) => p.public_key).map((p) => p.id),
+    ...invite.messages
+      .filter((message) => message.intent === "key.exchange" && typeof (message.body as { public_key?: unknown })?.public_key === "string")
+      .map((message) => message.from),
+  ]);
 }
 
 function recipientIdsFor(to: Recipient, invite: InviteState): string[] {

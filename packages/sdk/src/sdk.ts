@@ -100,6 +100,8 @@ export async function joinRoom(
 
   const roomInvite = { ...invite, participant_token: join.participant_token };
   const room = await buildRoomClient(roomInvite, participantId, join.cursor, cryptoSession);
+  // Announce via key.exchange too: peers learn keys from these messages.
+  await room.announceKey();
   return room;
 }
 

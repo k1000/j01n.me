@@ -130,10 +130,11 @@ describe("SDK HTTP client", () => {
       await room.setBoardKey("enabled", false);
     });
 
-    // joinRoom emits PUT (with public_key) before setBoardKey lands at index 1.
-    expect(requests[1].url).toBe("https://j01n.me/r/invite/board/enabled");
-    expect(requests[1].init?.headers).toMatchObject({ "content-type": "application/json" });
-    expect(requests[1].init?.body).toBe("false");
+    // joinRoom emits PUT (with public_key) and a key.exchange announcement before setBoardKey.
+    expect(JSON.parse(String(requests[1].init?.body))).toMatchObject({ intent: "key.exchange" });
+    expect(requests[2].url).toBe("https://j01n.me/r/invite/board/enabled");
+    expect(requests[2].init?.headers).toMatchObject({ "content-type": "application/json" });
+    expect(requests[2].init?.body).toBe("false");
   });
 
   it("extends room TTL using the participant token", async () => {

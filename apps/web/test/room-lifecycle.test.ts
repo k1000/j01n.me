@@ -12,6 +12,7 @@ import {
   joinParticipant,
   participantAuthHeaders,
   readMessages,
+  roomRequest,
   sendMessage,
   type RoomFixture,
 } from "./room/helpers";
@@ -98,6 +99,24 @@ describe("room lifecycle", () => {
 
     const body = await getRoomJson<{ participants: Array<{ id: string; public_key?: string }> }>(fix, "/participants", "agent-a");
     expect(body.participants.find((p) => p.id === "agent-b")?.public_key).toBe("agent-b-raw-key");
+  });
+
+  it("accepts encrypted sends from a participant whose key was given at join", async () => {
+    const join = await roomRequest(fix, "/participants/agent-a", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${fix.joinSecret}`, "content-type": "application/json" },
+      body: JSON.stringify({ public_key: "agent-a-join-key" }),
+    });
+    fix.participantTokens["agent-a"] = (await join.json() as { participant_token: string }).participant_token;
+    await joinParticipant(fix, "agent-b");
+    await announceKey(fix, "agent-b");
+
+    const res = await roomRequest(fix, "", {
+      method: "POST",
+      headers: { ...participantAuthHeaders(fix, "agent-a"), "content-type": "application/json" },
+      body: JSON.stringify({ to: "agent-b", body: { encrypted: true, ciphertext: "c", iv: "i" } }),
+    });
+    expect(res.status).toBe(200);
   });
 
   it("delivers direct messages only to the named recipient", async () => {

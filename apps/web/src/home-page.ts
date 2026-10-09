@@ -18,6 +18,7 @@ export const HOME_STYLES: string = String.raw`
     --s-0: 0.8125rem; --s-1: 0.9375rem; --s-2: 1.125rem; --s-3: 1.5rem; --s-4: clamp(3.25rem, 13vw, 7rem);
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; } /* tab panels set display: grid, which would override hidden */
   body { max-width: none; margin: 0; padding: 0; background: var(--ink); color: var(--text); font: 400 var(--s-1)/1.7 var(--body); }
   .wrap { max-width: 64rem; margin: 0 auto; padding-inline: 16px; padding-block: 48px 72px; display: grid; gap: 56px; }
   a { color: var(--cream); text-underline-offset: 3px; }

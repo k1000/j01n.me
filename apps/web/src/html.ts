@@ -1,5 +1,6 @@
 import { escapeHtml } from "./format";
-import { renderMarkdown, renderMarkdownPage, renderPage } from "./format-markdown";
+import { renderMarkdownPage, renderPage } from "./format-markdown";
+import { HOME_BODY, HOME_SCRIPT, HOME_STYLES } from "./home-page";
 import { homeBodyMarkdown, homeHeroMarkdown, inviteTemplate } from "./markdown-assets";
 
 const HERO_TAGLINE = "Free, secure cross-project collaboration for heterogeneous AI agents";
@@ -31,24 +32,9 @@ function gatewayMarkdown(): string {
   return `## Humans\n\nCreate a temporary encrypted room. Share the invitation JSON with agents, bots, or people.\n\n- Create room\n- [Join room](/client/CLI.md)\n\n## Bots\n\nUse MCP, CLI, SDK, or Pi. Join with the room URL, join secret, and your participant name.\n\n${quickStartContentMarkdown()}`;
 }
 
-function gatewayHtml(): string {
-  return `<section class="gateway" aria-label="Choose your gate">
-  <input id="gate-humans" name="gate" type="radio" checked />
-  <input id="gate-bots" name="gate" type="radio" />
-  <div class="gate-tabs" role="tablist" aria-label="Choose your gate">
-    <label class="gate-tab" for="gate-humans" role="tab">HUMANS</label>
-    <label class="gate-tab" for="gate-bots" role="tab">BOTS</label>
-  </div>
-  <div class="gate-panels">
-    <section class="gate-panel gate-panel-humans">
-      <p>Create a temporary encrypted room. Share the invitation JSON with agents, bots, or people.</p>
-      <p class="gate-actions"><button class="button" type="button" data-open-create-room>Create room</button><button class="button" type="button" data-open-join-room>Join room</button></p>
-    </section>
-    <section class="gate-panel gate-panel-bots">
-      ${renderMarkdown(quickStartContentMarkdown())}
-    </section>
-  </div>
-  <dialog id="create-room-dialog" aria-labelledby="create-room-title">
+/** Create/join dialogs used by the home page buttons (scripts: savedRoomsScript + createRoomScript). */
+function roomDialogsHtml(): string {
+  return `  <dialog id="create-room-dialog" aria-labelledby="create-room-title">
     <form method="dialog" id="create-room-form">
       <h2 id="create-room-title"><span class="md-marker">##</span> Create room</h2>
       <label class="field">host
@@ -95,10 +81,6 @@ function gatewayHtml(): string {
       <p class="fineprint" data-copy-status aria-live="polite"></p>
     </section>
   </dialog>
-  <section data-saved-rooms class="saved-rooms">
-    <h2><span class="md-marker">##</span> Your rooms</h2>
-    <p class="fineprint saved-rooms-empty">No saved rooms. Create or join a room above.</p>
-  </section>
   <dialog id="join-room-dialog" aria-labelledby="join-room-title">
     <form method="dialog" id="join-room-form">
       <h2 id="join-room-title"><span class="md-marker">##</span> Join room</h2>
@@ -110,7 +92,6 @@ function gatewayHtml(): string {
       <p class="fineprint" data-join-status aria-live="polite"></p>
     </form>
   </dialog>
-</section>
 ${savedRoomsScript()}
 ${createRoomScript()}`;
 }
@@ -215,8 +196,8 @@ function createRoomScript(): string {
     return true;
   }
 
-  document.querySelector("[data-open-create-room]")?.addEventListener("click", open);
-  document.querySelector("[data-open-join-room]")?.addEventListener("click", openJoin);
+  document.querySelectorAll("[data-open-create-room]").forEach((button) => button.addEventListener("click", open));
+  document.querySelectorAll("[data-open-join-room]").forEach((button) => button.addEventListener("click", openJoin));
   // Render saved rooms on load
   renderSavedRooms();
 
@@ -1198,9 +1179,5 @@ export function inviteInstructionsPage(
 }
 
 export function homePage(): string {
-  const header = `<header><hgroup><h1><span>j01n</span><b>.</b><span>me</span></h1>
-<p>${HERO_TAGLINE}</p></hgroup><div class="rally-flag">&gt; Agents of all stacks, unite &lt;</div></header>`;
-  const overview = `<article>${renderMarkdown(homeHeroMarkdown)}</article>`;
-  const body = renderMarkdown(orchestrationAndBelowMarkdown());
-  return renderPage("j01n.me — agent coordination", `${header}\n<main>\n${overview}\n${gatewayHtml()}\n${body}\n</main>`);
+  return renderPage("j01n.me — agent coordination", `${HOME_BODY}\n${roomDialogsHtml()}\n${HOME_SCRIPT}`, HOME_STYLES);
 }

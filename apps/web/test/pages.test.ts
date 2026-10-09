@@ -32,14 +32,10 @@ describe("web UI scripts", () => {
 });
 
 describe("promo page", () => {
-  it("serves the standalone promo page at /promo", async () => {
+  it("redirects /promo to the home page", async () => {
     const res = await app.request("/promo");
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    const html = await res.text();
-    expect(html.startsWith("<!doctype html>")).toBe(true);
-    expect(html).toContain("<title>j01n.me</title>");
-    expect(html).toContain("Agents of all stacks, unite");
+    expect(res.status).toBe(301);
+    expect(res.headers.get("location")).toBe("/");
   });
 });
 
@@ -47,16 +43,27 @@ describe("homePage", () => {
   it("presents the project and the end-to-end encryption promise", () => {
     const html = homePage();
 
-    expect(html).toContain("ephemeral encrypted coordination service for AI agents");
-    expect(html).toContain('href="/security"');
-    expect(html).toContain('href="/security">End-to-end encryption via client-side ECDH + AES-256-GCM.</a>');
-    expect(html).toContain("Agents from any project, platform, or skill set");
-    expect(html).toContain("Rooms are temporary: no accounts, no persistent history");
-    expect(html).not.toContain("Quick start");
-    expect(html).toContain("HUMANS");
-    expect(html).toContain("BOTS");
-    expect(html).toContain('data-open-create-room');
+    expect(html).toContain('<h1 class="logo">j01n<span class="dot">.</span>me</h1>');
+    expect(html).toContain("Free, secure cross-project collaboration for heterogeneous AI agents");
+    expect(html).toContain("&gt; Agents of all stacks, unite &lt;");
+    expect(html).toContain("ephemeral, end-to-end encrypted meeting room for AI agents, bots and people");
+    expect(html).toContain('<a href="/security">How it works</a>');
+    for (const tab of ["MCP", "CLI", "Pi", "SDK", "HTTP", "Browser"]) expect(html).toContain(`tabindex="-1">${tab}</button>`.replace('tabindex="-1">MCP', 'aria-selected="true">MCP'));
+    expect(html).toContain("Hear back on time");
+    expect(html).toContain("/skill");
+    expect(html).not.toContain("HUMANS");
+    expect(html).not.toContain("BOTS");
+  });
+
+  it("keeps the create and join room flow", () => {
+    const html = homePage();
+
+    expect(html.match(/type="button" data-open-create-room>/g)?.length).toBe(2);
+    expect(html).toContain("data-open-join-room");
+    expect(html).toContain('querySelectorAll("[data-open-create-room]")');
     expect(html).toContain('id="create-room-dialog"');
+    expect(html).toContain('id="join-room-dialog"');
+    expect(html).toContain("data-saved-rooms");
     expect(html).toContain('name="max_participants"');
     expect(html).toContain('<option value="3">3</option>');
     expect(html).toContain('<option value="7" selected>7</option>');
@@ -66,40 +73,17 @@ describe("homePage", () => {
     expect(html).toContain('<option value="1800000" selected>30 min</option>');
     expect(html).toContain('<option value="3600000">1 h</option>');
     expect(html).toContain("Save this safely and use it to invite bots & humans.");
-    expect(html).not.toContain("Choose the human gate when you want to start or enter a room directly.");
-    expect(html).toContain("Option A: MCP host");
-    expect(html).toContain("Option B: CLI helper");
-    expect(html).not.toContain("If you were invited");
-    expect(html).not.toContain("Trust model");
-    expect(html).toContain('href="https://openclaw.ai/" target="_blank"');
-    expect(html).toContain('href="https://www.anthropic.com/claude-code" target="_blank"');
-    expect(html).toContain('href="https://openai.com/codex/" target="_blank"');
-    expect(html).not.toContain("Client code");
-    expect(html).toContain('<h2><span class="md-marker">##</span> Customizable orchestration board</h2>');
-    expect(html).toContain("lightweight JSON coordination layer");
-    expect(html).toContain('<h2><span class="md-marker">##</span> Features</h2>');
-    expect(html).toContain(".md-marker");
-    expect(html).toContain("--highlight: #fff1d7");
-    expect(html).toContain("border-radius: 0");
-    expect(html).toContain(".gate-tabs { display: flex; width: 100%;");
-    expect(html).toContain("#gate-humans:checked ~ .gate-tabs");
-    expect(html).toContain('<span class="md-bullet" aria-hidden="true">*</span>');
-    expect(html).not.toContain('h2::before { content: "## ";');
-    expect(html).toContain("<header><hgroup><h1><span>j01n</span><b>.</b><span>me</span></h1>");
-    expect(html).toContain("<main>");
-    expect(html).toContain("<article>");
-    expect(html).toContain("<footer>");
-    expect(html).not.toContain('class="tagline"');
-    expect(html).not.toContain('class="hero-title"');
+  });
+
+  it("keeps the shared page head and footer", () => {
+    const html = homePage();
+
     expect(html).toContain("<meta name=\"description\"");
     expect(html).toContain("<meta property=\"og:title\"");
     expect(html).toContain("<meta name=\"twitter:card\" content=\"summary\"");
     expect(html).toContain("twitter.com/intent/tweet");
     expect(html).toContain("linkedin.com/sharing/share-offsite");
     expect(html).toContain("news.ycombinator.com/submitlink");
-    expect(html).toContain("/skill");
-    expect(html).toContain("/skill/SKILL.md");
-    expect(html).not.toContain("/client/agent.py");
   });
 
   it("has markdown for agents", () => {

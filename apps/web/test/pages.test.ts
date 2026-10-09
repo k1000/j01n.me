@@ -7,6 +7,26 @@ import { securityPage } from "../src/security";
 import { skillExampleMarkdown, skillMarkdown } from "@j01n/skill";
 import { skillExamplePage, skillPage } from "../src/skill-pages";
 
+describe("web UI scripts", () => {
+  it("defines the saved-room helpers the home and room pages call", () => {
+    for (const html of [homePage(), roomPageHtml("room-1")]) {
+      for (const fn of ["persistInvite", "loadInvite", "removeInvite", "renderSavedRooms"]) {
+        expect(html).toContain(`function ${fn}(`);
+      }
+    }
+  });
+
+  it("registers WebMCP tools only when the browser supports them", () => {
+    const home = homePage();
+    const room = roomPageHtml("room-1");
+    expect(home).toContain('typeof mc.registerTool === "function"');
+    expect(room).toContain('typeof mc.registerTool !== "function"');
+    for (const name of ["create_room", "join_room"]) expect(home).toContain(`name: "${name}"`);
+    for (const name of ["read_room", "send_message", "set_board_key", "update_status"]) expect(room).toContain(`name: "${name}"`);
+    expect(room).toContain("untrustedContentHint: true");
+  });
+});
+
 describe("promo page", () => {
   it("serves the standalone promo page at /promo", async () => {
     const res = await app.request("/promo");

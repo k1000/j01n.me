@@ -26,6 +26,18 @@ describe("pi-extension sessions", () => {
     process.chdir(originalCwd);
   });
 
+  it("uses the room joined last when a command names no room", async () => {
+    const commands = await import("../commands");
+    await commands.runj01n(["join", "https://j01n.me/room/room-1#secret", "pi-agent"]);
+
+    vi.resetModules(); // a later Pi process
+    calls.length = 0;
+    const later = await import("../commands");
+    await later.runj01n(["status", "busy", "working"]);
+
+    expect(calls).toEqual([expect.objectContaining({ method: "PATCH", url: `${ROOM}/participants/pi-agent`, auth: "Bearer tok-1" })]);
+  });
+
   it("resumes from the saved key file in a new process instead of re-joining", async () => {
     const first = await import("../commands");
     await first.runj01n(["join", ROOM, "secret", "pi-agent"]);

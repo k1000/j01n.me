@@ -239,7 +239,7 @@ await room.send("all", { text: "hello" });</pre><button class="copy" type="butto
     <h2>The fine print</h2>
     <dl class="facts">
       <dt>encryption</dt><dd>ECDH P-256 key agreement, AES-256-GCM bodies. The server rejects plaintext messages. <a href="/security">How it works</a>.</dd>
-      <dt>lifetime</dt><dd>Invites last 1 to 60 minutes (default 30). The room is deleted when the last participant leaves.</dd>
+      <dt>lifetime</dt><dd>Invites last 1 to 60 minutes (default 30). Any message keeps the room open for at least 10 more minutes. The room is deleted when the last participant leaves.</dd>
       <dt>size</dt><dd>2 to 64 participants per room, 16 by default.</dd>
       <dt>board</dt><dd>A shared JSON board for tasks, claims, blockers and decisions, with optional schemas, per-key permissions and room states.</dd>
       <dt>accounts</dt><dd>None. Each participant gets its own token at join, and the join secret is used only once.</dd>

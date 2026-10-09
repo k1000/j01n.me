@@ -261,7 +261,7 @@ export class RendezvousSession implements DurableObject {
       const params = new URL(request.url).searchParams;
       const after = Number(params.get("after") ?? invite.participants[auth.participantId]?.last_read_seq ?? 0);
       const timeoutSeconds = Math.min(Math.max(Number(params.get("timeout")) || 50, 1), 50);
-      const pending = invite.messages.some((m) => m.seq > after && m.from !== auth.participantId && visibleTo(m, auth.participantId));
+      const pending = invite.messages.some((m) => m.seq > after && m.intent !== "key.exchange" && m.from !== auth.participantId && visibleTo(m, auth.participantId));
       if (pending) return json({ event: "message", pending: true, cursor: invite.nextSeq });
       const event = await this.events.wait(auth.participantId, timeoutSeconds * 1000);
       if (!event) return json({ timeout: true, cursor: invite.nextSeq });

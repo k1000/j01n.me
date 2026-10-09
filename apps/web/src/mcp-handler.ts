@@ -21,6 +21,7 @@ import type { CreateRoomBody } from "./invite";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { SdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
+import { isEncryptedBody } from "@j01n/sdk/crypto";
 import type { RoomMessage } from "./types";
 
 // ── Unified session store (per-worker-isolate, in-memory) ───────
@@ -260,6 +261,18 @@ function parseRoomId(inviteJson: string): { roomId: string; roomUrl: string; sec
   return { roomId: roomUrl.split("/").pop()!, roomUrl: roomUrl.replace(/\/$/, ""), secret: parsed.join_secret };
 }
 
+/** Block until the next event the participant can see (or the timeout), then return the new messages, decrypted. */
+async function waitForEvent(env: Env, params: Record<string, unknown>) {
+  const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+  const participantId = params.participantId as string;
+  await ensureEcdhSession(env, roomUrl, participantId, secret);
+  const timeout = Math.min(Math.max(Number(params.timeoutSeconds) || 50, 1), 50);
+  const woke = await doFetch(env, roomUrl, `/wait?timeout=${timeout}`, secret, { participantId }) as { timeout?: boolean; event?: string };
+  if (woke.timeout) return { timeout: true };
+  const read = await readRoomMessages(env, { inviteJson: params.inviteJson, participantId });
+  return { woke: woke.event, ...read };
+}
+
 /** A JSON object is sent as is; anything else is sent as { text }. */
 function parseMessageBody(raw: string): unknown {
   try {
@@ -284,10 +297,10 @@ async function readRoomMessages(env: Env, params: Record<string, unknown>) {
 
   // Use SDK's proven decryption
   const decrypted = await Promise.all(messages.map(async (msg) => {
-    try {
-      const body = await crypto.decryptMessageBody(msg);
-      return { ...msg, body };
-    } catch { return msg; }
+    const body = await crypto.decryptMessageBody(msg).catch(() => msg.body);
+    return isEncryptedBody(body)
+      ? { ...msg, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" }
+      : { ...msg, body };
   }));
 
   return { cursor: result.cursor ?? 0, count: decrypted.length, messages: decrypted };
@@ -781,6 +794,7 @@ const tools: Record<string, ToolDef> = {
         intent: { type: "string" }, priority: { type: "string" },
         state: { type: "string" }, status: { type: "string" },
         model: { type: "string" }, skills: { type: "string" },
+        waitForReply: { type: "boolean", description: "After sending, wait (up to ~50 s) for the next event you can see and return the new messages, like wait_for_event." },
       },
       required: ["inviteJson", "participantId", "to", "body"],
     },
@@ -803,7 +817,8 @@ const tools: Record<string, ToolDef> = {
         state: params.state, status: params.status,
         model: params.model, skills: parseSkills(params.skills as string),
       };
-      return doFetch(env, roomUrl, "/", secret, { method: "POST", participantId, body });
+      const sent = await doFetch(env, roomUrl, "/", secret, { method: "POST", participantId, body });
+      return params.waitForReply ? { sent, ...await waitForEvent(env, params) } : sent;
     },
   },
 
@@ -828,16 +843,7 @@ const tools: Record<string, ToolDef> = {
         timeoutSeconds: { type: "number", description: "1-50, default 50" },
       }, required: ["inviteJson", "participantId"],
     },
-    handler: async (env, params) => {
-      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      const participantId = params.participantId as string;
-      await ensureEcdhSession(env, roomUrl, participantId, secret);
-      const timeout = Math.min(Math.max(Number(params.timeoutSeconds) || 50, 1), 50);
-      const woke = await doFetch(env, roomUrl, `/wait?timeout=${timeout}`, secret, { participantId }) as { timeout?: boolean; event?: string };
-      if (woke.timeout) return { timeout: true };
-      const read = await readRoomMessages(env, { inviteJson: params.inviteJson, participantId });
-      return { woke: woke.event, ...read };
-    },
+    handler: (env, params) => waitForEvent(env, params),
   },
 
   list_participants: {

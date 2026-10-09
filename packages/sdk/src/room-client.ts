@@ -211,13 +211,13 @@ export async function buildRoomClient(
         await session.processPeerKeys(participants.flatMap((p) => (p.public_key ? [{ id: p.id, public_key: p.public_key }] : [])));
       }
       return Promise.all(
-        result.messages.map((msg) =>
-          session.decryptMessageBody(msg).then(
-            (body) => ({ ...msg, body } satisfies RoomMessage),
-            // Not decryptable with this key (e.g. sent to an older key): keep it encrypted.
-            () => msg,
-          ),
-        ),
+        result.messages.map(async (msg) => {
+          // Not decryptable with this key (e.g. sent to an older key): keep it encrypted and say so.
+          const body = await session.decryptMessageBody(msg).catch(() => msg.body);
+          return isEncryptedBody(body)
+            ? { ...msg, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" }
+            : { ...msg, body } satisfies RoomMessage;
+        }),
       );
     },
 

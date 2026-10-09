@@ -105,10 +105,30 @@ function createBaseUrl(parsed: ParsedArgs): string {
   return (parsed.roomUrlOrInvite || process.env.BASE_URL || "https://j01n.me").replace(/\/$/, "");
 }
 
+const CURRENT_ROOM_FILE = ".j01n-current.json";
+
+interface CurrentRoom { access: string; participant_id: string; participant_token?: string; join_secret?: string }
+
+/** With no room given (send claude-code hi, wait, read), use the room joined last in this directory. */
+function withCurrentRoom(parsed: ParsedArgs): ParsedArgs {
+  const ref = parsed.roomUrlOrInvite;
+  const hasRoom = !!parsed.joinSecret || (!!ref && (ref.trim().startsWith("{") || /^https?:/.test(ref) || existsSync(ref)));
+  if (hasRoom || parsed.cmd === "create" || !existsSync(CURRENT_ROOM_FILE)) return parsed;
+  const current = JSON.parse(readFileSync(CURRENT_ROOM_FILE, "utf8")) as CurrentRoom;
+  return {
+    ...parsed,
+    roomUrlOrInvite: JSON.stringify({ access: current.access, join_secret: current.join_secret ?? current.participant_token, participant_token: current.participant_token }),
+    me: current.participant_id,
+    rest: [ref, parsed.me, ...parsed.rest].filter((value): value is string => value !== undefined),
+  };
+}
+
 async function handleJoin(parsed: ParsedArgs): Promise<string> {
   if (!parsed.me) throw new Error("join needs: participant_id");
   const invite = resolveInvite(parsed);
   const client = await openSession(invite, parsed.me);
+  const current: CurrentRoom = { access: invite.room_url, participant_id: parsed.me, participant_token: client.invite.participant_token, join_secret: invite.join_secret };
+  writeFileSync(CURRENT_ROOM_FILE, JSON.stringify(current, null, 2));
   return JSON.stringify({
     ok: true,
     participant_id: parsed.me,
@@ -124,9 +144,18 @@ async function handleSend(parsed: ParsedArgs): Promise<string> {
   const client = await openSession(invite, parsed.me);
 
   const [toRaw, ...words] = parsed.rest;
-  if (!toRaw || words.length === 0) throw new Error("send needs: <to> <text or json_body> (e.g. all hello there)");
-  const result = await client.send(parseRecipient(toRaw), parseMessageBody(words.join(" ")));
-  return JSON.stringify(result, null, 2);
+  const andWait = words[words.length - 1] === "--wait";
+  if (andWait) words.pop();
+  if (!toRaw || words.length === 0) throw new Error("send needs: <to> <text or json_body> [--wait] (e.g. all hello there)");
+  const sent = await client.send(parseRecipient(toRaw), parseMessageBody(words.join(" ")));
+  return JSON.stringify(andWait ? { sent, ...await waitAndRead(client) } : sent, null, 2);
+}
+
+/** Block until the next event you can see (or the timeout), then return the new messages, decrypted. */
+async function waitAndRead(client: RoomClient, timeoutSeconds?: number): Promise<Record<string, unknown>> {
+  const woke = await client.wait({ timeoutSeconds });
+  if (woke.timeout) return { timeout: true };
+  return { woke: woke.event, messages: await client.read() };
 }
 
 /** A JSON object is sent as is; anything else is sent as { text }. */
@@ -141,9 +170,7 @@ function parseMessageBody(raw: string): unknown {
 async function handleWait(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
   const [timeout] = parsed.rest;
-  const woke = await client.wait({ timeoutSeconds: timeout ? Number(timeout) : undefined });
-  if (woke.timeout) return JSON.stringify({ timeout: true }, null, 2);
-  return JSON.stringify({ woke: woke.event, messages: await client.read() }, null, 2);
+  return JSON.stringify(await waitAndRead(client, timeout ? Number(timeout) : undefined), null, 2);
 }
 
 async function handleDoctor(parsed: ParsedArgs): Promise<string> {
@@ -288,7 +315,7 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
 };
 
 export async function runj01n(args: string[]): Promise<string> {
-  const parsed = parseArgs(args);
+  const parsed = withCurrentRoom(parseArgs(args));
   const handler = COMMANDS[parsed.cmd];
   if (!handler) throw new Error(`unknown command: ${parsed.cmd}. Usage: create|join|send|read|inbox|doctor`);
   return handler(parsed);

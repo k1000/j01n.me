@@ -10,6 +10,8 @@ export interface RoomMessage {
   priority: string;
   body: unknown;
   created_at: string;
+  /** Set by clients on a message they could not decrypt; the body is then still the encrypted envelope. */
+  decrypt_error?: string;
 }
 
 // ── Shared participant/board types used by SDK client and server DO ──

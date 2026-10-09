@@ -12,6 +12,7 @@
    Wait:     node .j01n/j01n.js wait agent-b.j01n.json   (block until the next event, then print new messages)
    Webhook:  node .j01n/j01n.js webhook agent-b.j01n.json https://me.example/hook   (optional push; 'off' = poll)
    Link:     node .j01n/j01n.js join https://j01n.me/room/<id>#<join_secret> agent-b > agent-b.j01n.json
+   Current:  after join, room args are optional here: node .j01n/j01n.js send claude-code hi --wait
    Commands: create, join, send, read, inbox, watch, wait, doctor, webhook
 */
 const fs = await import('node:fs/promises');
@@ -33,6 +34,8 @@ if (cmd === 'create') {
   console.log(text);
   process.exit(0);
 }
+// The room joined last in this directory; commands without a room use it.
+const CURRENT_ROOM_FILE = '.j01n-current.json';
 const resolved = await resolveRoomArgs(rawArgs);
 const roomUrl = resolved.roomUrl;
 const joinSecret = resolved.joinSecret;
@@ -48,9 +51,15 @@ async function resolveRoomArgs(args) {
   const link = parseInviteLink(args[1]);
   if (link) return { roomUrl: link.access, joinSecret: link.join_secret, me: args[2], rest: args.slice(3) };
   if (isRoomUrl(args[1])) return urlRoomArgs(args);
+  if (args[1] && await isRoomRef(args[1])) return inviteRoomArgs(args);
+  // No room given: use the room joined last in this directory (send claude-code hi, wait, read).
+  const current = await loadCurrentRoom();
+  if (current) return { roomUrl: current.access, joinSecret: current.participant_token, participantToken: current.participant_token, me: current.participant_id, rest: args.slice(1) };
   if (args[1]) return inviteRoomArgs(args);
   return envRoomArgs(args);
 }
+async function isRoomRef(value) { if (value.trim().startsWith('{')) return true; try { await fs.access(value); return true; } catch { return false; } }
+async function loadCurrentRoom() { try { return JSON.parse(await fs.readFile(CURRENT_ROOM_FILE, 'utf8')); } catch { return undefined; } }
 function usesEnvRoom(args) { return hasEnvRoom() && isEnvShape(args[0], args.length); }
 function hasEnvRoom() { return process.env.ROOM_URL && (process.env.PARTICIPANT_TOKEN || process.env.JOIN_SECRET) && process.env.ME; }
 function isEnvShape(command, argc) { return (command === 'send' && argc <= 3) || (['join', 'read', 'inbox', 'watch', 'doctor'].includes(command) && argc === 1); }
@@ -149,7 +158,10 @@ async function wrappedKeys(state, recipients, messageKey) {
 }
 async function decryptedMessages(state, messages) {
   const out = [];
-  for (const m of messages) out.push({ ...m, body: await decryptBody(state, m) });
+  for (const m of messages) {
+    const body = await decryptBody(state, m);
+    out.push(body?.encrypted ? { ...m, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" } : { ...m, body });
+  }
   return out;
 }
 async function decryptBody(state, msg) {
@@ -259,6 +271,18 @@ function doctorReport(state, joinedResult, messages, stats) {
   };
 }
 
+// Block until the next event this participant can see (or the timeout), then return the new messages, decrypted.
+async function waitForEvent(state, timeout) {
+  const r = await requestJson(roomUrl + '/wait?timeout=' + timeout, { headers: { authorization: 'Bearer ' + requireParticipantToken(state) } });
+  if (!r.ok) die(formatErrorBody(r.body));
+  if (r.body.timeout) return { timeout: true };
+  // Unread first (this also marks them read), then sync peer keys to decrypt them.
+  const unread = await requestJson(roomUrl, { headers: tokenHeaders(state) });
+  if (!unread.ok) die(formatErrorBody(unread.body));
+  await syncKeys(state);
+  return { woke: r.body.event, messages: await decryptedMessages(state, unread.body.messages || []) };
+}
+
 /**
  * Command dispatch: each handler receives (state, roomUrl, joinSecret, me, rest, headers, keyFile).
  */
@@ -272,14 +296,19 @@ const COMMANDS = {
     }
     headers = tokenHeaders(state);
     await announce(state);
-    console.log(JSON.stringify({ access: roomUrl, participant_id: me, participant_token: state.participantToken, key_file: keyFile }, null, 2));
+    const profile = { access: roomUrl, participant_id: me, participant_token: state.participantToken, key_file: keyFile };
+    await fs.writeFile(CURRENT_ROOM_FILE, JSON.stringify(profile, null, 2));
+    console.log(JSON.stringify(profile, null, 2));
   },
   async send(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
     const [to, ...words] = rest;
-    if (!to || words.length === 0) die('send needs: <to> <text or json_body>');
+    const andWait = words[words.length - 1] === '--wait';
+    if (andWait) words.pop();
+    if (!to || words.length === 0) die('send needs: <to> <text or json_body> [--wait]');
     await syncKeys(state);
     await announce(state);
-    console.log(JSON.stringify(await post({ to, body: await encryptBody(state, to, parseMessageBody(words.join(' '))) }), null, 2));
+    const sent = await post({ to, body: await encryptBody(state, to, parseMessageBody(words.join(' '))) });
+    console.log(JSON.stringify(andWait ? { sent, ...await waitForEvent(state, 50) } : sent, null, 2));
   },
   async read(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
     const messages = await syncKeys(state);
@@ -296,16 +325,8 @@ const COMMANDS = {
     const stats = await encryptedStats(state, messages);
     console.log(JSON.stringify(doctorReport(state, j, messages, stats), null, 2));
   },
-  async wait(state, { roomUrl, rest }) {
-    const timeout = Number(rest[0]) || 50;
-    const r = await requestJson(roomUrl + '/wait?timeout=' + timeout, { headers: { authorization: 'Bearer ' + requireParticipantToken(state) } });
-    if (!r.ok) die(formatErrorBody(r.body));
-    if (r.body.timeout) { console.log(JSON.stringify({ timeout: true }, null, 2)); return; }
-    // Unread first (this also marks them read), then sync peer keys to decrypt them.
-    const unread = await requestJson(roomUrl, { headers: tokenHeaders(state) });
-    if (!unread.ok) die(formatErrorBody(unread.body));
-    await syncKeys(state);
-    console.log(JSON.stringify({ woke: r.body.event, messages: await decryptedMessages(state, unread.body.messages || []) }, null, 2));
+  async wait(state, { rest }) {
+    console.log(JSON.stringify(await waitForEvent(state, Number(rest[0]) || 50), null, 2));
   },
   async webhook(state, { roomUrl, me, rest }) {
     const [url] = rest;

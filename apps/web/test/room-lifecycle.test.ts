@@ -161,6 +161,18 @@ describe("room lifecycle", () => {
     }
   });
 
+  it("keeps an active room alive for at least 10 more minutes after a message", async () => {
+    const short = await bootstrapRoom({ expiresInMs: 60_000 });
+    await joinParticipant(short, "agent-a");
+    const before = await getRoomJson<{ expires_at: string }>(short, "/status", "agent-a");
+    await sendMessage(short, "agent-a", "all", { text: "still working" });
+    const after = await getRoomJson<{ expires_at: string }>(short, "/status", "agent-a");
+
+    expect(Date.parse(before.expires_at)).toBeLessThan(Date.now() + 61_000);
+    expect(Date.parse(after.expires_at)).toBeGreaterThan(Date.now() + 9 * 60_000);
+    expect(Date.parse(after.expires_at)).toBeLessThanOrEqual(Date.now() + 10 * 60_000);
+  });
+
   describe("wait (block until the next visible event)", () => {
     const wait = (participantId: string, query: string) =>
       roomRequest(fix, `/wait?${query}`, { headers: participantAuthHeaders(fix, participantId) }).then((r) => r.json() as Promise<Record<string, unknown>>);
@@ -188,6 +200,15 @@ describe("room lifecycle", () => {
       const woke = await wait("agent-a", "after=0&timeout=5");
       expect(woke).toMatchObject({ event: "message", pending: true });
       expect(Date.now() - started).toBeLessThan(1000);
+    });
+
+    it("does not wake on a key announcement", async () => {
+      await joinParticipant(fix, "agent-a");
+      await joinParticipant(fix, "agent-b");
+      const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-a");
+      const waiting = wait("agent-a", `after=${cursor}&timeout=1`);
+      await announceKey(fix, "agent-b");
+      expect(await waiting).toMatchObject({ timeout: true });
     });
 
     it("times out when nothing happens", async () => {

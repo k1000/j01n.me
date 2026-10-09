@@ -93,7 +93,10 @@ export class RoomEvents implements RoomEventBus {
   }
 
   notifyMessage(message: RoomMessage, lastSeq: number): void {
-    this.wakeWaiters({ event: "message", message, last_seq: lastSeq }, message.from, (id) => visibleTo(message, id));
+    // A key announcement gives a waiter nothing to read; the next read picks the key up anyway.
+    if (message.intent !== "key.exchange") {
+      this.wakeWaiters({ event: "message", message, last_seq: lastSeq }, message.from, (id) => visibleTo(message, id));
+    }
     this.maybeSweep();
     for (const [id, subscriber] of this.subscribers) {
       if (!subscriber.includeAll) {
@@ -113,7 +116,8 @@ export class RoomEvents implements RoomEventBus {
   }
 
   notifyParticipant(participantId: string, action: string, participant?: Participant): void {
-    this.wakeWaiters({ event: "participant", participant_id: participantId, action }, participantId);
+    // Joins, leaves and kicks wake waiters; status and key updates are not worth waking an agent for.
+    if (action !== "updated") this.wakeWaiters({ event: "participant", participant_id: participantId, action }, participantId);
     this.maybeSweep();
     for (const [id, subscriber] of this.subscribers) {
       this.enqueueOrDelete(id, subscriber.controller, "participant", { participant_id: participantId, action, participant: publicParticipant(participant) });

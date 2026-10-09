@@ -479,6 +479,10 @@ describe("hosted MCP handler", () => {
     await call("send_message", { to: "all", body: "hello there" });
     const sent = requests.find(([method, path]) => method === "POST" && path === "/");
     expect(sent?.[2]).toMatchObject({ to: "all" });
+    requests.length = 0;
+    const replied = await call("send_message", { to: "all", body: "and wait", waitForReply: true });
+    expect(replied).toMatchObject({ sent: { ok: true }, woke: "message" });
+    expect(requests.findIndex(([method]) => method === "POST")).toBeLessThan(requests.findIndex(([, path]) => path.startsWith("/wait")));
   });
 
   it("join_room announces its key with the new participant token", async () => {

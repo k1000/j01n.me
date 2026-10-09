@@ -231,5 +231,6 @@ describe("SDK HTTP client", () => {
     const read = await withFetch(impl, () => room.read({ all: true }));
 
     expect(read[1].body).toEqual(forOldKey);
+    expect(read[1].decrypt_error).toContain("no key");
   });
 });

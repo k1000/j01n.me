@@ -46,6 +46,8 @@ export interface RoomOpts {
   boardAcls?: import("../../src/types").BoardAcls;
   roomStates?: Record<string, import("../../src/types").RoomStateConfig>;
   phase?: string;
+  /** Room lifetime from now; defaults to INVITE_TTL_MS. */
+  expiresInMs?: number;
 }
 
 /** Bootstrap a room. Returns the session, the invite/secret, and the room path for making auth'd requests. */
@@ -60,7 +62,7 @@ export async function bootstrapRoom(opts: RoomOpts = {}): Promise<RoomFixture> {
     body: JSON.stringify({
       roomId,
       secretHash,
-      expiresAt: Date.now() + INVITE_TTL_MS,
+      expiresAt: Date.now() + (opts.expiresInMs ?? INVITE_TTL_MS),
       phase: opts.phase ?? "waiting",
       hostId: opts.hostId ?? "host",
       roomName: opts.roomName ?? "test room",

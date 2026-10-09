@@ -208,6 +208,25 @@ describe("board", () => {
       expect(board.board.tasks.value).toEqual({ a: 2 });
     });
 
+    it("PATCH with if_versions writes nothing when any listed key changed, and lists every conflict", async () => {
+      await put("tasks", { a: 1 });
+      await put("tasks", { a: 2 });
+      await put("notes", "n1");
+      const patch = (ifVersions: Record<string, number>) => roomRequest(fix, `/board?if_versions=${encodeURIComponent(JSON.stringify(ifVersions))}`, {
+        method: "PATCH",
+        headers: { ...participantAuthHeaders(fix, "agent-a"), "content-type": "application/json" },
+        body: JSON.stringify({ tasks: { a: 3 }, notes: "n2", fresh: true }),
+      });
+
+      const stale = await patch({ tasks: 1, notes: 1, fresh: 0 });
+      expect(stale.status).toBe(409);
+      expect((await stale.json() as { conflicts: Array<{ key: string }> }).conflicts.map((c) => c.key)).toEqual(["tasks"]);
+      const unchanged = await getRoomJson<{ board: Record<string, { value: unknown }> }>(fix, "/board", "agent-a");
+      expect([unchanged.board.tasks.value, unchanged.board.notes.value, unchanged.board.fresh]).toEqual([{ a: 2 }, "n1", undefined]);
+
+      expect((await patch({ tasks: 2, notes: 1, fresh: 0 })).status).toBe(200);
+    });
+
     it("if_version=0 creates only when the key does not exist; deletes check versions too", async () => {
       expect((await put("claim", { owner: "agent-a" }, 0)).status).toBe(200);
       expect((await put("claim", { owner: "someone-else" }, 0)).status).toBe(409);

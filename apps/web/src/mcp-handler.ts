@@ -250,6 +250,8 @@ function formatRoomError(text: string): string {
     const error = typeof body.error === "string" ? body.error : undefined;
     const reason = typeof body.reason === "string" ? body.reason : undefined;
     if (error && reason) return `${error}: ${reason}`;
+    // Version conflicts carry what the agent needs to retry: the current value(s) and version(s).
+    if (error && (body.conflicts || body.current)) return `${error}: ${JSON.stringify(body.conflicts ?? { key: body.key, current_version: body.current_version, current: body.current })}`;
     if (error) return error;
   } catch { /* fall through to raw text */ }
   return text;
@@ -931,6 +933,7 @@ const tools: Record<string, ToolDef> = {
       type: "object", properties: {
         inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
         values: { type: "string", description: 'A JSON object string of key -> value, e.g. {"tasks":{...},"blockers":{}}' },
+        ifVersions: { type: "string", description: 'Optional JSON object string of key -> version you read, e.g. {"tasks":3}; if any key changed since, nothing is written and the conflicts are returned' },
       }, required: ["inviteJson", "participantId", "values"],
     },
     handler: async (env, params) => {
@@ -939,7 +942,9 @@ const tools: Record<string, ToolDef> = {
       const values = parseJsonParam(params.values);
       if (!values) throw new Error("values must be a JSON object string");
       await ensureEcdhSession(env, roomUrl, participantId, secret);
-      return doFetch(env, roomUrl, "/board", secret, { method: "PATCH", participantId, body: values });
+      const ifVersions = parseJsonParam(params.ifVersions);
+      const path = ifVersions ? `/board?if_versions=${encodeURIComponent(JSON.stringify(ifVersions))}` : "/board";
+      return doFetch(env, roomUrl, path, secret, { method: "PATCH", participantId, body: values });
     },
   },
 

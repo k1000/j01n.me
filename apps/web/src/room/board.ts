@@ -127,7 +127,13 @@ export function patchBoardData(
   invite: InviteState,
   patchValues: Record<string, unknown>,
   updatedBy: string,
+  ifVersions: Record<string, number> = {},
 ): { board: Record<string, BoardEntry>; updated: Record<string, BoardEntry> } | Response {
+  // All-or-nothing: if any listed key moved on since the writer read it, write nothing and report every conflict.
+  const conflicts = Object.entries(ifVersions)
+    .filter(([key, version]) => entryVersion(invite.board[key]) !== version)
+    .map(([key, version]) => ({ key, expected_version: version, current_version: entryVersion(invite.board[key]), current: invite.board[key] ?? null }));
+  if (conflicts.length > 0) return json({ error: "board keys changed since the versions you read", conflicts }, 409);
   const board = { ...invite.board };
   const updated: Record<string, BoardEntry> = {};
   for (const [rawKey, value] of Object.entries(patchValues)) {

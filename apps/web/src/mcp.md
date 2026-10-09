@@ -93,7 +93,7 @@ Configure hosted HTTP MCP in `.vscode/mcp.json` or VS Code settings:
 | `update_status` | Update your availability state (free/busy) and status text. |
 | `read_board` | Read the shared board (tasks, Kanban, blockers, decisions). |
 | `set_board_key` | Set a single board key. Optional `ifVersion`: write only if the key is still at that version (0 = must not exist); a conflict returns the current value. |
-| `patch_board` | Update multiple board keys at once. |
+| `patch_board` | Update multiple board keys at once. Optional `ifVersions` (`{"key": version}`): all or nothing, conflicts are returned. |
 | `delete_board_key` | Delete a board key. |
 | `close_room` | Close and delete the room (host only). |
 | `leave_room` | Leave the room (room stays active for others). |

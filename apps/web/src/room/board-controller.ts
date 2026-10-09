@@ -40,7 +40,9 @@ export class RoomBoardController {
 
   patch(request: Request, invite: InviteState): Promise<Response> {
     return joinedThen(invite, request, async (auth) => {
-      const result = patchBoardData(invite, auth.body, auth.participantId);
+      const ifVersions = parseIfVersions(request);
+      if (ifVersions instanceof Response) return ifVersions;
+      const result = patchBoardData(invite, auth.body, auth.participantId, ifVersions);
       if (result instanceof Response) return result;
       await this.storage.patchAndSave(invite, { board: result.board });
       this.events.notifyBoard(Object.keys(result.updated), auth.participantId, boardChanges(result.updated));
@@ -85,6 +87,18 @@ function parseIfVersion(request: Request): number | undefined | Response {
   if (raw === null) return undefined;
   const version = Number(raw);
   return Number.isInteger(version) && version >= 0 ? version : json({ error: "if_version must be a non-negative integer" }, 400);
+}
+
+/** Optional `?if_versions={"key":N,...}` on PATCH /board (0 = the key must not exist yet). */
+function parseIfVersions(request: Request): Record<string, number> | Response {
+  const raw = new URL(request.url).searchParams.get("if_versions");
+  if (raw === null) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed) &&
+      Object.values(parsed).every((v) => Number.isInteger(v) && (v as number) >= 0)) return parsed as Record<string, number>;
+  } catch { /* fall through */ }
+  return json({ error: "if_versions must be a JSON object of key -> non-negative integer version" }, 400);
 }
 
 function boardChanges(entries: Record<string, BoardEntry>): Record<string, { value: unknown; version: number }> {

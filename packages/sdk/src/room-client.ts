@@ -127,7 +127,8 @@ export interface RoomClient {
   board(): Promise<BoardResponse>;
   /** ifVersion: only write if the key is still at this version (0 = must not exist); otherwise RoomApiError 409 with the current value. */
   setBoardKey(key: string, value: unknown, options?: { ifVersion?: number }): Promise<{ ok: true; key: string; entry: BoardResponse["board"][string] }>;
-  patchBoard(values: Record<string, unknown>): Promise<{ ok: true; updated: Record<string, BoardResponse["board"][string]>; board: BoardResponse["board"] }>;
+  /** ifVersions: only write if each listed key is still at that version; otherwise RoomApiError 409 listing conflicts. */
+  patchBoard(values: Record<string, unknown>, options?: { ifVersions?: Record<string, number> }): Promise<{ ok: true; updated: Record<string, BoardResponse["board"][string]>; board: BoardResponse["board"] }>;
   deleteBoardKey(key: string, options?: { ifVersion?: number }): Promise<{ ok: true; deleted: string }>;
   status(): Promise<RoomStatusResponse>;
   leave(): Promise<void>;
@@ -256,9 +257,10 @@ export async function buildRoomClient(
         { method: "PUT", participantId, body: value },
       );
     },
-    async patchBoard(values: Record<string, unknown>) {
+    async patchBoard(values: Record<string, unknown>, options = {}) {
+      const url = options.ifVersions ? `${invite.api.board}?if_versions=${encodeURIComponent(JSON.stringify(options.ifVersions))}` : invite.api.board;
       return request<{ ok: true; updated: Record<string, BoardResponse["board"][string]>; board: BoardResponse["board"] }>(
-        invite.api.board, invite, { method: "PATCH", participantId, body: values },
+        url, invite, { method: "PATCH", participantId, body: values },
       );
     },
     async deleteBoardKey(key: string, options = {}) {

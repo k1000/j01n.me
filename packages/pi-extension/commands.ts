@@ -293,9 +293,9 @@ async function handleBoardSet(parsed: ParsedArgs): Promise<string> {
 
 async function handleBoardPatch(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
-  const [valueJson] = parsed.rest;
-  if (!valueJson) throw new Error("board_patch needs: <json_values>");
-  const result = await client.patchBoard(JSON.parse(valueJson));
+  const [valueJson, ifVersionsJson] = parsed.rest;
+  if (!valueJson) throw new Error("board_patch needs: <json_values> [if_versions_json]");
+  const result = await client.patchBoard(JSON.parse(valueJson), { ifVersions: ifVersionsJson ? JSON.parse(ifVersionsJson) : undefined });
   return JSON.stringify(result, null, 2);
 }
 

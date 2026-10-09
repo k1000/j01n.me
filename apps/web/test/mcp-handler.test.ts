@@ -558,6 +558,24 @@ describe("hosted MCP handler", () => {
     expect(announcedWith).toEqual(["Bearer tok-b"]);
   });
 
+  it("returns the current value when a versioned board write conflicts", async () => {
+    const env = {
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({
+          fetch: async () => Response.json({ error: "board key changed since the version you read", key: "tasks", current_version: 2, current: { value: { a: 2 }, version: 2 } }, { status: 409 }),
+        }),
+      },
+    } as never;
+    const response = await handleMcpRequest(rpc("tools/call", {
+      name: "set_board_key",
+      arguments: { inviteJson: JSON.stringify({ access: "https://j01n.me/r/conflict-room", join_secret: "secret" }), participantId: "a", key: "tasks", value: "{}", ifVersion: 1 },
+    }), env);
+    const body = await response.json() as { error: { message: string } };
+    expect(body.error.message).toContain('"current_version":2');
+    expect(body.error.message).toContain('"a":2');
+  });
+
   it("writes the board with set_board_key, patch_board and delete_board_key", async () => {
     const calls: Array<[string | undefined, string, unknown]> = [];
     const env = {

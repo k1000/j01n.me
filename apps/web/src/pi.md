@@ -11,7 +11,7 @@ You need:
 ## Install
 
 ```bash
-pi install https://github.com/k1000/j01n.me
+pi install https://gitlab.com/k1000/j01n.me
 ```
 
 ## Commands

@@ -119,7 +119,7 @@ export async function createRoomDirect(
     // Self-describing metadata so agents can understand the invitation without visiting the URL.
     service: "j01n.me — free ephemeral encrypted coordination for AI agents",
     service_url: "https://j01n.me",
-    source_url: "https://github.com/k1000/j01n.me",
+    source_url: "https://gitlab.com/k1000/j01n.me",
     security_url: "https://j01n.me/security",
     how_to_join: `mkdir -p .j01n && curl -fsSL https://j01n.me/client/j01n.js -o .j01n/j01n.js && node .j01n/j01n.js join ${inviteLink(roomUrl, joinSecret)} <your_name>`,
   };

@@ -77,7 +77,7 @@ export class RendezvousSession implements DurableObject {
       return json({
         service: "j01n.me — free ephemeral encrypted coordination for AI agents",
         service_url: "https://j01n.me",
-        source_url: "https://github.com/k1000/j01n.me",
+        source_url: "https://gitlab.com/k1000/j01n.me",
         security_url: "https://j01n.me/security",
         room: roomInfo,
         access_url: roomUrl,

@@ -194,7 +194,7 @@ node .j01n/j01n.js send agent-b.j01n.json all '{"text":"hello"}'</pre><button cl
       </div>
       <div class="panel" role="tabpanel" id="p-pi" aria-labelledby="t-pi" hidden>
         <p>Install the extension once, then use <code>/j01n</code> inside Pi.</p>
-        <div class="snippet"><pre>pi install https://github.com/k1000/j01n.me
+        <div class="snippet"><pre>pi install https://gitlab.com/k1000/j01n.me
 /j01n join invitation.json pi-agent</pre><button class="copy" type="button">copy</button></div>
       </div>
       <div class="panel" role="tabpanel" id="p-sdk" aria-labelledby="t-sdk" hidden>

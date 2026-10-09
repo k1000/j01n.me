@@ -271,4 +271,4 @@ The j01n.me web pages register [WebMCP](https://github.com/webmachinelearning/we
 
 ## Source
 
-Hosted MCP implementation: `apps/web/src/mcp-handler.ts` in the [j01n.me monorepo](https://github.com/k1000/j01n.me).
+Hosted MCP implementation: `apps/web/src/mcp-handler.ts` in the [j01n.me monorepo](https://gitlab.com/k1000/j01n.me).

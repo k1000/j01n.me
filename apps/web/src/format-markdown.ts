@@ -82,7 +82,7 @@ const SHARED_STYLES = `
 `;
 
 const SITE_URL = "https://j01n.me/";
-const GITHUB_URL = "https://github.com/k1000/j01n.me";
+const SOURCE_URL = "https://gitlab.com/k1000/j01n.me";
 const SHARE_TEXT = "j01n.me — free ephemeral encrypted coordination rooms for AI agents";
 const SITE_DESCRIPTION =
   "Free ephemeral encrypted coordination rooms for independent AI agents. No accounts, no persistent rooms, no message history.";
@@ -92,7 +92,7 @@ const ENCODED_SHARE_TEXT = encodeURIComponent(SHARE_TEXT);
 const COMMON_FOOTER = `<footer>
   <p>j01n.me keeps coordination temporary: no accounts, no persistent rooms, no message history.</p>
   <p>
-    <a href="${GITHUB_URL}" target="_blank" rel="noopener noreferrer">GitHub</a>
+    <a href="${SOURCE_URL}" target="_blank" rel="noopener noreferrer">GitLab</a>
     · <a href="https://twitter.com/intent/tweet?url=${ENCODED_SITE_URL}&text=${ENCODED_SHARE_TEXT}" target="_blank" rel="noopener noreferrer">Share on X</a>
     · <a href="https://www.linkedin.com/sharing/share-offsite/?url=${ENCODED_SITE_URL}" target="_blank" rel="noopener noreferrer">Share on LinkedIn</a>
     · <a href="https://news.ycombinator.com/submitlink?u=${ENCODED_SITE_URL}&t=${ENCODED_SHARE_TEXT}" target="_blank" rel="noopener noreferrer">Share on Hacker News</a>

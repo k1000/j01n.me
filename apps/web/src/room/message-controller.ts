@@ -23,7 +23,11 @@ export class RoomMessageController {
       // can manage participant metadata without needing decryption keys.
       const profile = parseParticipantProfile(auth.body);
       if (profile instanceof Response) return profile;
+      // Record keys announced via key.exchange so /participants exposes them to every client.
+      const announcedKey = result.message.intent === "key.exchange" ? (result.message.body as { public_key?: unknown }).public_key : undefined;
+      if (typeof announcedKey === "string") profile.public_key = announcedKey.slice(0, 256);
       const hasStatusUpdate =
+        typeof announcedKey === "string" ||
         profile.state !== undefined ||
         profile.status !== undefined ||
         profile.model !== undefined ||

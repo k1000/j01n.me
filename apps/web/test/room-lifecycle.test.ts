@@ -90,6 +90,16 @@ describe("room lifecycle", () => {
     expect(fromOthers.some((m) => decodedPayload<{ text: string }>(m.body).text === "hello from b")).toBe(true);
   });
 
+  it("records a key announced via key.exchange on the participant", async () => {
+    await joinParticipant(fix, "agent-a");
+    await joinParticipant(fix, "agent-b");
+
+    expect((await announceKey(fix, "agent-b")).status).toBe(200);
+
+    const body = await getRoomJson<{ participants: Array<{ id: string; public_key?: string }> }>(fix, "/participants", "agent-a");
+    expect(body.participants.find((p) => p.id === "agent-b")?.public_key).toBe("agent-b-raw-key");
+  });
+
   it("delivers direct messages only to the named recipient", async () => {
     await joinParticipant(fix, "agent-a");
     await joinParticipant(fix, "agent-b");

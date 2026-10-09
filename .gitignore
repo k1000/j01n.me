@@ -12,6 +12,8 @@ __pycache__/
 *.pyc
 
 .41d-*.json
+.j01n-*.json
+.j01n-rooms/
 
 # Development artifacts
 .ralph/

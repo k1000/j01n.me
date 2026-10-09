@@ -1,10 +1,13 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { buildMinimalInvite, createRoom, joinRoom, normalizeInvite, parseInviteLink, resumeRoom, RoomApiError } from "@j01n/sdk";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
 
 const sessions = new Map<string, RoomClient>();
+const ACTIVE_ROOMS_DIR = ".j01n-rooms";
 
 async function getClient(parsed: ParsedArgs): Promise<RoomClient> {
   if (!parsed.me) throw new Error("needs: participant_id. Use join first to create a session.");
@@ -21,6 +24,75 @@ interface SavedSession {
   publicJwk?: JsonWebKey;
   peers?: Record<string, string>;
   participantToken?: string;
+  roomUrl?: string;
+}
+
+interface ActiveRoom {
+  room_url: string;
+  participant_id: string;
+}
+
+function roomStatePath(roomUrl: string, participantId: string): string {
+  const id = createHash("sha256").update(`${roomUrl}\0${participantId}`).digest("hex");
+  return join(ACTIVE_ROOMS_DIR, `${id}.json`);
+}
+
+function activeRooms(): ActiveRoom[] {
+  if (!existsSync(ACTIVE_ROOMS_DIR)) return [];
+  return readdirSync(ACTIVE_ROOMS_DIR)
+    .filter((name) => /^[0-9a-f]{64}\.json$/.test(name))
+    .map((name) => {
+      const room: ActiveRoom = JSON.parse(readFileSync(join(ACTIVE_ROOMS_DIR, name), "utf8"));
+      if (!room || typeof room.room_url !== "string" || typeof room.participant_id !== "string" ||
+        roomStatePath(room.room_url, room.participant_id) !== join(ACTIVE_ROOMS_DIR, name)) {
+        throw new Error("Invalid active-room file; use an explicit invitation to rejoin");
+      }
+      return room;
+    });
+}
+
+function rememberRoom(invite: Invite, participantId: string): void {
+  mkdirSync(ACTIVE_ROOMS_DIR, { recursive: true, mode: 0o700 });
+  const target = roomStatePath(invite.room_url, participantId);
+  const temporary = `${target}.${process.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify({ room_url: invite.room_url, participant_id: participantId }), { mode: 0o600 });
+  renameSync(temporary, target);
+}
+
+function forgetRoom(invite: Invite, participantId: string): void {
+  rmSync(roomStatePath(invite.room_url, participantId), { force: true });
+}
+
+function activeCommand(cmd: string, rest: string[]): ParsedArgs {
+  const rooms = activeRooms();
+  if (!rooms.length) throw new Error("no active room; join with an invitation first (from this directory)");
+  if (rooms.length > 1) throw new Error("multiple rooms are active; specify the invitation and participant_id");
+  const room = rooms[0];
+  const file = keyFilePath(room.room_url, room.participant_id);
+  const saved: SavedSession = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  if (!saved.participantToken || saved.roomUrl !== room.room_url) {
+    throw new Error("saved session is missing or belongs to another room; rejoin with an invitation");
+  }
+  return { cmd, roomUrlOrInvite: room.room_url, joinSecret: "resume-only", me: room.participant_id, rest };
+}
+
+function hasExplicitInvite(ref: string): boolean {
+  return /^https?:/.test(ref) || ref.startsWith("{") || ref.endsWith(".json") || existsSync(ref);
+}
+
+const ACTIVE_COMMANDS = new Set([
+  "send", "wait", "read", "inbox", "doctor", "board", "board_set", "board_patch", "board_delete",
+  "status", "webhook", "participants", "room_status", "transition", "leave", "close",
+]);
+
+function parseCommand(args: string[]): ParsedArgs {
+  const cmd = args[0];
+  if (!ACTIVE_COMMANDS.has(cmd) || (args[1] && hasExplicitInvite(args[1]))) return parseArgs(args);
+  if (process.env.ROOM_URL && process.env.JOIN_SECRET && process.env.ME) {
+    return { cmd, roomUrlOrInvite: process.env.ROOM_URL, joinSecret: process.env.JOIN_SECRET,
+      me: process.env.ME, rest: args.slice(1) };
+  }
+  return activeCommand(cmd, args.slice(1));
 }
 
 /**
@@ -28,12 +100,13 @@ interface SavedSession {
  * participant token and ECDH keypair saved in the key file.
  */
 async function openSession(invite: Invite, me: string): Promise<RoomClient> {
-  const cacheKey = `${invite.room_id}:${me}`;
+  const cacheKey = `${invite.room_url}:${me}`;
   const cached = sessions.get(cacheKey);
   if (cached) return cached;
 
   const file = keyFilePath(invite.room_url, me);
   const saved: SavedSession = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  if (saved.roomUrl && saved.roomUrl !== invite.room_url) throw new Error("saved key belongs to another room URL");
   const crypto = await createSdkCryptoSession(me, saved.privateJwk, saved.publicJwk);
   const token = invite.participant_token ?? saved.participantToken;
 
@@ -50,7 +123,7 @@ async function openSession(invite: Invite, me: string): Promise<RoomClient> {
       throw err;
     }
   }
-  writeFileSync(file, JSON.stringify({ ...saved, ...(await crypto.exportKeyPair()), participantToken: client.invite.participant_token }, null, 2));
+  writeFileSync(file, JSON.stringify({ ...saved, ...(await crypto.exportKeyPair()), participantToken: client.invite.participant_token, roomUrl: invite.room_url }, null, 2), { mode: 0o600 });
   sessions.set(cacheKey, client);
   return client;
 }
@@ -105,30 +178,11 @@ function createBaseUrl(parsed: ParsedArgs): string {
   return (parsed.roomUrlOrInvite || process.env.BASE_URL || "https://j01n.me").replace(/\/$/, "");
 }
 
-const CURRENT_ROOM_FILE = ".j01n-current.json";
-
-interface CurrentRoom { access: string; participant_id: string; participant_token?: string; join_secret?: string }
-
-/** With no room given (send claude-code hi, wait, read), use the room joined last in this directory. */
-function withCurrentRoom(parsed: ParsedArgs): ParsedArgs {
-  const ref = parsed.roomUrlOrInvite;
-  const hasRoom = !!parsed.joinSecret || (!!ref && (ref.trim().startsWith("{") || /^https?:/.test(ref) || existsSync(ref)));
-  if (hasRoom || parsed.cmd === "create" || !existsSync(CURRENT_ROOM_FILE)) return parsed;
-  const current = JSON.parse(readFileSync(CURRENT_ROOM_FILE, "utf8")) as CurrentRoom;
-  return {
-    ...parsed,
-    roomUrlOrInvite: JSON.stringify({ access: current.access, join_secret: current.join_secret ?? current.participant_token, participant_token: current.participant_token }),
-    me: current.participant_id,
-    rest: [ref, parsed.me, ...parsed.rest].filter((value): value is string => value !== undefined),
-  };
-}
-
 async function handleJoin(parsed: ParsedArgs): Promise<string> {
   if (!parsed.me) throw new Error("join needs: participant_id");
   const invite = resolveInvite(parsed);
   const client = await openSession(invite, parsed.me);
-  const current: CurrentRoom = { access: invite.room_url, participant_id: parsed.me, participant_token: client.invite.participant_token, join_secret: invite.join_secret };
-  writeFileSync(CURRENT_ROOM_FILE, JSON.stringify(current, null, 2));
+  rememberRoom(invite, parsed.me);
   return JSON.stringify({
     ok: true,
     participant_id: parsed.me,
@@ -262,14 +316,16 @@ async function handleWebhook(parsed: ParsedArgs): Promise<string> {
 async function handleLeave(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
   await client.leave();
-  sessions.delete(client.participantId);
+  sessions.delete(`${client.invite.room_url}:${client.participantId}`);
+  forgetRoom(client.invite, client.participantId);
   return JSON.stringify({ ok: true, left: true });
 }
 
 async function handleClose(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
   const result = await client.close();
-  sessions.delete(client.participantId);
+  sessions.delete(`${client.invite.room_url}:${client.participantId}`);
+  forgetRoom(client.invite, client.participantId);
   return JSON.stringify(result, null, 2);
 }
 
@@ -315,7 +371,7 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
 };
 
 export async function runj01n(args: string[]): Promise<string> {
-  const parsed = withCurrentRoom(parseArgs(args));
+  const parsed = parseCommand(args);
   const handler = COMMANDS[parsed.cmd];
   if (!handler) throw new Error(`unknown command: ${parsed.cmd}. Usage: create|join|send|read|inbox|doctor`);
   return handler(parsed);

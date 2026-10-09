@@ -183,12 +183,21 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
   const invite = resolveInvite(parsed);
   const client = await openSession(invite, parsed.me);
   rememberRoom(invite, parsed.me);
+  let kickoff: unknown = null;
+  let kickoffError: string | undefined;
+  try {
+    kickoff = (await client.board()).board.kickoff?.value ?? null;
+  } catch {
+    kickoffError = "Could not load kickoff; use /j01n board to retry";
+  }
   return JSON.stringify({
     ok: true,
     participant_id: parsed.me,
     room_id: invite.room_id,
     room_url: invite.room_url,
     cursor: client.cursor,
+    kickoff,
+    ...(kickoffError ? { kickoff_error: kickoffError } : {}),
   }, null, 2);
 }
 

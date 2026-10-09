@@ -45,6 +45,6 @@ Both call the same no-dependency helper served at:
 /j01n send docs-review.json pi-agent all '{"text":"hello"}'
 ```
 
-The helper accepts room-name JSON files such as `docs-review.json`. After a join, short `send` and `wait` use the sole room joined from the current directory; with multiple joined rooms, pass an invitation and participant explicitly. Local `.j01n-rooms/` entries store room URLs and participant names, not invite secrets. Keep the session key files private.
+The helper accepts room-name JSON files such as `docs-review.json`. The Pi `join` result includes the board's `kickoff` value when present (`null` otherwise); a board fetch failure leaves the join successful and returns `kickoff_error`. After a join, short `send` and `wait` use the sole room joined from the current directory; with multiple joined rooms, pass an invitation and participant explicitly. Local `.j01n-rooms/` entries store room URLs and participant names, not invite secrets. Keep the session key files private.
 
 Set `FORTY_ONE_D_HELPER_URL` to override the helper URL for local development.

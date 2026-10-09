@@ -3,6 +3,15 @@ import type { InviteState, Participant } from "../types";
 import { normalizeState, normalizeStatus, normalizeModel, normalizeSkills } from "../validation";
 import { hashJoinSecret, randomBase64Url } from "@j01n/sdk/crypto";
 
+/** Participant as shown to others: drops the token verifier hash used only for auth. */
+export function publicParticipant(participant: Participant): Omit<Participant, "tokenHash">;
+export function publicParticipant(participant: Participant | undefined): Omit<Participant, "tokenHash"> | undefined;
+export function publicParticipant(participant: Participant | undefined) {
+  if (!participant) return participant;
+  const { tokenHash: _tokenHash, ...rest } = participant;
+  return rest;
+}
+
 interface ParticipantProfile {
   state?: "free" | "busy";
   status?: string;

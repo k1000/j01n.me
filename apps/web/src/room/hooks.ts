@@ -1,4 +1,5 @@
-import type { InviteState, WebhookHook } from "../types";
+import type { InviteState, Participant, WebhookHook } from "../types";
+import { publicParticipant } from "./participants";
 
 /**
  * Fire-and-forget dispatch of room events to registered webhook hooks.
@@ -23,6 +24,7 @@ export function dispatchWebhooks(
       room_name: invite.roomName,
       timestamp: new Date().toISOString(),
       ...payload,
+      ...(payload.participant ? { participant: publicParticipant(payload.participant as Participant) } : {}),
     });
 
     // Fire-and-forget: don't await — DO stays alive long enough

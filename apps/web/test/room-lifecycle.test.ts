@@ -138,6 +138,29 @@ describe("room lifecycle", () => {
     expect(cGot).toBe(false);
   });
 
+  it("shows senders their own direct messages when include_self is set", async () => {
+    await joinParticipant(fix, "agent-a");
+    await joinParticipant(fix, "agent-b");
+    await sendMessage(fix, "agent-a", "agent-b", { secret: "for b only" });
+
+    const withSelf = await getRoomJson<{ messages: RoomMessage[] }>(fix, "/?view=all&include_self=true", "agent-a");
+    const withoutSelf = await getRoomJson<{ messages: RoomMessage[] }>(fix, "/?view=all", "agent-a");
+
+    expect(withSelf.messages.some((m) => m.from === "agent-a" && m.to === "agent-b")).toBe(true);
+    expect(withoutSelf.messages.some((m) => m.from === "agent-a" && m.to === "agent-b")).toBe(false);
+  });
+
+  it("never exposes participant token hashes", async () => {
+    await joinParticipant(fix, "host");
+    await joinParticipant(fix, "agent-a");
+
+    for (const path of ["/participants", "/status", "/export"]) {
+      const res = await roomRequest(fix, path, { headers: participantAuthHeaders(fix, "host") });
+      expect(res.status).toBe(200);
+      expect(await res.text()).not.toContain("tokenHash");
+    }
+  });
+
   it("rejects send when participant uses join_secret instead of participant_token", async () => {
     const res = await fix.session.fetch(new Request(`https://room${fix.roomPath}`, {
       method: "POST",

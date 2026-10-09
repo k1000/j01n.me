@@ -4,7 +4,7 @@ import { joinedThen } from "./auth-context";
 import type { RoomEventBus } from "./events";
 import { dispatchWebhooks } from "./hooks";
 import { buildReadResponse, createSentMessage, isReadableMessage, parseReadOptions } from "./messages";
-import { parseParticipantProfile, withReadReceipt, withUpdatedParticipant } from "./participants";
+import { parseParticipantProfile, publicParticipant, withReadReceipt, withUpdatedParticipant } from "./participants";
 import type { RoomStorage } from "./storage";
 
 export class RoomMessageController {
@@ -49,7 +49,7 @@ export class RoomMessageController {
       dispatchWebhooks(updatedInvite, "message", { type: "message", message: result.message, last_seq: result.seq });
 
       const response: Record<string, unknown> = { ok: true, id: result.message.id, seq: result.seq };
-      if (updatedParticipant) response.participant = updatedParticipant;
+      if (updatedParticipant) response.participant = publicParticipant(updatedParticipant);
       return json(response);
     });
   }

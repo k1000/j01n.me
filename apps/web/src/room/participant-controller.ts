@@ -10,6 +10,7 @@ import {
   generateParticipantToken,
   isParticipantJoined,
   parseParticipantProfile,
+  publicParticipant,
   validateParticipantCanJoin,
   withKickedParticipant,
   withLeftParticipant,
@@ -87,7 +88,7 @@ export class RoomParticipantController {
       await this.storage.putInvite(updated);
       this.events.notifyParticipant(targetId, "updated", updated.participants[targetId]);
       dispatchWebhooks(updated, "participant", { participant_id: targetId, action: "updated", participant: updated.participants[targetId] });
-      return json({ ok: true, participant: updated.participants[targetId] });
+      return json({ ok: true, participant: publicParticipant(updated.participants[targetId]) });
     });
   }
 

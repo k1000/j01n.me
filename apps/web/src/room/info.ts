@@ -1,5 +1,5 @@
 import type { InviteState, RoomStateConfig } from "../types";
-import { activeParticipants } from "./participants";
+import { activeParticipants, publicParticipant } from "./participants";
 
 export function roomInfo(invite: InviteState) {
   return {
@@ -48,7 +48,7 @@ export function roomStatus(invite: InviteState) {
   return {
     room: roomInfo(invite),
     phase: invite.phase,
-    participants: activeParticipants(invite.participants),
+    participants: activeParticipants(invite.participants).map((p) => publicParticipant(p)),
     message_count: invite.messages.length,
     last_seq: invite.nextSeq,
     oldest_seq: invite.messages[0]?.seq ?? 0,
@@ -61,7 +61,7 @@ export function roomExport(invite: InviteState) {
   return {
     room: roomInfo(invite),
     phase: invite.phase,
-    participants: invite.participants,
+    participants: Object.fromEntries(Object.entries(invite.participants).map(([id, p]) => [id, publicParticipant(p)])),
     messages: invite.messages,
     board: invite.board,
     board_schema: invite.boardSchema ?? null,

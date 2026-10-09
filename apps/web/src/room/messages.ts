@@ -80,7 +80,7 @@ export function isReadableMessage(message: RoomMessage, participantId: string, o
 }
 
 export function visibleTo(message: RoomMessage, participantId: string): boolean {
-  if (message.to === "all") return true;
+  if (message.to === "all" || message.from === participantId) return true;
   if (Array.isArray(message.to)) return message.to.includes(participantId);
   return message.to === participantId;
 }

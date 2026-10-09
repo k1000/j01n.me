@@ -56,9 +56,13 @@ describe("visibleTo", () => {
   });
 
   it("returns true for direct message to the participant", () => {
-    const msg = makeMessage({ to: "bob" });
+    const msg = makeMessage({ from: "carol", to: "bob" });
     expect(visibleTo(msg, "bob")).toBe(true);
     expect(visibleTo(msg, "alice")).toBe(false);
+  });
+
+  it("returns true for the sender of a direct message", () => {
+    expect(visibleTo(makeMessage({ from: "alice", to: "bob" }), "alice")).toBe(true);
   });
 
   it("returns true when participant is in multi-recipient list", () => {

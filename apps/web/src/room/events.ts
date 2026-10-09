@@ -1,5 +1,6 @@
-import type { RoomMessage } from "../types";
+import type { Participant, RoomMessage } from "../types";
 import { visibleTo } from "./messages";
+import { publicParticipant } from "./participants";
 
 const ENCODER = new TextEncoder();
 
@@ -17,7 +18,7 @@ export interface RoomEventBus {
   subscribe(participantId: string, includeSelf: boolean, lastSeq: number, includeAll?: boolean): Response;
   notifyMessage(message: RoomMessage, lastSeq: number): void;
   notifyBoard(keys: string | string[], updatedBy: string): void;
-  notifyParticipant(participantId: string, action: string, participant?: unknown): void;
+  notifyParticipant(participantId: string, action: string, participant?: Participant): void;
 }
 
 export class RoomEvents implements RoomEventBus {
@@ -73,10 +74,10 @@ export class RoomEvents implements RoomEventBus {
     }
   }
 
-  notifyParticipant(participantId: string, action: string, participant?: unknown): void {
+  notifyParticipant(participantId: string, action: string, participant?: Participant): void {
     this.maybeSweep();
     for (const [id, subscriber] of this.subscribers) {
-      this.enqueueOrDelete(id, subscriber.controller, "participant", { participant_id: participantId, action, participant });
+      this.enqueueOrDelete(id, subscriber.controller, "participant", { participant_id: participantId, action, participant: publicParticipant(participant) });
     }
   }
 

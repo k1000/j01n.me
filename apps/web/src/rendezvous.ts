@@ -8,7 +8,7 @@ import type { RoomEventBus } from "./room/events";
 import { roomExport, roomInfo, roomStatus, roomTransitionInfo } from "./room/info";
 import { RoomInitController } from "./room/init-controller";
 import { RoomMessageController } from "./room/message-controller";
-import { activeParticipants } from "./room/participants";
+import { activeParticipants, publicParticipant } from "./room/participants";
 import { RoomParticipantController } from "./room/participant-controller";
 import { createHook, deleteHook } from "./room/hooks";
 import { routeRoomRequest } from "./room/router";
@@ -312,7 +312,7 @@ export class RendezvousSession implements DurableObject {
     return tokenAuthThen(invite, request, async () => {
       return json({
         room: roomInfo(invite),
-        participants: activeParticipants(invite.participants),
+        participants: activeParticipants(invite.participants).map((p) => publicParticipant(p)),
       });
     });
   }

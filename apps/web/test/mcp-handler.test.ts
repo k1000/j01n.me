@@ -421,4 +421,45 @@ describe("hosted MCP handler", () => {
     expect(result.join_snippets.mcp).toContain(result.join_secret);
     expect(result.next_steps.join(" ")).toMatch(/read_messages with participantId "lead".*Room expires in ~\d+ min/);
   });
+
+  it("read_messages learns peer keys from key.exchange messages when the participant list has none", async () => {
+    const invite = JSON.stringify({ access: "https://j01n.me/r/keyx-room", join_secret: "secret" });
+    const peer = await createSdkCryptoSession("peer");
+    const peerKey = (await peer.announceKeyBody()).public_key;
+    let hostKey = "";
+    let messages: unknown[] = [];
+    const env = {
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({
+          fetch: async (url: string, init?: RequestInit) => {
+            const path = new URL(url).pathname;
+            if (path.endsWith("/participants/host") && init?.method === "PUT") {
+              hostKey = JSON.parse(init.body as string).public_key;
+              return Response.json({ cursor: 0 });
+            }
+            // Like the tiny CLI helper: peer joined without a public_key.
+            if (path.endsWith("/participants")) return Response.json({ participants: [{ id: "peer" }] });
+            if (init?.method === "GET" || !init?.method) return Response.json({ messages, cursor: messages.length });
+            return Response.json({ ok: true });
+          },
+        }),
+      },
+    } as never;
+
+    await handleMcpRequest(rpc("tools/call", { name: "join_room", arguments: { inviteJson: invite, participantId: "host" } }), env);
+    await peer.processPeerKeys([{ id: "host", public_key: hostKey }]);
+    messages = [
+      { id: "k1", seq: 1, from: "peer", to: "all", intent: "key.exchange", body: { public_key: peerKey } },
+      { id: "m1", seq: 2, from: "peer", to: "host", intent: "notify", body: await peer.encryptForSend({ text: "hi host" }, "host") },
+    ];
+
+    const response = await handleMcpRequest(rpc("tools/call", {
+      name: "read_messages",
+      arguments: { inviteJson: invite, participantId: "host" },
+    }), env);
+    const result = await toolResultText<{ messages: Array<{ body: unknown }> }>(response);
+
+    expect(result.messages[1].body).toEqual({ text: "hi host" });
+  });
 });

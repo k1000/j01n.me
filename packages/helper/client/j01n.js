@@ -247,7 +247,7 @@ function doctorReport(state, joinedResult, messages, stats) {
  */
 const COMMANDS = {
   async join(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
-    const r = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PUT', headers: { authorization: 'Bearer ' + joinSecret, 'content-type': 'application/json' }, body: JSON.stringify({ state: 'free', status: 'joined with encrypted tiny client' }) });
+    const r = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PUT', headers: { authorization: 'Bearer ' + joinSecret, 'content-type': 'application/json' }, body: JSON.stringify({ public_key: await exportPublic(state.keyPair.publicKey), state: 'free', status: 'joined with encrypted tiny client' }) });
     if (!r.ok && r.status !== 409) die(formatErrorBody(r.body));
     if (r.body.participant_token) {
       state.participantToken = r.body.participant_token;

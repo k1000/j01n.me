@@ -788,6 +788,8 @@ const tools: Record<string, ToolDef> = {
       const path = params.all ? "/?view=all&include_self=true" : "/?include_self=true";
       const result = await doFetch(env, roomUrl, path, secret, { participantId }) as { messages?: RoomMessage[]; cursor?: number };
       const messages = result.messages ?? [];
+      // Peers that join without a public_key announce it only via key.exchange messages.
+      await crypto.processKeyExchange(messages);
 
       // Use SDK's proven decryption
       const decrypted = await Promise.all(messages.map(async (msg) => {

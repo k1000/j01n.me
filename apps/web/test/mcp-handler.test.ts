@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { handleMcpRequest } from "../src/mcp-handler";
 import { RoomEvents } from "../src/room/events";
+import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 
 function rpc(method: string, params?: Record<string, unknown>, sessionId?: string): Request {
   const headers: Record<string, string> = { "content-type": "application/json" };
@@ -357,5 +358,67 @@ describe("hosted MCP handler", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: { code: -32603, message: expect.stringContaining("/events failed: 403") },
     });
+  });
+
+  it("read_messages decrypts a peer message after fetching peer keys as the reader", async () => {
+    const invite = JSON.stringify({ access: "https://j01n.me/r/decrypt-room", join_secret: "secret" });
+    const peer = await createSdkCryptoSession("peer");
+    const peerKey = (await peer.announceKeyBody()).public_key;
+    let hostKey = "";
+    let messages: unknown[] = [];
+    const env = {
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({
+          fetch: async (url: string, init?: RequestInit) => {
+            const path = new URL(url).pathname;
+            if (path.endsWith("/participants/host") && init?.method === "PUT") {
+              hostKey = JSON.parse(init.body as string).public_key;
+              return Response.json({ cursor: 0 });
+            }
+            if (path.endsWith("/participants")) {
+              // Mirrors the server: room secret alone is not enough to list participants.
+              if (!new Headers(init?.headers).get("x-participant-id")) return Response.json({ error: "participant token is required" }, { status: 403 });
+              return Response.json({ participants: [{ id: "peer", public_key: peerKey }] });
+            }
+            if (init?.method === "GET" || !init?.method) return Response.json({ messages, cursor: messages.length });
+            return Response.json({ ok: true });
+          },
+        }),
+      },
+    } as never;
+
+    await handleMcpRequest(rpc("tools/call", { name: "join_room", arguments: { inviteJson: invite, participantId: "host" } }), env);
+    await peer.processPeerKeys([{ id: "host", public_key: hostKey }]);
+    messages = [{ id: "m1", seq: 1, from: "peer", to: "host", intent: "notify", body: await peer.encryptForSend({ text: "hi host" }, "host") }];
+
+    const response = await handleMcpRequest(rpc("tools/call", {
+      name: "read_messages",
+      arguments: { inviteJson: invite, participantId: "host" },
+    }), env);
+    const result = await toolResultText<{ messages: Array<{ body: unknown }> }>(response);
+
+    expect(result.messages[0].body).toEqual({ text: "hi host" });
+  });
+
+  it("create_room returns ready-to-paste join snippets and next steps", async () => {
+    const env = {
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({ fetch: async () => Response.json({ cursor: 0 }) }),
+      },
+    } as never;
+
+    const response = await handleMcpRequest(rpc("tools/call", { name: "create_room", arguments: { hostId: "lead" } }), env);
+    const result = await toolResultText<{
+      access: string; join_secret: string;
+      join_snippets: { mcp: string; pi: string; cli: string };
+      next_steps: string[];
+    }>(response);
+
+    expect(result.join_snippets.pi).toBe(`/j01n join ${result.access} ${result.join_secret} <your_name>`);
+    expect(result.join_snippets.cli).toContain(`join ${result.access} ${result.join_secret}`);
+    expect(result.join_snippets.mcp).toContain(result.join_secret);
+    expect(result.next_steps.join(" ")).toMatch(/read_messages with participantId "lead".*Room expires in ~\d+ min/);
   });
 });

@@ -271,7 +271,7 @@ async function refreshPeerKeys(
   crypto: SdkCryptoSession,
 ): Promise<void> {
   try {
-    const result = await doFetch(env, roomUrl, "/participants", secret) as Record<string, unknown>;
+    const result = await doFetch(env, roomUrl, "/participants", secret, { participantId }) as Record<string, unknown>;
     const peers = ((result.participants ?? []) as Array<{ id: string; public_key?: string }>)
       .filter((p) => p.id !== participantId && p.public_key)
       .map((p) => ({ id: p.id, public_key: p.public_key! }));
@@ -365,12 +365,27 @@ async function createRoomTool(env: Env, params: Record<string, unknown>, ctx: To
   // Auto-subscribe the MCP session to room events (no separate subscribe_room call needed)
   const subscribed = await autoSubscribeRoom(env, ctx, room.roomUrl, room.joinSecret, hostId, room.roomId);
 
+  const handoff = JSON.stringify({ access: room.roomUrl, join_secret: room.joinSecret });
+  const expiresAt = room.data.expires_at as string | undefined;
+  const ttlMinutes = expiresAt ? Math.round((Date.parse(expiresAt) - Date.now()) / 60_000) : undefined;
   return {
     ...room.data,
     host_joined: true,
     host_cursor: joinData.cursor ?? 0,
-    handoff: JSON.stringify({ access: room.roomUrl, join_secret: room.joinSecret }),
+    handoff,
     subscription_active: subscribed,
+    join_snippets: {
+      mcp: `join_room with inviteJson=${handoff} and a unique participantId`,
+      pi: `/j01n join ${room.roomUrl} ${room.joinSecret} <your_name>`,
+      cli: `mkdir -p .j01n && curl -fsSL https://j01n.me/client/j01n.js -o .j01n/j01n.js && node .j01n/j01n.js join ${room.roomUrl} ${room.joinSecret} <your_name>`,
+    },
+    next_steps: [
+      "Send the invitee the join_snippets line for their client (treat join_secret as a credential).",
+      subscribed
+        ? "Live events are subscribed: joins and messages arrive as notifications."
+        : `No live subscription: call read_messages with participantId "${hostId}" to see joins and replies.`,
+      ttlMinutes !== undefined ? `Room expires in ~${ttlMinutes} min (${expiresAt}).` : undefined,
+    ].filter(Boolean),
   };
 }
 
@@ -643,6 +658,8 @@ async function pumpRoomEvents(
   }
 }
 
+const INVITE_JSON_PARAM = { type: "string", description: 'The handoff JSON string from create_room: {"access":"<room_url>","join_secret":"<secret>"}' };
+
 const tools: Record<string, ToolDef> = {
   create_room: {
     description: "Create a new j01n.me encrypted coordination room and auto-join the host. When used within an MCP session with an active listening stream (GET /mcp), the room is automatically subscribed so live events arrive without a separate subscribe_room call. If there is no listening stream, use read_messages to poll.",
@@ -650,14 +667,14 @@ const tools: Record<string, ToolDef> = {
       type: "object",
       properties: {
         hostId: { type: "string", description: "Host identifier (default: agent)" },
-        template: { type: "string", enum: ["quick", "kanban", "milestone"], description: "Room template" },
-        roomName: { type: "string" },
-        maxParticipants: { type: "number" },
-        purpose: { type: "string" },
-        firstMessage: { type: "string" },
-        board: { type: "string" },
-        boardSchema: { type: "string" },
-        boardAcls: { type: "string" },
+        template: { type: "string", enum: ["quick", "kanban", "milestone"], description: "quick: empty board, active→closed. kanban: todo/doing/review/done columns + tasks. milestone: planning→in_progress→review→completed with milestones, tasks, decisions." },
+        roomName: { type: "string", description: "Human-readable room name" },
+        maxParticipants: { type: "number", description: "Participant cap, including the host" },
+        purpose: { type: "string", description: "What the room is for; shown to joiners" },
+        firstMessage: { type: "string", description: "Opening message posted when the room is created" },
+        board: { type: "string", description: 'Initial board as a JSON string, e.g. {"tasks":{"t1":{"title":"Docs"}}}' },
+        boardSchema: { type: "string", description: "JSON string: JSON Schema (draft 7) the whole board must satisfy; invalid writes are rejected" },
+        boardAcls: { type: "string", description: 'JSON string: per-key write access, e.g. {"decisions":"host_only","tasks":["agent-a"]} (default "anyone")' },
       },
     },
     handler: createRoomTool,
@@ -668,7 +685,7 @@ const tools: Record<string, ToolDef> = {
     inputSchema: {
       type: "object",
       properties: {
-        inviteJson: { type: "string" },
+        inviteJson: INVITE_JSON_PARAM,
         participantId: { type: "string" },
       },
       required: ["inviteJson", "participantId"],
@@ -720,7 +737,7 @@ const tools: Record<string, ToolDef> = {
     inputSchema: {
       type: "object",
       properties: {
-        inviteJson: { type: "string" }, participantId: { type: "string" },
+        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
         to: { type: "string" }, body: { type: "string" },
         intent: { type: "string" }, priority: { type: "string" },
         state: { type: "string" }, status: { type: "string" },
@@ -756,7 +773,7 @@ const tools: Record<string, ToolDef> = {
     inputSchema: {
       type: "object",
       properties: {
-        inviteJson: { type: "string" }, participantId: { type: "string" },
+        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
         all: { type: "boolean" }, includeSelf: { type: "boolean" },
       },
       required: ["inviteJson", "participantId"],
@@ -765,6 +782,7 @@ const tools: Record<string, ToolDef> = {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       const participantId = params.participantId as string;
       const crypto = await ensureEcdhSession(env, roomUrl, participantId, secret);
+      await refreshPeerKeys(env, roomUrl, secret, participantId, crypto);
 
       // Always include self messages so senders can read their own messages.
       const path = params.all ? "/?view=all&include_self=true" : "/?include_self=true";
@@ -785,10 +803,10 @@ const tools: Record<string, ToolDef> = {
 
   list_participants: {
     description: "List participants with state, model, skills.",
-    inputSchema: { type: "object", properties: { inviteJson: { type: "string" } }, required: ["inviteJson"] },
+    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      return doFetch(env, roomUrl, "/participants", secret);
+      return doFetch(env, roomUrl, "/participants", secret, { participantId: params.participantId as string });
     },
   },
 
@@ -796,7 +814,7 @@ const tools: Record<string, ToolDef> = {
     description: "Update participant availability state and status text.",
     inputSchema: {
       type: "object", properties: {
-        inviteJson: { type: "string" }, participantId: { type: "string" },
+        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
         state: { type: "string" }, status: { type: "string" },
         model: { type: "string" }, skills: { type: "string" },
       }, required: ["inviteJson", "participantId", "state", "status"],
@@ -818,7 +836,7 @@ const tools: Record<string, ToolDef> = {
 
   read_board: {
     description: "Read the shared board.",
-    inputSchema: { type: "object", properties: { inviteJson: { type: "string" } }, required: ["inviteJson"] },
+    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM }, required: ["inviteJson"] },
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       return doFetch(env, roomUrl, "/board", secret);
@@ -829,7 +847,7 @@ const tools: Record<string, ToolDef> = {
     description: "Trigger a state machine event to transition the room (host only).",
     inputSchema: {
       type: "object", properties: {
-        inviteJson: { type: "string" }, participantId: { type: "string" },
+        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
         event: { type: "string" },
       }, required: ["inviteJson", "participantId", "event"],
     },
@@ -845,7 +863,7 @@ const tools: Record<string, ToolDef> = {
 
   close_room: {
     description: "Close and delete the room (host only).",
-    inputSchema: { type: "object", properties: { inviteJson: { type: "string" }, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
+    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
     handler: async (env, params) => {
       const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
       await doFetch(env, roomUrl, "/", secret, { method: "DELETE", participantId: params.participantId as string });
@@ -857,7 +875,7 @@ const tools: Record<string, ToolDef> = {
 
   leave_room: {
     description: "Leave the room (stays active for others).",
-    inputSchema: { type: "object", properties: { inviteJson: { type: "string" }, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
+    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
     handler: async (env, params) => {
       const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
       await doFetch(env, roomUrl, `/participants/${params.participantId}`, secret, { method: "DELETE" });
@@ -868,7 +886,7 @@ const tools: Record<string, ToolDef> = {
 
   get_room_info: {
     description: "Get room metadata without joining.",
-    inputSchema: { type: "object", properties: { inviteJson: { type: "string" } }, required: ["inviteJson"] },
+    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM }, required: ["inviteJson"] },
     handler: async (env, params, ctx) => {
       const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
       const result = await doFetch(env, roomUrl, "/status", secret) as Record<string, unknown>;
@@ -884,7 +902,7 @@ const tools: Record<string, ToolDef> = {
     inputSchema: {
       type: "object",
       properties: {
-        inviteJson: { type: "string" },
+        inviteJson: INVITE_JSON_PARAM,
         participantId: { type: "string" },
         includeSelf: { type: "boolean" },
       },
@@ -898,7 +916,7 @@ const tools: Record<string, ToolDef> = {
     inputSchema: {
       type: "object",
       properties: {
-        inviteJson: { type: "string" },
+        inviteJson: INVITE_JSON_PARAM,
         participantId: { type: "string" },
         includeSelf: { type: "boolean" },
       },

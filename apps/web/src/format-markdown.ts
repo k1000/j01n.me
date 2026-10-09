@@ -99,6 +99,10 @@ const COMMON_FOOTER = `<footer>
   </p>
 </footer>`;
 
+/** Chrome origin trial token for WebMCP on https://j01n.me (expires 2027-03-30). Drop once WebMCP ships unflagged. */
+const WEBMCP_ORIGIN_TRIAL_TOKEN =
+  "A18uBV5bMcaaHocyXuvmWCpO+BZ1uYAHW445zK57L6ke4aJE8oDxErexA5iSJ92Iq2DAKwpWEh6LVN4PY0Mi3g4AAABueyJvcmlnaW4iOiJodHRwczovL2owMW4ubWU6NDQzIiwiZmVhdHVyZSI6IldlYk1DUCIsImV4cGlyeSI6MTgwNjM2NDgwMCwiaXNTdWJkb21haW4iOnRydWUsImlzVGhpcmRQYXJ0eSI6dHJ1ZX0=";
+
 export function renderPage(title: string, body: string, extraStyles?: string): string {
   const escapedTitle = escapeHtml(title);
   const escapedDescription = escapeHtml(SITE_DESCRIPTION);
@@ -108,6 +112,7 @@ export function renderPage(title: string, body: string, extraStyles?: string): s
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="origin-trial" content="${WEBMCP_ORIGIN_TRIAL_TOKEN}" />
     <title>${escapedTitle}</title>
     <meta name="description" content="${escapedDescription}" />
     <link rel="canonical" href="${SITE_URL}" />

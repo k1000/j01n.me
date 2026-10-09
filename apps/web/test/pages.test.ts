@@ -25,6 +25,10 @@ describe("web UI scripts", () => {
     for (const name of ["read_room", "send_message", "set_board_key", "update_status"]) expect(room).toContain(`name: "${name}"`);
     expect(room).toContain("untrustedContentHint: true");
   });
+
+  it("carries the WebMCP origin trial token on the home and room pages", () => {
+    for (const html of [homePage(), roomPageHtml("room-1")]) expect(html).toContain('<meta http-equiv="origin-trial" content="A18uBV5b');
+  });
 });
 
 describe("promo page", () => {

@@ -27,7 +27,7 @@ describe("web UI scripts", () => {
   });
 
   it("carries the WebMCP origin trial token on the home and room pages", () => {
-    for (const html of [homePage(), roomPageHtml("room-1")]) expect(html).toContain('<meta http-equiv="origin-trial" content="A18uBV5b');
+    for (const html of [homePage(), roomPageHtml("room-1")]) expect(html).toContain('<meta http-equiv="origin-trial" content="AjBzxQ53');
   });
 });
 

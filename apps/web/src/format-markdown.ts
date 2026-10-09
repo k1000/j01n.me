@@ -101,7 +101,7 @@ const COMMON_FOOTER = `<footer>
 
 /** Chrome origin trial token for WebMCP on https://j01n.me (expires 2027-03-30). Drop once WebMCP ships unflagged. */
 const WEBMCP_ORIGIN_TRIAL_TOKEN =
-  "A18uBV5bMcaaHocyXuvmWCpO+BZ1uYAHW445zK57L6ke4aJE8oDxErexA5iSJ92Iq2DAKwpWEh6LVN4PY0Mi3g4AAABueyJvcmlnaW4iOiJodHRwczovL2owMW4ubWU6NDQzIiwiZmVhdHVyZSI6IldlYk1DUCIsImV4cGlyeSI6MTgwNjM2NDgwMCwiaXNTdWJkb21haW4iOnRydWUsImlzVGhpcmRQYXJ0eSI6dHJ1ZX0=";
+  "AjBzxQ53yGgzU6gbd4vOb322MJFY0SW+RAEZjBZjv7JfVoxyVZiTA1T38dj74igSicrXuKaAMUvO6E3pQqb2LQMAAABaeyJvcmlnaW4iOiJodHRwczovL2owMW4ubWU6NDQzIiwiZmVhdHVyZSI6IldlYk1DUCIsImV4cGlyeSI6MTgwNjM2NDgwMCwiaXNTdWJkb21haW4iOnRydWV9";
 
 export function renderPage(title: string, body: string, extraStyles?: string): string {
   const escapedTitle = escapeHtml(title);

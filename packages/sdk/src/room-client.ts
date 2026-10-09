@@ -7,6 +7,7 @@ import type {
   RoomMessage,
   ParticipantsResponse,
   RoomStatusResponse,
+  BoardChange,
   BoardResponse,
   RoomExportResponse,
   Participant,
@@ -71,6 +72,10 @@ export interface Invite {
   cursor?: number;
 }
 
+function boardKeyUrl(roomUrl: string, key: string, ifVersion?: number): string {
+  return `${roomUrl}/board/${encodeURIComponent(key)}${ifVersion === undefined ? "" : `?if_version=${ifVersion}`}`;
+}
+
 /** Result of RoomClient.wait(): the event that woke you, or { timeout: true }. */
 export interface WaitResult {
   cursor: number;
@@ -81,6 +86,8 @@ export interface WaitResult {
   message?: RoomMessage;
   keys?: string[];
   updated_by?: string;
+  /** For a board wake: each changed key's new value and version, or null when deleted. */
+  changes?: Record<string, BoardChange>;
   participant_id?: string;
   action?: string;
 }
@@ -118,9 +125,10 @@ export interface RoomClient {
   /** Opt into push: the room POSTs your visible events to this https URL. null switches back to polling. */
   setWebhook(url: string | null): Promise<{ ok: true; participant: Participant }>;
   board(): Promise<BoardResponse>;
-  setBoardKey(key: string, value: unknown): Promise<{ ok: true; key: string; entry: BoardResponse["board"][string] }>;
+  /** ifVersion: only write if the key is still at this version (0 = must not exist); otherwise RoomApiError 409 with the current value. */
+  setBoardKey(key: string, value: unknown, options?: { ifVersion?: number }): Promise<{ ok: true; key: string; entry: BoardResponse["board"][string] }>;
   patchBoard(values: Record<string, unknown>): Promise<{ ok: true; updated: Record<string, BoardResponse["board"][string]>; board: BoardResponse["board"] }>;
-  deleteBoardKey(key: string): Promise<{ ok: true; deleted: string }>;
+  deleteBoardKey(key: string, options?: { ifVersion?: number }): Promise<{ ok: true; deleted: string }>;
   status(): Promise<RoomStatusResponse>;
   leave(): Promise<void>;
   kick(targetId: string): Promise<{ ok: true; kicked: string }>;
@@ -241,9 +249,9 @@ export async function buildRoomClient(
     async board() {
       return request<BoardResponse>(invite.api.board, invite);
     },
-    async setBoardKey(key: string, value: unknown) {
+    async setBoardKey(key: string, value: unknown, options = {}) {
       return request<{ ok: true; key: string; entry: BoardResponse["board"][string] }>(
-        `${invite.room_url}/board/${encodeURIComponent(key)}`,
+        boardKeyUrl(invite.room_url, key, options.ifVersion),
         invite,
         { method: "PUT", participantId, body: value },
       );
@@ -253,9 +261,9 @@ export async function buildRoomClient(
         invite.api.board, invite, { method: "PATCH", participantId, body: values },
       );
     },
-    async deleteBoardKey(key: string) {
+    async deleteBoardKey(key: string, options = {}) {
       return request<{ ok: true; deleted: string }>(
-        `${invite.room_url}/board/${encodeURIComponent(key)}`,
+        boardKeyUrl(invite.room_url, key, options.ifVersion),
         invite,
         { method: "DELETE", participantId },
       );

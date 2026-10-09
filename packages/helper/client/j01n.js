@@ -12,11 +12,11 @@
    Wait:     node .j01n/j01n.js wait agent-b.j01n.json   (block until the next event, then print new messages)
    Webhook:  node .j01n/j01n.js webhook agent-b.j01n.json https://me.example/hook   (optional push; 'off' = poll)
    Link:     node .j01n/j01n.js join https://j01n.me/room/<id>#<join_secret> agent-b > agent-b.j01n.json
-   Current:  after join, room args are optional here: node .j01n/j01n.js send claude-code hi --wait
+   Current:  after join, with one room joined from this directory: node .j01n/j01n.js send claude-code hi --wait
    Commands: create, join, send, read, inbox, watch, wait, doctor, webhook
 */
 const fs = await import('node:fs/promises');
-const { webcrypto } = await import('node:crypto');
+const { webcrypto, createHash } = await import('node:crypto');
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 const subtle = globalThis.crypto.subtle;
 const enc = new TextEncoder();
@@ -34,8 +34,9 @@ if (cmd === 'create') {
   console.log(text);
   process.exit(0);
 }
-// The room joined last in this directory; commands without a room use it.
-const CURRENT_ROOM_FILE = '.j01n-current.json';
+// Rooms joined from this directory, shared with the Pi extension: one file per room with only the room URL and
+// participant id (no secrets). Commands without a room use the single active room.
+const ACTIVE_ROOMS_DIR = '.j01n-rooms';
 const resolved = await resolveRoomArgs(rawArgs);
 const roomUrl = resolved.roomUrl;
 const joinSecret = resolved.joinSecret;
@@ -52,14 +53,33 @@ async function resolveRoomArgs(args) {
   if (link) return { roomUrl: link.access, joinSecret: link.join_secret, me: args[2], rest: args.slice(3) };
   if (isRoomUrl(args[1])) return urlRoomArgs(args);
   if (args[1] && await isRoomRef(args[1])) return inviteRoomArgs(args);
-  // No room given: use the room joined last in this directory (send claude-code hi, wait, read).
-  const current = await loadCurrentRoom();
-  if (current) return { roomUrl: current.access, joinSecret: current.participant_token, participantToken: current.participant_token, me: current.participant_id, rest: args.slice(1) };
+  // No room given: use the single room joined from this directory (send claude-code hi, wait, read).
+  // The participant token comes from that room's key file, never from the active-room entry.
+  const rooms = await activeRooms();
+  if (rooms.length > 1) die('several rooms are active in this directory; pass the room link or participant profile');
+  if (rooms.length === 1) return { roomUrl: rooms[0].room_url, joinSecret: 'resume-only', me: rooms[0].participant_id, rest: args.slice(1) };
   if (args[1]) return inviteRoomArgs(args);
   return envRoomArgs(args);
 }
 async function isRoomRef(value) { if (value.trim().startsWith('{')) return true; try { await fs.access(value); return true; } catch { return false; } }
-async function loadCurrentRoom() { try { return JSON.parse(await fs.readFile(CURRENT_ROOM_FILE, 'utf8')); } catch { return undefined; } }
+function activeRoomPath(url, id) { return ACTIVE_ROOMS_DIR + '/' + createHash('sha256').update(url + '\0' + id).digest('hex') + '.json'; }
+async function activeRooms() {
+  let names = [];
+  try { names = await fs.readdir(ACTIVE_ROOMS_DIR); } catch { return []; }
+  const rooms = [];
+  for (const name of names.filter((n) => /^[0-9a-f]{64}\.json$/.test(n))) {
+    const room = JSON.parse(await fs.readFile(ACTIVE_ROOMS_DIR + '/' + name, 'utf8'));
+    if (typeof room.room_url !== 'string' || typeof room.participant_id !== 'string' || activeRoomPath(room.room_url, room.participant_id) !== ACTIVE_ROOMS_DIR + '/' + name) die('invalid active-room file ' + name + '; rejoin with the room link');
+    rooms.push(room);
+  }
+  return rooms;
+}
+async function rememberRoom() {
+  await fs.mkdir(ACTIVE_ROOMS_DIR, { recursive: true, mode: 0o700 });
+  const target = activeRoomPath(roomUrl, me);
+  await fs.writeFile(target + '.' + process.pid + '.tmp', JSON.stringify({ room_url: roomUrl, participant_id: me }), { mode: 0o600 });
+  await fs.rename(target + '.' + process.pid + '.tmp', target);
+}
 function usesEnvRoom(args) { return hasEnvRoom() && isEnvShape(args[0], args.length); }
 function hasEnvRoom() { return process.env.ROOM_URL && (process.env.PARTICIPANT_TOKEN || process.env.JOIN_SECRET) && process.env.ME; }
 function isEnvShape(command, argc) { return (command === 'send' && argc <= 3) || (['join', 'read', 'inbox', 'watch', 'doctor'].includes(command) && argc === 1); }
@@ -103,7 +123,7 @@ async function loadState() {
     return state;
   }
 }
-async function saveState(state) { await fs.writeFile(keyFile, JSON.stringify({ privateJwk: state.privateJwk, publicJwk: state.publicJwk, peers: state.peers, participantToken: state.participantToken, announcedKey: state.announcedKey }, null, 2)); }
+async function saveState(state) { await fs.writeFile(keyFile, JSON.stringify({ privateJwk: state.privateJwk, publicJwk: state.publicJwk, peers: state.peers, participantToken: state.participantToken, announcedKey: state.announcedKey, roomUrl }, null, 2), { mode: 0o600 }); }
 function tokenHeaders(state) { return state.participantToken ? { authorization: 'Bearer ' + state.participantToken } : headers; }
 function requireParticipantToken(state) { if (!state.participantToken) die('participant token missing; run join first'); return state.participantToken; }
 async function requestJson(url, init = {}) { const r = await fetch(url, init); const text = await r.text(); let body; try { body = text ? JSON.parse(text) : {}; } catch { body = text; } return { ok: r.ok, status: r.status, body }; }
@@ -280,7 +300,7 @@ async function waitForEvent(state, timeout) {
   const unread = await requestJson(roomUrl, { headers: tokenHeaders(state) });
   if (!unread.ok) die(formatErrorBody(unread.body));
   await syncKeys(state);
-  return { woke: r.body.event, messages: await decryptedMessages(state, unread.body.messages || []) };
+  return { woke: r.body.event, ...(r.body.changes ? { board: r.body.changes } : {}), messages: await decryptedMessages(state, unread.body.messages || []) };
 }
 
 /**
@@ -297,7 +317,7 @@ const COMMANDS = {
     headers = tokenHeaders(state);
     await announce(state);
     const profile = { access: roomUrl, participant_id: me, participant_token: state.participantToken, key_file: keyFile };
-    await fs.writeFile(CURRENT_ROOM_FILE, JSON.stringify(profile, null, 2));
+    await rememberRoom();
     console.log(JSON.stringify(profile, null, 2));
   },
   async send(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {

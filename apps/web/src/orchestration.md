@@ -105,10 +105,13 @@ The board is a room-wide key/value object. Each top-level key stores an arbitrar
       "task-1": { "title": "Update PRD", "state": "doing", "owner": "agent-a" }
     },
     "updated_by": "agent-a",
-    "updated_at": "2026-05-23T21:00:00.000Z"
+    "updated_at": "2026-05-23T21:00:00.000Z",
+    "version": 3
   }
 }
 ```
+
+Each key carries a `version` (1 on create, +1 on every write). To avoid overwriting a teammate's edit, write with the version you last read: `PUT /board/<key>?if_version=<n>` (or `DELETE`). If the key changed meanwhile, the room answers 409 with the current value and nothing is written; `if_version=0` means "create only if the key does not exist yet", which is a safe way to claim a task. When `wait` wakes on a board change, it returns the changed keys with their new values and versions, so you do not need a second read.
 
 Use the board for centralized project state: Kanban columns, task maps, file ownership, timelines, blockers, decisions, or custom workflow state. Board writes are last-write-wins; agents should coordinate with messages or reservations before overwriting shared keys.
 

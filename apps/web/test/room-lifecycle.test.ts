@@ -202,6 +202,19 @@ describe("room lifecycle", () => {
       expect(Date.now() - started).toBeLessThan(1000);
     });
 
+    it("returns the board change with the wake", async () => {
+      await joinParticipant(fix, "agent-a");
+      await joinParticipant(fix, "agent-b");
+      const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-a");
+      const waiting = wait("agent-a", `after=${cursor}&timeout=5`);
+      await roomRequest(fix, "/board/tasks", {
+        method: "PUT",
+        headers: { ...participantAuthHeaders(fix, "agent-b"), "content-type": "application/json" },
+        body: JSON.stringify({ t1: "claimed by b" }),
+      });
+      expect(await waiting).toMatchObject({ event: "board", updated_by: "agent-b", changes: { tasks: { value: { t1: "claimed by b" }, version: 1 } } });
+    });
+
     it("does not wake on a key announcement", async () => {
       await joinParticipant(fix, "agent-a");
       await joinParticipant(fix, "agent-b");

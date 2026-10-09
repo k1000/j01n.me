@@ -521,7 +521,8 @@ describe("hosted MCP handler", () => {
         idFromName: () => "id",
         get: () => ({
           fetch: async (url: string, init?: RequestInit) => {
-            const path = new URL(url).pathname;
+            const u = new URL(url);
+            const path = u.pathname + u.search;
             if (path.includes("/board")) calls.push([init?.method, path.replace(/^\/r\/[^/]+/, ""), init?.body ? JSON.parse(init.body as string) : undefined]);
             return Response.json({ ok: true });
           },
@@ -534,11 +535,15 @@ describe("hosted MCP handler", () => {
     await call("set_board_key", { key: "tasks", value: '{"t-1":{"title":"Docs"}}' });
     await call("patch_board", { values: '{"blockers":{},"decisions":["ship"]}' });
     await call("delete_board_key", { key: "tasks" });
+    await call("set_board_key", { key: "claim", value: '{"owner":"a"}', ifVersion: 0 });
+    await call("delete_board_key", { key: "claim", ifVersion: 1 });
 
     expect(calls).toEqual([
       ["PUT", "/board/tasks", { "t-1": { title: "Docs" } }],
       ["PATCH", "/board", { blockers: {}, decisions: ["ship"] }],
       ["DELETE", "/board/tasks", undefined],
+      ["PUT", "/board/claim?if_version=0", { owner: "a" }],
+      ["DELETE", "/board/claim?if_version=1", undefined],
     ]);
   });
 

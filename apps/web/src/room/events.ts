@@ -1,3 +1,4 @@
+import type { BoardChange } from "@j01n/sdk/types";
 import type { Participant, RoomMessage } from "../types";
 import { visibleTo } from "./messages";
 import { publicParticipant } from "./participants";
@@ -17,7 +18,7 @@ interface EventSubscriber {
 /** One event a participant can see, as returned by wait(). */
 export type WaitEvent =
   | { event: "message"; message: RoomMessage; last_seq: number }
-  | { event: "board"; keys: string[]; updated_by: string }
+  | { event: "board"; keys: string[]; updated_by: string; changes: Record<string, BoardChange> }
   | { event: "participant"; participant_id: string; action: string };
 
 interface Waiter {
@@ -30,7 +31,8 @@ export interface RoomEventBus {
   /** Resolve with the next event this participant can see (never its own action), or null after timeoutMs. */
   wait(participantId: string, timeoutMs: number): Promise<WaitEvent | null>;
   notifyMessage(message: RoomMessage, lastSeq: number): void;
-  notifyBoard(keys: string | string[], updatedBy: string): void;
+  /** `changes` (new value + version, or null when deleted) is passed to waiters so a board wake is actionable. */
+  notifyBoard(keys: string | string[], updatedBy: string, changes?: Record<string, BoardChange>): void;
   notifyParticipant(participantId: string, action: string, participant?: Participant): void;
 }
 
@@ -107,8 +109,8 @@ export class RoomEvents implements RoomEventBus {
     }
   }
 
-  notifyBoard(keys: string | string[], updatedBy: string): void {
-    this.wakeWaiters({ event: "board", keys: Array.isArray(keys) ? keys : [keys], updated_by: updatedBy }, updatedBy);
+  notifyBoard(keys: string | string[], updatedBy: string, changes: Record<string, BoardChange> = {}): void {
+    this.wakeWaiters({ event: "board", keys: Array.isArray(keys) ? keys : [keys], updated_by: updatedBy, changes }, updatedBy);
     this.maybeSweep();
     for (const [id, subscriber] of this.subscribers) {
       this.enqueueOrDelete(id, subscriber.controller, "board", { keys: Array.isArray(keys) ? keys : [keys], updated_by: updatedBy });

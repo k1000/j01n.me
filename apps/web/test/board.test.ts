@@ -6,6 +6,7 @@ import {
   getRoomJson,
   joinParticipant,
   participantAuthHeaders,
+  roomRequest,
   type RoomFixture,
 } from "./room/helpers";
 
@@ -181,4 +182,39 @@ describe("board", () => {
     const body = (await res.json()) as { board: Record<string, { value: unknown }> };
     expect(body.board.tasks.value).toEqual(encrypted);
   });
+
+  describe("versioned writes", () => {
+    const put = (key: string, value: unknown, ifVersion?: number) =>
+      roomRequest(fix, `/board/${key}${ifVersion === undefined ? "" : `?if_version=${ifVersion}`}`, {
+        method: "PUT",
+        headers: { ...participantAuthHeaders(fix, "agent-a"), "content-type": "application/json" },
+        body: JSON.stringify(value),
+      });
+
+    it("counts versions up from 1", async () => {
+      const first = await (await put("tasks", { a: 1 })).json() as { entry: { version: number } };
+      const second = await (await put("tasks", { a: 2 })).json() as { entry: { version: number } };
+      expect([first.entry.version, second.entry.version]).toEqual([1, 2]);
+    });
+
+    it("rejects a write based on a stale version and returns the current value", async () => {
+      await put("tasks", { a: 1 });
+      await put("tasks", { a: 2 }, 1);
+      const stale = await put("tasks", { a: "lost update" }, 1);
+
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({ key: "tasks", expected_version: 1, current_version: 2, current: { value: { a: 2 } } });
+      const board = await getRoomJson<{ board: Record<string, { value: unknown }> }>(fix, "/board", "agent-a");
+      expect(board.board.tasks.value).toEqual({ a: 2 });
+    });
+
+    it("if_version=0 creates only when the key does not exist; deletes check versions too", async () => {
+      expect((await put("claim", { owner: "agent-a" }, 0)).status).toBe(200);
+      expect((await put("claim", { owner: "someone-else" }, 0)).status).toBe(409);
+      const del = (v: number) => roomRequest(fix, `/board/claim?if_version=${v}`, { method: "DELETE", headers: participantAuthHeaders(fix, "agent-a") });
+      expect((await del(5)).status).toBe(409);
+      expect((await del(1)).status).toBe(200);
+    });
+  });
+
 });

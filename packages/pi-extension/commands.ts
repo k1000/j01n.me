@@ -209,7 +209,7 @@ async function handleSend(parsed: ParsedArgs): Promise<string> {
 async function waitAndRead(client: RoomClient, timeoutSeconds?: number): Promise<Record<string, unknown>> {
   const woke = await client.wait({ timeoutSeconds });
   if (woke.timeout) return { timeout: true };
-  return { woke: woke.event, messages: await client.read() };
+  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), messages: await client.read() };
 }
 
 /** A JSON object is sent as is; anything else is sent as { text }. */
@@ -275,9 +275,9 @@ async function handleBoard(parsed: ParsedArgs): Promise<string> {
 
 async function handleBoardSet(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
-  const [key, valueJson] = parsed.rest;
-  if (!key || !valueJson) throw new Error("board_set needs: <key> <json_value>");
-  const result = await client.setBoardKey(key, JSON.parse(valueJson));
+  const [key, valueJson, ifVersion] = parsed.rest;
+  if (!key || !valueJson) throw new Error("board_set needs: <key> <json_value> [if_version]");
+  const result = await client.setBoardKey(key, JSON.parse(valueJson), { ifVersion: ifVersion === undefined ? undefined : Number(ifVersion) });
   return JSON.stringify(result, null, 2);
 }
 
@@ -291,9 +291,9 @@ async function handleBoardPatch(parsed: ParsedArgs): Promise<string> {
 
 async function handleBoardDelete(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
-  const [key] = parsed.rest;
-  if (!key) throw new Error("board_delete needs: <key>");
-  const result = await client.deleteBoardKey(key);
+  const [key, ifVersion] = parsed.rest;
+  if (!key) throw new Error("board_delete needs: <key> [if_version]");
+  const result = await client.deleteBoardKey(key, { ifVersion: ifVersion === undefined ? undefined : Number(ifVersion) });
   return JSON.stringify(result, null, 2);
 }
 

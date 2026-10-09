@@ -267,10 +267,10 @@ async function waitForEvent(env: Env, params: Record<string, unknown>) {
   const participantId = params.participantId as string;
   await ensureEcdhSession(env, roomUrl, participantId, secret);
   const timeout = Math.min(Math.max(Number(params.timeoutSeconds) || 50, 1), 50);
-  const woke = await doFetch(env, roomUrl, `/wait?timeout=${timeout}`, secret, { participantId }) as { timeout?: boolean; event?: string };
+  const woke = await doFetch(env, roomUrl, `/wait?timeout=${timeout}`, secret, { participantId }) as { timeout?: boolean; event?: string; changes?: unknown };
   if (woke.timeout) return { timeout: true };
   const read = await readRoomMessages(env, { inviteJson: params.inviteJson, participantId });
-  return { woke: woke.event, ...read };
+  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), ...read };
 }
 
 /** A JSON object is sent as is; anything else is sent as { text }. */
@@ -709,6 +709,9 @@ async function pumpRoomEvents(
 
 const INVITE_JSON_PARAM = { type: "string", description: 'The room link from create_room (https://j01n.me/room/<id>#<secret>) or the handoff JSON {"access":"<room_url>","join_secret":"<secret>"}' };
 const WEBHOOK_URL_PARAM = { type: "string", description: 'Optional, only if you can expose a public https endpoint: the room POSTs events you can see (messages to you or all, board and participant changes) there as wake-up signals, then call read_messages. Omit to poll with read_messages (default). "off" removes it.' };
+const IF_VERSION_PARAM = { type: "number", description: "Optional: only write if the key is still at this version (from read_board / wait_for_event; 0 = the key must not exist yet). A conflict returns the current value." };
+const boardKeyPath = (key: unknown, ifVersion: unknown) =>
+  `/board/${encodeURIComponent(key as string)}${typeof ifVersion === "number" ? `?if_version=${ifVersion}` : ""}`;
 const webhookUrlBody = (value: unknown) => (typeof value === "string" ? { webhook_url: value === "off" ? null : value } : {});
 
 const tools: Record<string, ToolDef> = {
@@ -899,13 +902,14 @@ const tools: Record<string, ToolDef> = {
         inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
         key: { type: "string" },
         value: { type: "string", description: 'The value as a JSON string, e.g. {"t-1":{"title":"Docs","owner":"agent-b"}}' },
+        ifVersion: IF_VERSION_PARAM,
       }, required: ["inviteJson", "participantId", "key", "value"],
     },
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       const participantId = params.participantId as string;
       await ensureEcdhSession(env, roomUrl, participantId, secret);
-      return doFetch(env, roomUrl, `/board/${encodeURIComponent(params.key as string)}`, secret, {
+      return doFetch(env, roomUrl, boardKeyPath(params.key, params.ifVersion), secret, {
         method: "PUT", participantId, body: JSON.parse(params.value as string),
       });
     },
@@ -934,13 +938,14 @@ const tools: Record<string, ToolDef> = {
     inputSchema: {
       type: "object", properties: {
         inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" }, key: { type: "string" },
+        ifVersion: IF_VERSION_PARAM,
       }, required: ["inviteJson", "participantId", "key"],
     },
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       const participantId = params.participantId as string;
       await ensureEcdhSession(env, roomUrl, participantId, secret);
-      return doFetch(env, roomUrl, `/board/${encodeURIComponent(params.key as string)}`, secret, { method: "DELETE", participantId });
+      return doFetch(env, roomUrl, boardKeyPath(params.key, params.ifVersion), secret, { method: "DELETE", participantId });
     },
   },
 

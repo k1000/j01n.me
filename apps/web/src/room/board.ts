@@ -30,14 +30,33 @@ function unwrapUiEnvelope(value: unknown): unknown {
   }
 }
 
-function makeBoardEntry(value: unknown, updatedBy: string): BoardEntry | Response {
+function makeBoardEntry(value: unknown, updatedBy: string, previous?: BoardEntry): BoardEntry | Response {
   // Transparently unwrap ui: envelopes so stored board values are clean JSON.
   const cleanValue = unwrapUiEnvelope(value);
   const size = ENCODER.encode(JSON.stringify(cleanValue)).length;
   if (size > MAX_BOARD_VALUE_BYTES) {
     return json({ error: "board value too large", max_bytes: MAX_BOARD_VALUE_BYTES }, 413);
   }
-  return { value: cleanValue, updated_by: updatedBy, updated_at: new Date().toISOString() };
+  return { value: cleanValue, updated_by: updatedBy, updated_at: new Date().toISOString(), version: previous ? entryVersion(previous) + 1 : 1 };
+}
+
+/** Version of a stored entry (entries stored before versioning count as 1); 0 when the key does not exist. */
+export function entryVersion(entry: BoardEntry | undefined): number {
+  return entry ? entry.version ?? 1 : 0;
+}
+
+/** Optimistic concurrency: reject the write when the key changed since the version the writer last saw. */
+function checkIfVersion(invite: InviteState, key: string, ifVersion: number | undefined): GuardResult {
+  if (ifVersion === undefined) return undefined;
+  const current = invite.board[key];
+  if (entryVersion(current) === ifVersion) return undefined;
+  return json({
+    error: "board key changed since the version you read",
+    key,
+    expected_version: ifVersion,
+    current_version: entryVersion(current),
+    current: current ?? null,
+  }, 409);
 }
 
 export function getBoard(invite: InviteState): Response {
@@ -88,12 +107,15 @@ export function setBoardKeyData(
   keyFromPath: string,
   value: unknown,
   updatedBy: string,
+  ifVersion?: number,
 ): { board: Record<string, BoardEntry>; key: string; entry: BoardEntry } | Response {
   const key = normalizeBoardKey(keyFromPath);
   if (key instanceof Response) return key;
   const aclErr = checkBoardAcl(invite, key, updatedBy);
   if (aclErr) return aclErr;
-  const entryResult = makeBoardEntry(value, updatedBy);
+  const conflict = checkIfVersion(invite, key, ifVersion);
+  if (conflict) return conflict;
+  const entryResult = makeBoardEntry(value, updatedBy, invite.board[key]);
   if (entryResult instanceof Response) return entryResult;
   const board = { ...invite.board, [key]: entryResult };
   const validation = validateBoard(invite.boardSchema, board);
@@ -113,7 +135,7 @@ export function patchBoardData(
     if (key instanceof Response) return key;
     const aclErr = checkBoardAcl(invite, key, updatedBy);
     if (aclErr) return aclErr;
-    const entryResult = makeBoardEntry(value, updatedBy);
+    const entryResult = makeBoardEntry(value, updatedBy, board[key]);
     if (entryResult instanceof Response) return entryResult;
     board[key] = entryResult;
     updated[key] = entryResult;
@@ -127,9 +149,12 @@ export function deleteBoardKeyData(
   invite: InviteState,
   keyFromPath: string,
   deletedBy: string,
+  ifVersion?: number,
 ): { board: Record<string, BoardEntry>; key: string } | Response {
   const key = normalizeBoardKey(keyFromPath);
   if (key instanceof Response) return key;
+  const conflict = checkIfVersion(invite, key, ifVersion);
+  if (conflict) return conflict;
   const result = deleteBoardKeysData(invite, [key], deletedBy);
   if (result instanceof Response) return result;
   return { board: result.board, key };

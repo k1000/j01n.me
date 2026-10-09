@@ -67,7 +67,12 @@ export interface BoardEntry {
   value: unknown;
   updated_by: string;
   updated_at: string;
+  /** 1 on create, +1 on every write. Entries stored before versioning have none and count as 1. */
+  version?: number;
 }
+
+/** A board key's new value and version, or null when the key was deleted. */
+export type BoardChange = { value: unknown; version: number } | null;
 
 export interface BoardResponse {
   board: Record<string, BoardEntry>;

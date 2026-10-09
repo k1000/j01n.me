@@ -10,7 +10,7 @@ You need an invitation JSON from the host:
 
 ## Join once
 
-The room creator can hand you a single link instead of invitation JSON: `node .j01n/j01n.js join https://j01n.me/room/<id>#<join_secret> <your_name> > participant.j01n.json`. After joining, the helper remembers the room in `.j01n-current.json`, so later commands in that directory can leave the room out: `node .j01n/j01n.js send claude-code hi --wait`.
+The room creator can hand you a single link instead of invitation JSON: `node .j01n/j01n.js join https://j01n.me/room/<id>#<join_secret> <your_name> > participant.j01n.json`. After joining, the helper records the room in `.j01n-rooms/` (room URL and your name only, no secrets; shared with the Pi extension). When exactly one room has been joined from that directory, later commands can leave the room out: `node .j01n/j01n.js send claude-code hi --wait`. With several, pass the link or profile; the helper never guesses.
 
 ```bash
 mkdir -p .j01n

@@ -10,6 +10,7 @@ import {
   setBoardKeyData,
 } from "./board";
 import type { RoomEventBus } from "./events";
+import type { BoardEntry } from "../types";
 import { dispatchWebhooks } from "./hooks";
 import type { RoomStorage } from "./storage";
 
@@ -26,10 +27,12 @@ export class RoomBoardController {
 
   setKey(request: Request, invite: InviteState, keyFromPath: string): Promise<Response> {
     return joinedThen(invite, request, async (auth) => {
-      const result = setBoardKeyData(invite, keyFromPath, auth.body, auth.participantId);
+      const ifVersion = parseIfVersion(request);
+      if (ifVersion instanceof Response) return ifVersion;
+      const result = setBoardKeyData(invite, keyFromPath, auth.body, auth.participantId, ifVersion);
       if (result instanceof Response) return result;
       await this.storage.patchAndSave(invite, { board: result.board });
-      this.events.notifyBoard(result.key, auth.participantId);
+      this.events.notifyBoard(result.key, auth.participantId, boardChanges({ [result.key]: result.entry }));
       dispatchWebhooks({ ...invite, board: result.board }, "board", { keys: [result.key], updated_by: auth.participantId });
       return json({ ok: true, key: result.key, entry: result.entry });
     });
@@ -40,7 +43,7 @@ export class RoomBoardController {
       const result = patchBoardData(invite, auth.body, auth.participantId);
       if (result instanceof Response) return result;
       await this.storage.patchAndSave(invite, { board: result.board });
-      this.events.notifyBoard(Object.keys(result.updated), auth.participantId);
+      this.events.notifyBoard(Object.keys(result.updated), auth.participantId, boardChanges(result.updated));
       dispatchWebhooks({ ...invite, board: result.board }, "board", { keys: Object.keys(result.updated), updated_by: auth.participantId });
       return json({ ok: true, updated: result.updated, board: result.board });
     });
@@ -48,10 +51,12 @@ export class RoomBoardController {
 
   deleteKey(request: Request, invite: InviteState, keyFromPath: string): Promise<Response> {
     return joinedThen(invite, request, async (auth) => {
-      const result = deleteBoardKeyData(invite, keyFromPath, auth.participantId);
+      const ifVersion = parseIfVersion(request);
+      if (ifVersion instanceof Response) return ifVersion;
+      const result = deleteBoardKeyData(invite, keyFromPath, auth.participantId, ifVersion);
       if (result instanceof Response) return result;
       await this.storage.patchAndSave(invite, { board: result.board });
-      this.events.notifyBoard(result.key, auth.participantId);
+      this.events.notifyBoard(result.key, auth.participantId, { [result.key]: null });
       dispatchWebhooks({ ...invite, board: result.board }, "board", { keys: [result.key], updated_by: auth.participantId });
       return json({ ok: true, deleted: result.key });
     });
@@ -67,9 +72,21 @@ export class RoomBoardController {
       const result = deleteBoardKeysData(invite, rawKeys, auth.participantId);
       if (result instanceof Response) return result;
       await this.storage.patchAndSave(invite, { board: result.board });
-      this.events.notifyBoard(result.keys, auth.participantId);
+      this.events.notifyBoard(result.keys, auth.participantId, Object.fromEntries(result.keys.map((key) => [key, null])));
       dispatchWebhooks({ ...invite, board: result.board }, "board", { keys: result.keys, updated_by: auth.participantId });
       return json({ ok: true, deleted: result.keys });
     });
   }
+}
+
+/** Optional `?if_version=N` on single-key writes (0 = the key must not exist yet). */
+function parseIfVersion(request: Request): number | undefined | Response {
+  const raw = new URL(request.url).searchParams.get("if_version");
+  if (raw === null) return undefined;
+  const version = Number(raw);
+  return Number.isInteger(version) && version >= 0 ? version : json({ error: "if_version must be a non-negative integer" }, 400);
+}
+
+function boardChanges(entries: Record<string, BoardEntry>): Record<string, { value: unknown; version: number }> {
+  return Object.fromEntries(Object.entries(entries).map(([key, entry]) => [key, { value: entry.value, version: entry.version ?? 1 }]));
 }

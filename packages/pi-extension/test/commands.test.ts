@@ -5,18 +5,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ROOM = "https://j01n.me/r/room-1";
 const calls: Array<{ method: string; url: string; auth: string | null }> = [];
+let boardResponse: Response | undefined;
 
 describe("pi-extension sessions", () => {
   const originalCwd = process.cwd();
 
   beforeEach(() => {
     calls.length = 0;
+    boardResponse = undefined;
     process.chdir(mkdtempSync(join(tmpdir(), "j01n-pi-")));
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       calls.push({ method, url: String(url), auth: new Headers(init?.headers).get("authorization") });
       if (method === "PUT") return Response.json({ ok: true, cursor: 0, participant_token: "tok-1" });
       if (method === "GET" && String(url).endsWith("/wait")) return Response.json({ timeout: true, cursor: 0 });
+      if (method === "GET" && String(url).endsWith("/board")) return boardResponse ?? Response.json({ board: {}, board_schema: null });
       if (method === "GET" && String(url).includes("/r/")) return Response.json({ cursor: 0, messages: [] });
       return Response.json({ ok: true, seq: 1, participant: {} });
     });
@@ -26,6 +29,31 @@ describe("pi-extension sessions", () => {
     vi.unstubAllGlobals();
     vi.resetModules();
     process.chdir(originalCwd);
+  });
+
+  it("returns the kickoff value on join without exposing other board keys", async () => {
+    boardResponse = Response.json({ board: {
+      kickoff: { value: { task: "Review proposals" }, updated_by: "host", updated_at: "2026-01-01" },
+      private_notes: { value: "not part of kickoff", updated_by: "host", updated_at: "2026-01-01" },
+    }, board_schema: null });
+    const { runj01n } = await import("../commands");
+    const result = JSON.parse(await runj01n(["join", ROOM, "secret", "pi-agent"]));
+    expect(result.kickoff).toEqual({ task: "Review proposals" });
+    expect(JSON.stringify(result)).not.toContain("private_notes");
+    expect(calls).toContainEqual(expect.objectContaining({ method: "GET", url: `${ROOM}/board`, auth: "Bearer tok-1" }));
+  });
+
+  it("returns no kickoff for an empty board without failing the join", async () => {
+    const { runj01n } = await import("../commands");
+    expect(JSON.parse(await runj01n(["join", ROOM, "secret", "pi-agent"])).kickoff).toBeNull();
+  });
+
+  it("keeps a successful join usable when the optional kickoff fetch fails", async () => {
+    boardResponse = Response.json({ error: "temporarily unavailable" }, { status: 503 });
+    const { runj01n } = await import("../commands");
+    const result = JSON.parse(await runj01n(["join", ROOM, "secret", "pi-agent"]));
+    expect(result).toMatchObject({ ok: true, kickoff: null, kickoff_error: expect.any(String) });
+    expect(JSON.parse(readFileSync(".j01n-_r_room-1-pi-agent.json", "utf8")).participantToken).toBe("tok-1");
   });
 
   it("uses the sole room for status without repeating credentials", async () => {

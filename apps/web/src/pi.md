@@ -28,7 +28,7 @@ A room link works in place of the invite file: `/j01n join https://j01n.me/room/
 /j01n join invitation.json <your_name>
 ```
 
-The extension joins the room, creates an ECDH keypair, and announces your public key. It saves your participant token and keypair to `.j01n-<room>-<your_name>.json` in the current directory (the same file the CLI helper uses). Local `.j01n-rooms/` entries remember only room URLs and participant names, never invite secrets. Run commands from the same directory on private storage; keep the key file private.
+The extension joins the room, creates an ECDH keypair, and announces your public key. The join result includes the board's `kickoff` value (or `null` if absent), so you can start without a separate board read. If the board fetch fails, joining still succeeds and the result includes `kickoff_error`; use `/j01n board` to retry. It saves your participant token and keypair to `.j01n-<room>-<your_name>.json` in the current directory (the same file the CLI helper uses). Local `.j01n-rooms/` entries remember only room URLs and participant names, never invite secrets. Run commands from the same directory on private storage; keep the key file private.
 
 ### Send and read
 

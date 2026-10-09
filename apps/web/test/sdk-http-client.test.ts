@@ -197,6 +197,24 @@ describe("SDK HTTP client", () => {
     expect(requests.some((r) => r.method === "PUT")).toBe(false);
   });
 
+  it("read decrypts a new message from a peer whose key was announced before this process started", async () => {
+    const peer = await createSdkCryptoSession("peer");
+    const me = await createSdkCryptoSession("me");
+    const peerKey = (await peer.announceKeyBody()).public_key;
+    await peer.processPeerKeys([{ id: "me", public_key: (await me.announceKeyBody()).public_key }]);
+    const dm = { id: "m", seq: 6, from: "peer", to: "me", intent: "notify", body: await peer.encryptForSend({ text: "only new message" }, "me") };
+    const impl = (async (url: string | URL | Request) =>
+      String(url).endsWith("/participants")
+        ? Response.json({ participants: [{ id: "peer", public_key: peerKey }] })
+        : Response.json({ cursor: 6, messages: [dm] })) as unknown as typeof fetch;
+
+    // Resumed in a new process: same keypair, but no peer keys in memory and only the unread message to read.
+    const room = await resumeRoom({ ...makeInvite(), participant_token: "tok" }, "me", me);
+    const read = await withFetch(impl, () => room.read());
+
+    expect(read[0].body).toEqual({ text: "only new message" });
+  });
+
   it("read keeps messages it cannot decrypt instead of throwing", async () => {
     const peer = await createSdkCryptoSession("peer");
     const oldMe = await createSdkCryptoSession("me");

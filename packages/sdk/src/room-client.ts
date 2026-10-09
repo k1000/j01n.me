@@ -1,5 +1,6 @@
 import { createSdkCryptoSession } from "./sdk-crypto-session";
 import type { SdkCryptoSession } from "./sdk-crypto-session";
+import { isEncryptedBody } from "./crypto";
 import { request } from "./transport";
 import type {
   Recipient,
@@ -204,6 +205,11 @@ export async function buildRoomClient(
       );
       cursor = result.cursor;
       await session.processKeyExchange(result.messages);
+      if (result.messages.some((msg) => isEncryptedBody(msg.body))) {
+        // A resumed client may only see new messages, so learn keys announced earlier from the participant list.
+        const { participants = [] } = await client.participants();
+        await session.processPeerKeys(participants.flatMap((p) => (p.public_key ? [{ id: p.id, public_key: p.public_key }] : [])));
+      }
       return Promise.all(
         result.messages.map((msg) =>
           session.decryptMessageBody(msg).then(

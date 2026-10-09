@@ -24,7 +24,8 @@ interface ArgParser {
 
 const envParser: ArgParser = { matches: isEnvInvocation, parse: envParsedArgs };
 const createParser: ArgParser = { matches: (cmd) => cmd === "create", parse: createParsedArgs };
-const urlParser: ArgParser = { matches: (_cmd, args) => isUrlArg(args[1]), parse: urlParsedArgs };
+// A room link (https://j01n.me/room/<id>#<secret>) carries its own secret, so it parses like an invite file.
+const urlParser: ArgParser = { matches: (_cmd, args) => isUrlArg(args[1]) && !args[1].includes("#"), parse: urlParsedArgs };
 const inviteParser: ArgParser = { matches: (_cmd, args) => !!args[1], parse: inviteParsedArgs };
 const restParser: ArgParser = { matches: () => true, parse: (cmd, args) => ({ cmd, rest: args.slice(1) }) };
 const argParsers = [envParser, createParser, urlParser, inviteParser];

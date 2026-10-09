@@ -26,6 +26,7 @@ interface RoomRouteHandlers {
   participants(): HandlerResult;
   status(): HandlerResult;
   events(): HandlerResult;
+  wait(): HandlerResult;
   hooks(): HandlerResult;
   createHook(): HandlerResult;
   deleteHook(hookId: string): HandlerResult;
@@ -59,6 +60,7 @@ function exactRoutes(request: Request, handlers: RoomRouteHandlers): Record<stri
     "/export": { GET: handlers.export },
     "/status": { GET: handlers.status },
     "/events": { GET: handlers.events },
+    "/wait": { GET: handlers.wait },
     "/extend": { POST: handlers.extend },
     "/transition": { POST: handlers.transition },
     "/hooks": { GET: handlers.hooks, POST: handlers.createHook },

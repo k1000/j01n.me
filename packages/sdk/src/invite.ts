@@ -41,6 +41,17 @@ export function buildMinimalInvite(roomUrlRaw: string, joinSecret: string): Invi
   };
 }
 
+/** The one-line room link: https://<host>/room/<id>#<join_secret>. */
+export function inviteLink(roomUrl: string, joinSecret: string): string {
+  return `${roomUrl.replace(/\/$/, "").replace(/\/r\/([^/]+)$/, "/room/$1")}#${joinSecret}`;
+}
+
+/** Parse a room link (see inviteLink) into a minimal invitation, or undefined if the text is not one. */
+export function parseInviteLink(text: string): RoomAccess | undefined {
+  const match = /^(https?:\/\/[^/\s]+)\/room\/([^/#?\s]+)#(\S+)$/.exec(text.trim());
+  return match ? { access: `${match[1]}/r/${match[2]}`, join_secret: match[3] } : undefined;
+}
+
 export function normalizeInvite(invite: RoomAccess): Invite {
   const roomUrl = invite.room_url ?? invite.access ?? invite.follow;
   if (!roomUrl || !invite.join_secret) throw new Error("invite must include access (or room_url) and join_secret");

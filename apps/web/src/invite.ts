@@ -1,3 +1,4 @@
+import { inviteLink } from "@j01n/sdk/invite";
 import type { Context } from "hono";
 import { hashJoinSecret, randomBase64Url } from "@j01n/sdk/crypto";
 import { INVITE_TTL_MS, MIN_INVITE_TTL_MS, MAX_INVITE_TTL_MS } from "./constants";
@@ -104,6 +105,7 @@ export async function createRoomDirect(
   const data: Record<string, unknown> = {
     access: roomUrl,
     join_secret: joinSecret,
+    invite_link: inviteLink(roomUrl, joinSecret),
     room_name: normalized.roomName,
     purpose: normalized.purpose,
     host_id: normalized.hostId,
@@ -119,7 +121,7 @@ export async function createRoomDirect(
     service_url: "https://j01n.me",
     source_url: "https://github.com/k1000/j01n.me",
     security_url: "https://j01n.me/security",
-    how_to_join: `mkdir -p .j01n && curl -fsSL https://j01n.me/client/j01n.js -o .j01n/j01n.js && node .j01n/j01n.js join <room_url> <join_secret> <your_name>`,
+    how_to_join: `mkdir -p .j01n && curl -fsSL https://j01n.me/client/j01n.js -o .j01n/j01n.js && node .j01n/j01n.js join ${inviteLink(roomUrl, joinSecret)} <your_name>`,
   };
   return { data, joinSecret, roomId, roomUrl, hostJoined };
 }

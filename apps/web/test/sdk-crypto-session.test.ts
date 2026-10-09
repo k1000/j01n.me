@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
+import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
 import type { RoomMessage } from "../src/types";
 
 async function exchangeKeys(...sessions: Array<{ id: string; session: Awaited<ReturnType<typeof createSdkCryptoSession>> }>): Promise<void> {
@@ -54,6 +55,16 @@ describe("SDK crypto session", () => {
     expect(decrypted).toEqual({ text: "for bob" });
   });
 
+  it("the sender can decrypt its own direct message", async () => {
+    const alice = { id: "alice", session: await createSdkCryptoSession("alice") };
+    const bob = { id: "bob", session: await createSdkCryptoSession("bob") };
+    await exchangeKeys(alice, bob);
+
+    const ciphertext = await alice.session.encryptForSend({ text: "for bob" }, "bob");
+
+    expect(await alice.session.decryptMessageBody(encryptedMessage("alice", "bob", ciphertext))).toEqual({ text: "for bob" });
+  });
+
   it("broadcast messages are decryptable by all participants and the sender itself", async () => {
     const alice = { id: "alice", session: await createSdkCryptoSession("alice") };
     const bob = { id: "bob", session: await createSdkCryptoSession("bob") };
@@ -88,5 +99,14 @@ describe("SDK crypto session", () => {
       { ...keyExchangeMessage("bob", bobAnnounce), intent: "notify" },
     ]);
     await expect(alice.encryptForSend({ text: "x" }, "bob")).rejects.toThrow(/No public key/);
+  });
+});
+
+describe("room link", () => {
+  it("round-trips a room URL and join secret", () => {
+    const link = inviteLink("https://j01n.me/r/abc123", "s3cr-et_x");
+    expect(link).toBe("https://j01n.me/room/abc123#s3cr-et_x");
+    expect(parseInviteLink(link)).toEqual({ access: "https://j01n.me/r/abc123", join_secret: "s3cr-et_x" });
+    expect(parseInviteLink('{"access":"https://j01n.me/r/abc123"}')).toBeUndefined();
   });
 });

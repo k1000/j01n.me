@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { buildMinimalInvite, createRoom, joinRoom, normalizeInvite, resumeRoom, RoomApiError } from "@j01n/sdk";
+import { buildMinimalInvite, createRoom, joinRoom, normalizeInvite, parseInviteLink, resumeRoom, RoomApiError } from "@j01n/sdk";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
@@ -56,6 +56,8 @@ async function openSession(invite: Invite, me: string): Promise<RoomClient> {
 }
 
 function loadInviteFromArg(ref: string): Invite {
+  const link = parseInviteLink(ref);
+  if (link) return normalizeInvite(link);
   const text = ref.trim().startsWith("{") ? ref : readFileSync(ref, "utf8");
   return normalizeInvite(JSON.parse(text));
 }
@@ -121,10 +123,27 @@ async function handleSend(parsed: ParsedArgs): Promise<string> {
   const invite = resolveInvite(parsed);
   const client = await openSession(invite, parsed.me);
 
-  const [toRaw, bodyJson] = parsed.rest;
-  if (!toRaw || !bodyJson) throw new Error('send needs: <to> <json_body> (e.g. all \'{"text":"hello"}\')');
-  const result = await client.send(parseRecipient(toRaw), JSON.parse(bodyJson));
+  const [toRaw, ...words] = parsed.rest;
+  if (!toRaw || words.length === 0) throw new Error("send needs: <to> <text or json_body> (e.g. all hello there)");
+  const result = await client.send(parseRecipient(toRaw), parseMessageBody(words.join(" ")));
   return JSON.stringify(result, null, 2);
+}
+
+/** A JSON object is sent as is; anything else is sent as { text }. */
+function parseMessageBody(raw: string): unknown {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (value && typeof value === "object") return value;
+  } catch { /* plain text */ }
+  return { text: raw };
+}
+
+async function handleWait(parsed: ParsedArgs): Promise<string> {
+  const client = await getClient(parsed);
+  const [timeout] = parsed.rest;
+  const woke = await client.wait({ timeoutSeconds: timeout ? Number(timeout) : undefined });
+  if (woke.timeout) return JSON.stringify({ timeout: true }, null, 2);
+  return JSON.stringify({ woke: woke.event, messages: await client.read() }, null, 2);
 }
 
 async function handleDoctor(parsed: ParsedArgs): Promise<string> {
@@ -260,6 +279,7 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   board_delete: handleBoardDelete,
   status: handleStatus,
   webhook: handleWebhook,
+  wait: handleWait,
   leave: handleLeave,
   close: handleClose,
   participants: handleParticipants,

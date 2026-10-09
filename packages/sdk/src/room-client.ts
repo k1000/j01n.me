@@ -70,6 +70,20 @@ export interface Invite {
   cursor?: number;
 }
 
+/** Result of RoomClient.wait(): the event that woke you, or { timeout: true }. */
+export interface WaitResult {
+  cursor: number;
+  timeout?: true;
+  event?: "message" | "board" | "participant";
+  /** true when an unread message was already waiting. */
+  pending?: true;
+  message?: RoomMessage;
+  keys?: string[];
+  updated_by?: string;
+  participant_id?: string;
+  action?: string;
+}
+
 export interface SendOptions {
   replyTo?: string | null;
   intent?: string;
@@ -93,6 +107,11 @@ export interface RoomClient {
     options?: SendOptions,
   ): Promise<{ ok: true; id: string; seq: number; participant?: Participant }>;
   read(options?: { includeSelf?: boolean; all?: boolean }): Promise<RoomMessage[]>;
+  /**
+   * Block until the next event you can see (message, board or participant change; never your own) or the timeout
+   * (1-50 s). Returns at once if an unread message is waiting. Call read() afterwards to get the messages.
+   */
+  wait(options?: { after?: number; timeoutSeconds?: number }): Promise<WaitResult>;
   participants(): Promise<ParticipantsResponse>;
   updateStatus(state: "free" | "busy", status: string, options?: { model?: string; skills?: string[] }): Promise<{ ok: true; participant: Participant }>;
   /** Opt into push: the room POSTs your visible events to this https URL. null switches back to polling. */
@@ -164,6 +183,13 @@ export async function buildRoomClient(
         participantId,
         body: buildSendPayload(to, sendBody, options),
       });
+    },
+
+    async wait(options = {}) {
+      const url = new URL(`${invite.room_url.replace(/\/$/, "")}/wait`);
+      if (options.after !== undefined) url.searchParams.set("after", String(options.after));
+      if (options.timeoutSeconds) url.searchParams.set("timeout", String(options.timeoutSeconds));
+      return request<WaitResult>(url.toString(), invite, { participantId });
     },
 
     async read(options = {}) {

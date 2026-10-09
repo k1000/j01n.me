@@ -1,5 +1,5 @@
 export { RoomApiError } from "./errors";
-export { buildMinimalInvite, normalizeInvite } from "./invite";
+export { buildMinimalInvite, inviteLink, normalizeInvite, parseInviteLink } from "./invite";
 export { buildRoomClient } from "./room-client";
 
 import { normalizeInvite, type RoomAccess } from "./invite";

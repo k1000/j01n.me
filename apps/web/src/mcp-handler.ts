@@ -20,6 +20,7 @@ import { createRoomDirect } from "./invite";
 import type { CreateRoomBody } from "./invite";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { SdkCryptoSession } from "@j01n/sdk/crypto-session";
+import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
 import type { RoomMessage } from "./types";
 
 // ── Unified session store (per-worker-isolate, in-memory) ───────
@@ -58,15 +59,11 @@ function isUsingParticipantToken(roomUrl: string, participantId: string, fallbac
 }
 
 /**
- * Load persisted sessions from the DO and populate the in-memory cache.
- * Called once at startup by the first tool call that has an env reference.
+ * Load persisted sessions from the DO into the in-memory cache. Called whenever a participant's session or token
+ * is missing in this isolate, since requests for one room can land on different isolates.
  */
-const roomsLoadedFromDo = new Set<string>();
-
 async function loadPersistedSessions(env: Env, roomUrl: string): Promise<void> {
   const roomId = roomUrl.split("/").pop()!;
-  if (roomsLoadedFromDo.has(roomId)) return;
-  roomsLoadedFromDo.add(roomId);
   try {
     const stub = env.RENDEZVOUS.get(env.RENDEZVOUS.idFromName(roomId));
     const res = await stub.fetch("https://rendezvous.internal/__load_session");
@@ -74,7 +71,7 @@ async function loadPersistedSessions(env: Env, roomUrl: string): Promise<void> {
     const data = await res.json() as { sessions: Record<string, PersistedSession> };
     for (const [pid, persisted] of Object.entries(data.sessions)) {
       const key = sessionKey(roomId, pid);
-      if (sessions.has(key)) continue; // don't overwrite fresh sessions
+      if (sessions.get(key)?.token) continue; // keep live sessions; replace token-less ones with the saved session
       try {
         const ecdh = await createSdkCryptoSession(pid, persisted.privateJwk, persisted.publicJwk);
         sessions.set(key, { ecdh, token: persisted.token, roomUrl, persisted: true });
@@ -204,6 +201,10 @@ async function doFetchRaw(
   secret: string,
   options: { method?: string; body?: unknown; participantId?: string } = {},
 ): Promise<Response> {
+  // Requests for one room can land on different isolates: load this participant's saved token if it isn't here.
+  if (options.participantId && !sessions.get(sessionKey(roomUrl.split("/").pop()!, options.participantId))?.token) {
+    await loadPersistedSessions(env, roomUrl);
+  }
   // Use per-participant token when available (more secure than room-level join_secret)
   const effectiveSecret = options.participantId
     ? getEffectiveSecret(roomUrl, options.participantId, secret)
@@ -253,10 +254,43 @@ function formatRoomError(text: string): string {
 }
 
 function parseRoomId(inviteJson: string): { roomId: string; roomUrl: string; secret: string } {
-  const parsed = JSON.parse(inviteJson);
+  const parsed = parseInviteLink(inviteJson) ?? JSON.parse(inviteJson);
   const roomUrl = parsed.room_url ?? parsed.access ?? parsed.follow;
   if (!roomUrl || !parsed.join_secret) throw new Error("Invalid invite: must have access (or room_url) and join_secret");
   return { roomId: roomUrl.split("/").pop()!, roomUrl: roomUrl.replace(/\/$/, ""), secret: parsed.join_secret };
+}
+
+/** A JSON object is sent as is; anything else is sent as { text }. */
+function parseMessageBody(raw: string): unknown {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (value && typeof value === "object") return value;
+  } catch { /* plain text */ }
+  return { text: raw };
+}
+
+async function readRoomMessages(env: Env, params: Record<string, unknown>) {
+  const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+  const participantId = params.participantId as string;
+  const crypto = await ensureEcdhSession(env, roomUrl, participantId, secret);
+  await refreshPeerKeys(env, roomUrl, secret, participantId, crypto);
+
+  const query = [params.all ? "view=all" : "", params.includeSelf ? "include_self=true" : ""].filter(Boolean).join("&");
+  const path = query ? `/?${query}` : "/";
+  const result = await doFetch(env, roomUrl, path, secret, { participantId }) as { messages?: RoomMessage[]; cursor?: number };
+  const messages = result.messages ?? [];
+  // Peers that join without a public_key announce it only via key.exchange messages.
+  await crypto.processKeyExchange(messages);
+
+  // Use SDK's proven decryption
+  const decrypted = await Promise.all(messages.map(async (msg) => {
+    try {
+      const body = await crypto.decryptMessageBody(msg);
+      return { ...msg, body };
+    } catch { return msg; }
+  }));
+
+  return { cursor: result.cursor ?? 0, count: decrypted.length, messages: decrypted };
 }
 
 function parseSkills(value?: string): string[] | undefined {
@@ -366,6 +400,7 @@ async function createRoomTool(env: Env, params: Record<string, unknown>, ctx: To
   const subscribed = await autoSubscribeRoom(env, ctx, room.roomUrl, room.joinSecret, hostId, room.roomId);
 
   const handoff = JSON.stringify({ access: room.roomUrl, join_secret: room.joinSecret });
+  const link = inviteLink(room.roomUrl, room.joinSecret);
   const expiresAt = room.data.expires_at as string | undefined;
   const ttlMinutes = expiresAt ? Math.round((Date.parse(expiresAt) - Date.now()) / 60_000) : undefined;
   return {
@@ -373,11 +408,12 @@ async function createRoomTool(env: Env, params: Record<string, unknown>, ctx: To
     host_joined: true,
     host_cursor: joinData.cursor ?? 0,
     handoff,
+    invite_link: link,
     subscription_active: subscribed,
     join_snippets: {
-      mcp: `join_room with inviteJson=${handoff} and a unique participantId`,
-      pi: `/j01n join ${room.roomUrl} ${room.joinSecret} <your_name>`,
-      cli: `mkdir -p .j01n && curl -fsSL https://j01n.me/client/j01n.js -o .j01n/j01n.js && node .j01n/j01n.js join ${room.roomUrl} ${room.joinSecret} <your_name>`,
+      mcp: `join_room with inviteJson=${link} and a unique participantId`,
+      pi: `/j01n join ${link} <your_name>`,
+      cli: `mkdir -p .j01n && curl -fsSL https://j01n.me/client/j01n.js -o .j01n/j01n.js && node .j01n/j01n.js join ${link} <your_name>`,
     },
     next_steps: [
       "Send the invitee the join_snippets line for their client (treat join_secret as a credential).",
@@ -658,7 +694,7 @@ async function pumpRoomEvents(
   }
 }
 
-const INVITE_JSON_PARAM = { type: "string", description: 'The handoff JSON string from create_room: {"access":"<room_url>","join_secret":"<secret>"}' };
+const INVITE_JSON_PARAM = { type: "string", description: 'The room link from create_room (https://j01n.me/room/<id>#<secret>) or the handoff JSON {"access":"<room_url>","join_secret":"<secret>"}' };
 const WEBHOOK_URL_PARAM = { type: "string", description: 'Optional, only if you can expose a public https endpoint: the room POSTs events you can see (messages to you or all, board and participant changes) there as wake-up signals, then call read_messages. Omit to poll with read_messages (default). "off" removes it.' };
 const webhookUrlBody = (value: unknown) => (typeof value === "string" ? { webhook_url: value === "off" ? null : value } : {});
 
@@ -699,11 +735,17 @@ const tools: Record<string, ToolDef> = {
       const crypto = await ensureEcdhSession(env, roomUrl, participantId, secret);
       const { public_key } = await crypto.announceKeyBody();
 
+      // Joining uses the room secret; the participant id is in the path.
       const joinResult = await doFetch(env, roomUrl, `/participants/${encodeURIComponent(participantId)}`, secret, {
         method: "PUT",
-        participantId,
         body: { public_key, state: "free", status: "joined via hosted MCP", ...webhookUrlBody(params.webhookUrl) },
       }) as JoinResponse & { cursor?: number };
+
+      // Store the per-participant token first: every call below (and later tools) authenticates with it.
+      if (joinResult.participant_token) {
+        storeToken(roomUrl.split("/").pop()!, participantId, joinResult.participant_token, roomUrl);
+        await persistSessionToDo(env, roomUrl, participantId, true);
+      }
 
       // Refresh peer keys from server (handles cross-isolate session loss)
       await refreshPeerKeys(env, roomUrl, secret, participantId, crypto);
@@ -713,12 +755,6 @@ const tools: Record<string, ToolDef> = {
         method: "POST", participantId,
         body: { to: "all", intent: "key.exchange", body: { public_key } },
       });
-
-      // Store session with per-participant token for subsequent calls
-      if (joinResult.participant_token) {
-        storeToken(roomUrl.split("/").pop()!, participantId, joinResult.participant_token, roomUrl);
-        await persistSessionToDo(env, roomUrl, participantId, true);
-      }
 
       // Auto-subscribe the MCP session to room events (no separate subscribe_room call needed)
       const subscribed = await autoSubscribeRoom(env, ctx, roomUrl, secret, participantId, roomUrl.split("/").pop()!);
@@ -759,7 +795,7 @@ const tools: Record<string, ToolDef> = {
       await refreshPeerKeys(env, roomUrl, secret, participantId, crypto);
 
       const to = params.to === "all" ? "all" : (params.to as string).includes(",") ? (params.to as string).split(",").map((s) => s.trim()) : params.to as string;
-      const encryptedBody = await crypto.encryptForSend(JSON.parse(params.body as string), to);
+      const encryptedBody = await crypto.encryptForSend(parseMessageBody(params.body as string), to);
 
       const body: Record<string, unknown> = {
         to, body: encryptedBody,
@@ -781,28 +817,26 @@ const tools: Record<string, ToolDef> = {
       },
       required: ["inviteJson", "participantId"],
     },
+    handler: (env, params) => readRoomMessages(env, params),
+  },
+
+  wait_for_event: {
+    description: "Wait until something happens in the room that you can see (a message to you or all, a board or participant change; never your own action) or the timeout, then return the new messages, decrypted. Call it at the end of a turn instead of polling read_messages.",
+    inputSchema: {
+      type: "object", properties: {
+        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
+        timeoutSeconds: { type: "number", description: "1-50, default 50" },
+      }, required: ["inviteJson", "participantId"],
+    },
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       const participantId = params.participantId as string;
-      const crypto = await ensureEcdhSession(env, roomUrl, participantId, secret);
-      await refreshPeerKeys(env, roomUrl, secret, participantId, crypto);
-
-      // Always include self messages so senders can read their own messages.
-      const path = params.all ? "/?view=all&include_self=true" : "/?include_self=true";
-      const result = await doFetch(env, roomUrl, path, secret, { participantId }) as { messages?: RoomMessage[]; cursor?: number };
-      const messages = result.messages ?? [];
-      // Peers that join without a public_key announce it only via key.exchange messages.
-      await crypto.processKeyExchange(messages);
-
-      // Use SDK's proven decryption
-      const decrypted = await Promise.all(messages.map(async (msg) => {
-        try {
-          const body = await crypto.decryptMessageBody(msg);
-          return { ...msg, body };
-        } catch { return msg; }
-      }));
-
-      return { cursor: result.cursor ?? 0, count: decrypted.length, messages: decrypted };
+      await ensureEcdhSession(env, roomUrl, participantId, secret);
+      const timeout = Math.min(Math.max(Number(params.timeoutSeconds) || 50, 1), 50);
+      const woke = await doFetch(env, roomUrl, `/wait?timeout=${timeout}`, secret, { participantId }) as { timeout?: boolean; event?: string };
+      if (woke.timeout) return { timeout: true };
+      const read = await readRoomMessages(env, { inviteJson: params.inviteJson, participantId });
+      return { woke: woke.event, ...read };
     },
   },
 

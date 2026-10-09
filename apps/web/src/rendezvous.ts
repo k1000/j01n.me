@@ -8,6 +8,7 @@ import type { RoomEventBus } from "./room/events";
 import { roomExport, roomInfo, roomStatus, roomTransitionInfo } from "./room/info";
 import { RoomInitController } from "./room/init-controller";
 import { RoomMessageController } from "./room/message-controller";
+import { visibleTo } from "./room/messages";
 import { activeParticipants, publicParticipant } from "./room/participants";
 import { RoomParticipantController } from "./room/participant-controller";
 import { createHook, deleteHook } from "./room/hooks";
@@ -138,6 +139,7 @@ export class RendezvousSession implements DurableObject {
       participants: () => this.handleParticipants(request, invite),
       status: () => this.handleStatus(request, invite),
       events: () => this.handleEvents(request, invite),
+      wait: () => this.handleWait(request, invite),
       extend: () => this.handleExtendTtl(request, invite),
       transition: () => this.handleTransition(request, invite),
       hooks: () => this.handleListHooks(request, invite),
@@ -245,6 +247,25 @@ export class RendezvousSession implements DurableObject {
       }
       const includeSelf = new URL(request.url).searchParams.get("include_self") === "true";
       return this.events.subscribe(auth.participantId, includeSelf, invite.nextSeq, isHost);
+    });
+  }
+
+  /**
+   * Hold the request until the next event this participant can see, or a timeout (1-50 s, default 50).
+   * Returns at once when a visible message newer than `after` (default: your last read) already exists.
+   */
+  private handleWait(request: Request, invite: InviteState): Promise<Response> {
+    return participantTokenAuthThen(invite, request, async (auth) => {
+      const joined = await requireJoined(invite, auth);
+      if (joined instanceof Response) return joined;
+      const params = new URL(request.url).searchParams;
+      const after = Number(params.get("after") ?? invite.participants[auth.participantId]?.last_read_seq ?? 0);
+      const timeoutSeconds = Math.min(Math.max(Number(params.get("timeout")) || 50, 1), 50);
+      const pending = invite.messages.some((m) => m.seq > after && m.from !== auth.participantId && visibleTo(m, auth.participantId));
+      if (pending) return json({ event: "message", pending: true, cursor: invite.nextSeq });
+      const event = await this.events.wait(auth.participantId, timeoutSeconds * 1000);
+      if (!event) return json({ timeout: true, cursor: invite.nextSeq });
+      return json({ ...event, cursor: event.event === "message" ? event.last_seq : invite.nextSeq });
     });
   }
 

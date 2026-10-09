@@ -201,7 +201,7 @@ describe("public client assets", () => {
 
     const helper = await app.request("/client/j01n.js");
     expect(helper.status).toBe(200);
-    expect(await helper.text()).toContain("Commands: create, join, send, read, inbox, watch, doctor");
+    expect(await helper.text()).toContain("Commands: create, join, send, read, inbox, watch, wait, doctor, webhook");
 
     const shell = await app.request("/client/crypto.sh");
     expect(shell.status).toBe(200);

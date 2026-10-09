@@ -37,7 +37,9 @@ function makeRoomEnv(events: RoomEvents) {
   return {
     RENDEZVOUS: {
       idFromName: () => "id",
-      get: () => ({ fetch: async () => events.subscribe("agent-a", false, 0) }),
+      get: () => ({
+        fetch: async (url: string) => url.includes("__load_session") ? Response.json({ sessions: {} }) : events.subscribe("agent-a", false, 0),
+      }),
     },
   } as never;
 }
@@ -449,6 +451,65 @@ describe("hosted MCP handler", () => {
     }
   });
 
+  it("waits for an event, takes a room link and plain text, and reads others' messages by default", async () => {
+    const requests: Array<[string | undefined, string, unknown]> = [];
+    const env = {
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({
+          fetch: async (url: string, init?: RequestInit) => {
+            const u = new URL(url);
+            requests.push([init?.method ?? "GET", u.pathname + u.search, init?.body ? JSON.parse(init.body as string) : undefined]);
+            if (u.pathname.endsWith("/wait")) return Response.json({ event: "message", cursor: 3 });
+            if (u.pathname.endsWith("/participants")) return Response.json({ participants: [] });
+            return Response.json({ ok: true, cursor: 3, messages: [], seq: 4 });
+          },
+        }),
+      },
+    } as never;
+    const link = "https://j01n.me/room/link-room#secret";
+    const call = (name: string, args: Record<string, unknown>) =>
+      handleMcpRequest(rpc("tools/call", { name, arguments: { inviteJson: link, participantId: "a", ...args } }), env).then((r) => toolResultText<Record<string, unknown>>(r));
+
+    expect(await call("wait_for_event", { timeoutSeconds: 5 })).toMatchObject({ woke: "message", messages: [] });
+    expect(requests.some(([, path]) => path === "/wait?timeout=5")).toBe(true);
+    expect(requests.some(([method, path]) => method === "GET" && path === "/")).toBe(true);
+
+    requests.length = 0;
+    await call("send_message", { to: "all", body: "hello there" });
+    const sent = requests.find(([method, path]) => method === "POST" && path === "/");
+    expect(sent?.[2]).toMatchObject({ to: "all" });
+  });
+
+  it("join_room announces its key with the new participant token", async () => {
+    const announcedWith: string[] = [];
+    const env = {
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({
+          fetch: async (url: string, init?: RequestInit) => {
+            const path = new URL(url).pathname;
+            const auth = new Headers(init?.headers).get("authorization");
+            if (path.includes("__load_session")) return Response.json({ sessions: {} });
+            if (path.includes("__save_session")) return Response.json({ ok: true });
+            if (init?.method === "PUT") return Response.json({ ok: true, cursor: 0, participant_token: "tok-b" });
+            // Mirrors the server: after joining, only the participant token is accepted.
+            if (auth !== "Bearer tok-b") return Response.json({ error: "participant token is required" }, { status: 403 });
+            if (init?.method === "POST") announcedWith.push(auth);
+            return Response.json({ ok: true, participants: [], messages: [] });
+          },
+        }),
+      },
+    } as never;
+
+    const result = await toolResultText<{ ok: boolean }>(await handleMcpRequest(rpc("tools/call", {
+      name: "join_room", arguments: { inviteJson: "https://j01n.me/room/join-order-room#secret", participantId: "b" },
+    }), env));
+
+    expect(result.ok).toBe(true);
+    expect(announcedWith).toEqual(["Bearer tok-b"]);
+  });
+
   it("writes the board with set_board_key, patch_board and delete_board_key", async () => {
     const calls: Array<[string | undefined, string, unknown]> = [];
     const env = {
@@ -488,13 +549,16 @@ describe("hosted MCP handler", () => {
     const response = await handleMcpRequest(rpc("tools/call", { name: "create_room", arguments: { hostId: "lead" } }), env);
     const result = await toolResultText<{
       access: string; join_secret: string;
+      invite_link: string;
       join_snippets: { mcp: string; pi: string; cli: string };
       next_steps: string[];
     }>(response);
 
-    expect(result.join_snippets.pi).toBe(`/j01n join ${result.access} ${result.join_secret} <your_name>`);
-    expect(result.join_snippets.cli).toContain(`join ${result.access} ${result.join_secret}`);
-    expect(result.join_snippets.mcp).toContain(result.join_secret);
+    const link = `${result.access.replace("/r/", "/room/")}#${result.join_secret}`;
+    expect(result.invite_link).toBe(link);
+    expect(result.join_snippets.pi).toBe(`/j01n join ${link} <your_name>`);
+    expect(result.join_snippets.cli).toContain(`join ${link} <your_name>`);
+    expect(result.join_snippets.mcp).toContain(link);
     expect(result.next_steps.join(" ")).toMatch(/read_messages with participantId "lead".*Room expires in ~\d+ min/);
   });
 

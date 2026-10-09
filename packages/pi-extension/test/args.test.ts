@@ -12,6 +12,12 @@ describe("pi-extension args", () => {
     });
   });
 
+  it("parses a room link like an invite (the link carries its secret)", () => {
+    expect(parseArgs(["join", "https://j01n.me/room/abc#secret", "pi-agent"], {})).toMatchObject({
+      cmd: "join", roomUrlOrInvite: "https://j01n.me/room/abc#secret", me: "pi-agent",
+    });
+  });
+
   it("parses invite-file command form", () => {
     expect(parseArgs(["read", "room.json", "agent-b"])).toEqual({
       cmd: "read",

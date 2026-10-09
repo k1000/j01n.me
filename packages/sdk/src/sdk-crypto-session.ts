@@ -136,7 +136,9 @@ export async function createSdkCryptoSession(
       }
 
       if (!keys) {
-        const sharedKey = msg.from === participantId ? selfKey : await ensureSharedKey(msg.from);
+        // A direct message uses the key shared by sender and recipient, so for your own DM that is the recipient's.
+        const peerId = msg.from !== participantId ? msg.from : Array.isArray(msg.to) ? msg.to[0] : msg.to;
+        const sharedKey = peerId === participantId ? selfKey : await ensureSharedKey(peerId);
         if (!sharedKey) return body;
         return JSON.parse(await decryptWithKey(sharedKey, ciphertext, iv));
       }

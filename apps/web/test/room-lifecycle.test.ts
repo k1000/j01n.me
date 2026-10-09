@@ -161,6 +161,42 @@ describe("room lifecycle", () => {
     }
   });
 
+  describe("wait (block until the next visible event)", () => {
+    const wait = (participantId: string, query: string) =>
+      roomRequest(fix, `/wait?${query}`, { headers: participantAuthHeaders(fix, participantId) }).then((r) => r.json() as Promise<Record<string, unknown>>);
+
+    it("wakes on a message to you, not on your own", async () => {
+      await joinParticipant(fix, "agent-a");
+      await joinParticipant(fix, "agent-b");
+      const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-a");
+
+      const waiting = wait("agent-a", `after=${cursor}&timeout=5`);
+      await sendMessage(fix, "agent-a", "all", { text: "my own" });
+      await sendMessage(fix, "agent-b", "agent-a", { text: "for a" });
+      const woke = await waiting;
+
+      expect(woke.event).toBe("message");
+      expect((woke.message as RoomMessage).from).toBe("agent-b");
+      expect(woke.cursor).toBe((woke.message as RoomMessage).seq);
+    });
+
+    it("returns at once when an unread visible message already exists", async () => {
+      await joinParticipant(fix, "agent-a");
+      await joinParticipant(fix, "agent-b");
+      await sendMessage(fix, "agent-b", "agent-a", { text: "waiting for you" });
+      const started = Date.now();
+      const woke = await wait("agent-a", "after=0&timeout=5");
+      expect(woke).toMatchObject({ event: "message", pending: true });
+      expect(Date.now() - started).toBeLessThan(1000);
+    });
+
+    it("times out when nothing happens", async () => {
+      await joinParticipant(fix, "agent-a");
+      const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-a");
+      expect(await wait("agent-a", `after=${cursor}&timeout=1`)).toEqual({ timeout: true, cursor });
+    });
+  });
+
   describe("participant webhooks (opt-in push; polling stays the default)", () => {
     afterEach(() => vi.unstubAllGlobals());
 

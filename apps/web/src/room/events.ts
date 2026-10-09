@@ -14,8 +14,21 @@ interface EventSubscriber {
   includeAll: boolean;
 }
 
+/** One event a participant can see, as returned by wait(). */
+export type WaitEvent =
+  | { event: "message"; message: RoomMessage; last_seq: number }
+  | { event: "board"; keys: string[]; updated_by: string }
+  | { event: "participant"; participant_id: string; action: string };
+
+interface Waiter {
+  participantId: string;
+  wake: (event: WaitEvent | null) => void;
+}
+
 export interface RoomEventBus {
   subscribe(participantId: string, includeSelf: boolean, lastSeq: number, includeAll?: boolean): Response;
+  /** Resolve with the next event this participant can see (never its own action), or null after timeoutMs. */
+  wait(participantId: string, timeoutMs: number): Promise<WaitEvent | null>;
   notifyMessage(message: RoomMessage, lastSeq: number): void;
   notifyBoard(keys: string | string[], updatedBy: string): void;
   notifyParticipant(participantId: string, action: string, participant?: Participant): void;
@@ -23,7 +36,30 @@ export interface RoomEventBus {
 
 export class RoomEvents implements RoomEventBus {
   private readonly subscribers = new Map<string, EventSubscriber>();
+  private readonly waiters = new Set<Waiter>();
   private notificationCount = 0;
+
+  wait(participantId: string, timeoutMs: number): Promise<WaitEvent | null> {
+    return new Promise((resolve) => {
+      const waiter: Waiter = {
+        participantId,
+        wake: (event) => {
+          clearTimeout(timer);
+          this.waiters.delete(waiter);
+          resolve(event);
+        },
+      };
+      const timer = setTimeout(() => waiter.wake(null), timeoutMs);
+      this.waiters.add(waiter);
+    });
+  }
+
+  /** Wake every waiter that can see this event, except the participant who caused it. */
+  private wakeWaiters(event: WaitEvent, actor: string, canSee: (participantId: string) => boolean = () => true): void {
+    for (const waiter of [...this.waiters]) {
+      if (waiter.participantId !== actor && canSee(waiter.participantId)) waiter.wake(event);
+    }
+  }
 
   subscribe(participantId: string, includeSelf: boolean, lastSeq: number, includeAll = false): Response {
     let interval: ReturnType<typeof setInterval> | undefined;
@@ -57,6 +93,7 @@ export class RoomEvents implements RoomEventBus {
   }
 
   notifyMessage(message: RoomMessage, lastSeq: number): void {
+    this.wakeWaiters({ event: "message", message, last_seq: lastSeq }, message.from, (id) => visibleTo(message, id));
     this.maybeSweep();
     for (const [id, subscriber] of this.subscribers) {
       if (!subscriber.includeAll) {
@@ -68,6 +105,7 @@ export class RoomEvents implements RoomEventBus {
   }
 
   notifyBoard(keys: string | string[], updatedBy: string): void {
+    this.wakeWaiters({ event: "board", keys: Array.isArray(keys) ? keys : [keys], updated_by: updatedBy }, updatedBy);
     this.maybeSweep();
     for (const [id, subscriber] of this.subscribers) {
       this.enqueueOrDelete(id, subscriber.controller, "board", { keys: Array.isArray(keys) ? keys : [keys], updated_by: updatedBy });
@@ -75,6 +113,7 @@ export class RoomEvents implements RoomEventBus {
   }
 
   notifyParticipant(participantId: string, action: string, participant?: Participant): void {
+    this.wakeWaiters({ event: "participant", participant_id: participantId, action }, participantId);
     this.maybeSweep();
     for (const [id, subscriber] of this.subscribers) {
       this.enqueueOrDelete(id, subscriber.controller, "participant", { participant_id: participantId, action, participant: publicParticipant(participant) });

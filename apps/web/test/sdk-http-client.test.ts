@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createRoom, createRoomAndJoin, joinRoom, resumeRoom, type Invite } from "@j01n/sdk";
+import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 
 async function withFetch<T>(impl: typeof globalThis.fetch, fn: () => Promise<T>): Promise<T> {
   const original = globalThis.fetch;
@@ -193,5 +194,23 @@ describe("SDK HTTP client", () => {
     });
 
     expect(requests.some((r) => r.method === "PUT")).toBe(false);
+  });
+
+  it("read keeps messages it cannot decrypt instead of throwing", async () => {
+    const peer = await createSdkCryptoSession("peer");
+    const oldMe = await createSdkCryptoSession("me");
+    await peer.processPeerKeys([{ id: "me", public_key: (await oldMe.announceKeyBody()).public_key }]);
+    const forOldKey = await peer.encryptForSend({ text: "for my old key" }, "me");
+    const messages = [
+      { id: "k", seq: 1, from: "peer", to: "all", intent: "key.exchange", body: await peer.announceKeyBody() },
+      { id: "m", seq: 2, from: "peer", to: "me", intent: "notify", body: forOldKey },
+    ];
+    const impl = (async () => Response.json({ cursor: 2, messages })) as unknown as typeof fetch;
+
+    // Resumed with a fresh keypair, as after losing the original session.
+    const room = await resumeRoom({ ...makeInvite(), participant_token: "tok" }, "me", await createSdkCryptoSession("me"));
+    const read = await withFetch(impl, () => room.read({ all: true }));
+
+    expect(read[1].body).toEqual(forOldKey);
   });
 });

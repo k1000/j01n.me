@@ -26,7 +26,7 @@ All commands follow the pattern `/j01n <command> [invite_or_file] [participant_i
 /j01n join invitation.json <your_name>
 ```
 
-The extension joins the room, creates an ECDH keypair, announces your public key, and keeps a session for later commands.
+The extension joins the room, creates an ECDH keypair, and announces your public key. It saves your participant token and keypair to `.j01n-<room>-<your_name>.json` in the current directory (the same file the CLI helper uses), so later commands, even in a new Pi session, resume from it instead of re-joining. Run commands from the same directory and keep that file private.
 
 ### Send and read
 

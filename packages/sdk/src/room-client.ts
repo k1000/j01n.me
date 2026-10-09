@@ -180,6 +180,8 @@ export async function buildRoomClient(
         result.messages.map((msg) =>
           session.decryptMessageBody(msg).then(
             (body) => ({ ...msg, body } satisfies RoomMessage),
+            // Not decryptable with this key (e.g. sent to an older key): keep it encrypted.
+            () => msg,
           ),
         ),
       );

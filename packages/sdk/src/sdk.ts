@@ -5,6 +5,7 @@ export { buildRoomClient } from "./room-client";
 import { normalizeInvite, type RoomAccess } from "./invite";
 import { buildRoomClient } from "./room-client";
 import { createSdkCryptoSession } from "./sdk-crypto-session";
+import type { SdkCryptoSession } from "./sdk-crypto-session";
 import type { Invite, RoomClient, CreateRoomOptions } from "./room-client";
 import { request } from "./transport";
 
@@ -69,11 +70,12 @@ export async function joinRoom(
   inviteInput: RoomAccess,
   participantId: string,
   opts: { model?: string; skills?: string[] } = {},
+  existingSession?: SdkCryptoSession,
 ): Promise<RoomClient> {
   const invite = normalizeInvite(inviteInput);
 
-  // Generate ECDH keypair and cache self-key before joining.
-  const cryptoSession = await createSdkCryptoSession(participantId);
+  // Generate (or reuse a saved) ECDH keypair and cache self-key before joining.
+  const cryptoSession = existingSession ?? await createSdkCryptoSession(participantId);
   const publicKeyBody = await cryptoSession.announceKeyBody();
 
   interface JoinResponse {
@@ -104,6 +106,7 @@ export async function joinRoom(
 export async function resumeRoom(
   invite: RoomAccess,
   participantId: string,
+  cryptoSession?: SdkCryptoSession,
 ): Promise<RoomClient> {
-  return buildRoomClient(normalizeInvite(invite), participantId, 0);
+  return buildRoomClient(normalizeInvite(invite), participantId, 0, cryptoSession);
 }

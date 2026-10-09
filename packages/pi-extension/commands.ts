@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
-import { buildMinimalInvite, createRoom, normalizeInvite } from "@j01n/sdk";
-import { getOrCreateSession } from "@j01n/sdk/session";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { buildMinimalInvite, createRoom, joinRoom, normalizeInvite, resumeRoom, RoomApiError } from "@j01n/sdk";
+import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
 
@@ -8,8 +8,51 @@ const sessions = new Map<string, RoomClient>();
 
 async function getClient(parsed: ParsedArgs): Promise<RoomClient> {
   if (!parsed.me) throw new Error("needs: participant_id. Use join first to create a session.");
-  const invite = resolveInvite(parsed);
-  return getOrCreateSession(sessions, invite, parsed.me);
+  return openSession(resolveInvite(parsed), parsed.me);
+}
+
+/** Same key file name and format as the tiny CLI helper, so both share one identity per room. */
+function keyFilePath(roomUrl: string, me: string): string {
+  return ".j01n-" + new URL(roomUrl).pathname.replace(/[^a-zA-Z0-9_-]/g, "_") + "-" + me.replace(/[^a-zA-Z0-9_-]/g, "_") + ".json";
+}
+
+interface SavedSession {
+  privateJwk?: JsonWebKey;
+  publicJwk?: JsonWebKey;
+  peers?: Record<string, string>;
+  participantToken?: string;
+}
+
+/**
+ * Join once, then resume on later commands (even from a new Pi process) using the
+ * participant token and ECDH keypair saved in the key file.
+ */
+async function openSession(invite: Invite, me: string): Promise<RoomClient> {
+  const cacheKey = `${invite.room_id}:${me}`;
+  const cached = sessions.get(cacheKey);
+  if (cached) return cached;
+
+  const file = keyFilePath(invite.room_url, me);
+  const saved: SavedSession = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  const crypto = await createSdkCryptoSession(me, saved.privateJwk, saved.publicJwk);
+  const token = invite.participant_token ?? saved.participantToken;
+
+  let client: RoomClient;
+  if (token) {
+    client = await resumeRoom({ ...invite, participant_token: token }, me, crypto);
+  } else {
+    try {
+      client = await joinRoom(invite, me, {}, crypto);
+    } catch (err) {
+      if (err instanceof RoomApiError && err.status === 409) {
+        throw new Error(`${me} already joined this room but no participant token was found in ${file}. Run from the directory where you joined, or pass a participant profile containing participant_token.`);
+      }
+      throw err;
+    }
+  }
+  writeFileSync(file, JSON.stringify({ ...saved, ...(await crypto.exportKeyPair()), participantToken: client.invite.participant_token }, null, 2));
+  sessions.set(cacheKey, client);
+  return client;
 }
 
 function loadInviteFromArg(ref: string): Invite {
@@ -63,7 +106,7 @@ function createBaseUrl(parsed: ParsedArgs): string {
 async function handleJoin(parsed: ParsedArgs): Promise<string> {
   if (!parsed.me) throw new Error("join needs: participant_id");
   const invite = resolveInvite(parsed);
-  const client = await getOrCreateSession(sessions, invite, parsed.me);
+  const client = await openSession(invite, parsed.me);
   return JSON.stringify({
     ok: true,
     participant_id: parsed.me,
@@ -76,7 +119,7 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
 async function handleSend(parsed: ParsedArgs): Promise<string> {
   if (!parsed.me) throw new Error("send needs: participant_id <to> <json_body>");
   const invite = resolveInvite(parsed);
-  const client = await getOrCreateSession(sessions, invite, parsed.me);
+  const client = await openSession(invite, parsed.me);
 
   const [toRaw, bodyJson] = parsed.rest;
   if (!toRaw || !bodyJson) throw new Error('send needs: <to> <json_body> (e.g. all \'{"text":"hello"}\')');
@@ -87,7 +130,7 @@ async function handleSend(parsed: ParsedArgs): Promise<string> {
 async function handleDoctor(parsed: ParsedArgs): Promise<string> {
   if (!parsed.me) throw new Error("doctor needs: participant_id");
   const invite = resolveInvite(parsed);
-  const client = await getOrCreateSession(sessions, invite, parsed.me);
+  const client = await openSession(invite, parsed.me);
 
   const participants = await client.participants();
   const messages = await client.read({ all: true, includeSelf: true });
@@ -119,7 +162,7 @@ function isUndecrypted(message: Awaited<ReturnType<RoomClient["read"]>>[number])
 async function handleRead(parsed: ParsedArgs, all: boolean): Promise<string> {
   if (!parsed.me) throw new Error("read needs: participant_id");
   const invite = resolveInvite(parsed);
-  const client = await getOrCreateSession(sessions, invite, parsed.me);
+  const client = await openSession(invite, parsed.me);
   const messages = await client.read({ all, includeSelf: true });
   return JSON.stringify(messages, null, 2);
 }

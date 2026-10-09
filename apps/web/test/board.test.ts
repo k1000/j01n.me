@@ -48,14 +48,15 @@ describe("board", () => {
     expect(body.entry.value).toEqual(encrypted);
   });
 
-  it("rejects plaintext board values", async () => {
+  it("accepts plain JSON board values", async () => {
     const res = await fix.session.fetch(new Request(`https://room${fix.roomPath}/board/tasks`, {
       method: "PUT",
       headers: { ...participantAuthHeaders(fix, "agent-a"), "content-type": "application/json" },
       body: JSON.stringify({ "task-1": { title: "test" } }),
     }));
-    expect(res.status).toBe(400);
-    await expect(res.json()).resolves.toMatchObject({ error: "board value must be encrypted" });
+    expect(res.status).toBe(200);
+    const body = await getRoomJson<{ entry: { value: unknown } }>(fix, "/board/tasks");
+    expect(body.entry.value).toEqual({ "task-1": { title: "test" } });
   });
 
   it("patches multiple encrypted board keys", async () => {
@@ -159,11 +160,11 @@ describe("board", () => {
     expect(body.board.decisions.updated_by).toBe("host");
   });
 
-  it("rejects plaintext initial board values", async () => {
-    await expect(bootstrapRoom({
-      hostId: "host",
-      initialBoard: { decisions: { api: "REST" } },
-    })).rejects.toThrow("bootstrapRoom failed: 400");
+  it("accepts plain JSON initial board values", async () => {
+    const room = await bootstrapRoom({ hostId: "host", initialBoard: { decisions: { api: "REST" } } });
+    await joinParticipant(room, "host");
+    const body = await getRoomJson<{ board: Record<string, { value: unknown }> }>(room, "/board", "host");
+    expect(body.board.decisions.value).toEqual({ api: "REST" });
   });
 
   it("includes encrypted board state in host export", async () => {

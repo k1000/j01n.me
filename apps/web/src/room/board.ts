@@ -3,7 +3,6 @@ import { MAX_BOARD_VALUE_BYTES, sanitizeId } from "../constants";
 import { json, type GuardResult } from "../format";
 import { normalizeBoardKey, MAX_BOARD_KEY_LENGTH } from "../validation";
 import type { BoardAclRule, BoardEntry, InviteState } from "../types";
-import { isEncryptedEnvelope } from "./encryption-shape";
 
 const ENCODER = new TextEncoder();
 
@@ -32,17 +31,6 @@ function unwrapUiEnvelope(value: unknown): unknown {
 }
 
 function makeBoardEntry(value: unknown, updatedBy: string): BoardEntry | Response {
-  if (!isEncryptedEnvelope(value)) {
-    return json({
-      error: "board value must be encrypted",
-      help: {
-        cli: "node .j01n/j01n.js send participant.j01n.json all '{\\\"text\\\":\\\"hello\\\"}'",
-        crypto_sh: "curl -fsSL https://j01n.me/client/crypto.sh | bash -s enc '<passphrase>' '{\\\"text\\\":\\\"hello\\\"}'",
-        sdk: "npm install @j01n/sdk",
-      },
-      hint: "Encrypt board values client-side before writing them. Use the CLI helper, SDK, or crypto scripts.",
-    }, 400);
-  }
   // Transparently unwrap ui: envelopes so stored board values are clean JSON.
   const cleanValue = unwrapUiEnvelope(value);
   const size = ENCODER.encode(JSON.stringify(cleanValue)).length;

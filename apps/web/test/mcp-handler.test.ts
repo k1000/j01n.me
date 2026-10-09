@@ -401,6 +401,33 @@ describe("hosted MCP handler", () => {
     expect(result.messages[0].body).toEqual({ text: "hi host" });
   });
 
+  it("passes an optional webhookUrl to the participant (\"off\" clears it, omitted = polling)", async () => {
+    const bodies: Array<{ method?: string; body: Record<string, unknown> }> = [];
+    const env = {
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({
+          fetch: async (url: string, init?: RequestInit) => {
+            if (new URL(url).pathname.includes("/participants/")) bodies.push({ method: init?.method, body: JSON.parse(init?.body as string) });
+            if (init?.method === "GET" || !init?.method) return Response.json({ messages: [], participants: [], cursor: 0 });
+            return Response.json({ ok: true, cursor: 0 });
+          },
+        }),
+      },
+    } as never;
+    const invite = JSON.stringify({ access: "https://j01n.me/r/hook-room", join_secret: "secret" });
+
+    await handleMcpRequest(rpc("tools/call", { name: "join_room", arguments: { inviteJson: invite, participantId: "a", webhookUrl: "https://a.example/hook" } }), env);
+    await handleMcpRequest(rpc("tools/call", { name: "update_status", arguments: { inviteJson: invite, participantId: "a", state: "free", status: "x", webhookUrl: "off" } }), env);
+    await handleMcpRequest(rpc("tools/call", { name: "join_room", arguments: { inviteJson: invite, participantId: "b" } }), env);
+
+    expect(bodies.map((b) => [b.method, b.body.webhook_url])).toEqual([
+      ["PUT", "https://a.example/hook"],
+      ["PATCH", null],
+      ["PUT", undefined],
+    ]);
+  });
+
   it("create_room returns ready-to-paste join snippets and next steps", async () => {
     const env = {
       RENDEZVOUS: {

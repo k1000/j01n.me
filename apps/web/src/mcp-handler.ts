@@ -659,6 +659,8 @@ async function pumpRoomEvents(
 }
 
 const INVITE_JSON_PARAM = { type: "string", description: 'The handoff JSON string from create_room: {"access":"<room_url>","join_secret":"<secret>"}' };
+const WEBHOOK_URL_PARAM = { type: "string", description: 'Optional, only if you can expose a public https endpoint: the room POSTs events you can see (messages to you or all, board and participant changes) there as wake-up signals, then call read_messages. Omit to poll with read_messages (default). "off" removes it.' };
+const webhookUrlBody = (value: unknown) => (typeof value === "string" ? { webhook_url: value === "off" ? null : value } : {});
 
 const tools: Record<string, ToolDef> = {
   create_room: {
@@ -687,6 +689,7 @@ const tools: Record<string, ToolDef> = {
       properties: {
         inviteJson: INVITE_JSON_PARAM,
         participantId: { type: "string" },
+        webhookUrl: WEBHOOK_URL_PARAM,
       },
       required: ["inviteJson", "participantId"],
     },
@@ -699,7 +702,7 @@ const tools: Record<string, ToolDef> = {
       const joinResult = await doFetch(env, roomUrl, `/participants/${encodeURIComponent(participantId)}`, secret, {
         method: "PUT",
         participantId,
-        body: { public_key, state: "free", status: "joined via hosted MCP" },
+        body: { public_key, state: "free", status: "joined via hosted MCP", ...webhookUrlBody(params.webhookUrl) },
       }) as JoinResponse & { cursor?: number };
 
       // Refresh peer keys from server (handles cross-isolate session loss)
@@ -813,12 +816,13 @@ const tools: Record<string, ToolDef> = {
   },
 
   update_status: {
-    description: "Update participant availability state and status text.",
+    description: "Update participant availability state and status text, and optionally set or remove your webhook (webhookUrl).",
     inputSchema: {
       type: "object", properties: {
         inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
         state: { type: "string" }, status: { type: "string" },
         model: { type: "string" }, skills: { type: "string" },
+        webhookUrl: WEBHOOK_URL_PARAM,
       }, required: ["inviteJson", "participantId", "state", "status"],
     },
     handler: async (env, params) => {
@@ -831,6 +835,7 @@ const tools: Record<string, ToolDef> = {
           status: params.status,
           model: params.model,
           skills: parseSkills(params.skills as string),
+          ...webhookUrlBody(params.webhookUrl),
         },
       });
     },

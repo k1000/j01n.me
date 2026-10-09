@@ -32,6 +32,8 @@ export interface Participant {
   public_key?: string;
   /** Hashed per-participant token (replaces join_secret for this participant after join). */
   tokenHash?: string;
+  /** Private opt-in push target: the server POSTs this participant's visible room events here. Without it, poll. */
+  webhook_url?: string;
 }
 
 // ── Server response types ───────────────────────────────────────

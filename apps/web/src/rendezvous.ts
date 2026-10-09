@@ -140,14 +140,14 @@ export class RendezvousSession implements DurableObject {
       events: () => this.handleEvents(request, invite),
       extend: () => this.handleExtendTtl(request, invite),
       transition: () => this.handleTransition(request, invite),
-      hooks: () => this.handleListHooks(invite),
+      hooks: () => this.handleListHooks(request, invite),
       createHook: () => this.handleCreateHook(request, invite),
       deleteHook: (hookId) => this.handleDeleteHookById(request, invite, hookId),
     });
   }
 
-  private handleListHooks(invite: InviteState): Promise<Response> {
-    return Promise.resolve(json({ hooks: invite.hooks ?? [], room_id: invite.roomId }));
+  private handleListHooks(request: Request, invite: InviteState): Promise<Response> {
+    return participantTokenAuthThen(invite, request, async () => json({ hooks: invite.hooks ?? [], room_id: invite.roomId }));
   }
 
   private async handleCreateHook(request: Request, invite: InviteState): Promise<Response> {

@@ -95,6 +95,8 @@ export interface RoomClient {
   read(options?: { includeSelf?: boolean; all?: boolean }): Promise<RoomMessage[]>;
   participants(): Promise<ParticipantsResponse>;
   updateStatus(state: "free" | "busy", status: string, options?: { model?: string; skills?: string[] }): Promise<{ ok: true; participant: Participant }>;
+  /** Opt into push: the room POSTs your visible events to this https URL. null switches back to polling. */
+  setWebhook(url: string | null): Promise<{ ok: true; participant: Participant }>;
   board(): Promise<BoardResponse>;
   setBoardKey(key: string, value: unknown): Promise<{ ok: true; key: string; entry: BoardResponse["board"][string] }>;
   patchBoard(values: Record<string, unknown>): Promise<{ ok: true; updated: Record<string, BoardResponse["board"][string]>; board: BoardResponse["board"] }>;
@@ -195,6 +197,13 @@ export async function buildRoomClient(
         `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
         invite,
         { method: "PATCH", participantId, body: { state, status, ...opts } },
+      );
+    },
+    async setWebhook(url: string | null) {
+      return request<{ ok: true; participant: Participant }>(
+        `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
+        invite,
+        { method: "PATCH", participantId, body: { webhook_url: url } },
       );
     },
     async board() {

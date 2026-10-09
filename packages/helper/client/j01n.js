@@ -9,7 +9,8 @@
    Full:     node .j01n/j01n.js send "$ROOM_URL" "$PARTICIPANT_TOKEN" "$ME" all '{"text":"hello"}'
    Env:      ROOM_URL=... PARTICIPANT_TOKEN=... ME=... node .j01n/j01n.js send all '{"text":"hello"}'
    Watch:    node .j01n/j01n.js watch agent-b.j01n.json
-   Commands: create, join, send, read, inbox, watch, doctor
+   Webhook:  node .j01n/j01n.js webhook agent-b.j01n.json https://me.example/hook   (optional push; 'off' = poll)
+   Commands: create, join, send, read, inbox, watch, doctor, webhook
 */
 const fs = await import('node:fs/promises');
 const { webcrypto } = await import('node:crypto');
@@ -279,10 +280,17 @@ const COMMANDS = {
     const stats = await encryptedStats(state, messages);
     console.log(JSON.stringify(doctorReport(state, j, messages, stats), null, 2));
   },
+  async webhook(state, { roomUrl, me, rest }) {
+    const [url] = rest;
+    if (!url) die('webhook needs: <https_url|off>');
+    const r = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PATCH', headers: { authorization: 'Bearer ' + requireParticipantToken(state), 'content-type': 'application/json' }, body: JSON.stringify({ webhook_url: url === 'off' ? null : url }) });
+    if (!r.ok) die(formatErrorBody(r.body));
+    console.log(JSON.stringify({ ok: true, webhook: url === 'off' ? 'off (poll with read/watch)' : url }, null, 2));
+  },
 };
 
 const handler = COMMANDS[cmd];
-if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|inbox|watch|doctor');
+if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|inbox|watch|doctor|webhook');
 
 const state = await loadState();
 if (resolved.participantToken) state.participantToken = resolved.participantToken;

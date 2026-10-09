@@ -205,6 +205,14 @@ async function handleStatus(parsed: ParsedArgs): Promise<string> {
   return JSON.stringify(result, null, 2);
 }
 
+async function handleWebhook(parsed: ParsedArgs): Promise<string> {
+  const client = await getClient(parsed);
+  const [url] = parsed.rest;
+  if (!url) throw new Error("webhook needs: <https_url|off>");
+  const result = await client.setWebhook(url === "off" ? null : url);
+  return JSON.stringify(result, null, 2);
+}
+
 async function handleLeave(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
   await client.leave();
@@ -251,6 +259,7 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   board_patch: handleBoardPatch,
   board_delete: handleBoardDelete,
   status: handleStatus,
+  webhook: handleWebhook,
   leave: handleLeave,
   close: handleClose,
   participants: handleParticipants,

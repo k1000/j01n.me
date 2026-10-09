@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_EXTEND_MS, MAX_BODY_BYTES, MAX_INVITE_TTL_MS, MIN_INVITE_TTL_MS } from "../src/constants";
 import { hashJoinSecret } from "@j01n/sdk/crypto";
 import type { RoomMessage } from "../src/types";
@@ -159,6 +159,67 @@ describe("room lifecycle", () => {
       expect(res.status).toBe(200);
       expect(await res.text()).not.toContain("tokenHash");
     }
+  });
+
+  describe("participant webhooks (opt-in push; polling stays the default)", () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    const setWebhook = (participantId: string, webhook_url: unknown) =>
+      roomRequest(fix, `/participants/${participantId}`, {
+        method: "PATCH",
+        headers: { ...participantAuthHeaders(fix, participantId), "content-type": "application/json" },
+        body: JSON.stringify({ webhook_url }),
+      });
+
+    it("pushes only the events the participant could read, minus its own", async () => {
+      const posts: Array<{ url: string; event: string; body: Record<string, unknown> }> = [];
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+        posts.push({ url, event: (init.headers as Record<string, string>)["x-j01n-event"], body: JSON.parse(init.body as string) });
+        return new Response("ok");
+      });
+      await joinParticipant(fix, "host");
+      await joinParticipant(fix, "agent-a");
+      await joinParticipant(fix, "agent-b");
+      expect((await setWebhook("agent-a", "https://a.example/hook")).status).toBe(200);
+      posts.length = 0;
+
+      await sendMessage(fix, "agent-b", "host", { secret: "not for a" });
+      await sendMessage(fix, "agent-b", "agent-a", { text: "for a" });
+      await sendMessage(fix, "agent-a", "all", { text: "a's own broadcast" });
+      await roomRequest(fix, "/board/tasks", {
+        method: "PUT",
+        headers: { ...participantAuthHeaders(fix, "agent-b"), "content-type": "application/json" },
+        body: JSON.stringify({ todo: 1 }),
+      });
+
+      expect(posts.every((p) => p.url === "https://a.example/hook")).toBe(true);
+      expect(posts.map((p) => p.event)).toEqual(["message", "board"]);
+      expect((posts[0].body.message as RoomMessage).to).toBe("agent-a");
+      expect(posts[1].body).toMatchObject({ keys: ["tasks"], updated_by: "agent-b" });
+
+      expect((await setWebhook("agent-a", null)).status).toBe(200);
+      posts.length = 0;
+      await sendMessage(fix, "agent-b", "agent-a", { text: "back to polling" });
+      expect(posts).toEqual([]);
+    });
+
+    it("keeps the webhook URL private and requires https", async () => {
+      vi.stubGlobal("fetch", async () => new Response("ok"));
+      await joinParticipant(fix, "host");
+      await joinParticipant(fix, "agent-a");
+      expect((await setWebhook("agent-a", "http://a.example/hook")).status).toBe(400);
+      const res = await setWebhook("agent-a", "https://a.example/secret-hook");
+      expect(await res.text()).not.toContain("secret-hook");
+
+      for (const path of ["/participants", "/status", "/export"]) {
+        const listing = await roomRequest(fix, path, { headers: participantAuthHeaders(fix, "host") });
+        expect(await listing.text()).not.toContain("secret-hook");
+      }
+    });
+
+    it("requires auth to list room hooks", async () => {
+      expect((await roomRequest(fix, "/hooks")).status).toBe(401);
+    });
   });
 
   it("rejects send when participant uses join_secret instead of participant_token", async () => {

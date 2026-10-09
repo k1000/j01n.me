@@ -3,12 +3,12 @@ import type { InviteState, Participant } from "../types";
 import { normalizeState, normalizeStatus, normalizeModel, normalizeSkills } from "../validation";
 import { hashJoinSecret, randomBase64Url } from "@j01n/sdk/crypto";
 
-/** Participant as shown to others: drops the token verifier hash used only for auth. */
-export function publicParticipant(participant: Participant): Omit<Participant, "tokenHash">;
-export function publicParticipant(participant: Participant | undefined): Omit<Participant, "tokenHash"> | undefined;
+/** Participant as shown to others: drops the token verifier hash and the private webhook URL. */
+export function publicParticipant(participant: Participant): Omit<Participant, "tokenHash" | "webhook_url">;
+export function publicParticipant(participant: Participant | undefined): Omit<Participant, "tokenHash" | "webhook_url"> | undefined;
 export function publicParticipant(participant: Participant | undefined) {
   if (!participant) return participant;
-  const { tokenHash: _tokenHash, ...rest } = participant;
+  const { tokenHash: _tokenHash, webhook_url: _webhookUrl, ...rest } = participant;
   return rest;
 }
 
@@ -18,6 +18,8 @@ interface ParticipantProfile {
   model?: string;
   skills?: string[];
   public_key?: string;
+  /** null clears the webhook. */
+  webhook_url?: string | null;
 }
 
 export function validateParticipantCanJoin(participants: Record<string, Participant>, participantId: string, maxParticipants: number): GuardResult {
@@ -56,7 +58,19 @@ export function parseParticipantProfile(body: Record<string, unknown>): Particip
   const skills = normalizeSkills(body.skills);
   if (skills instanceof Response) return skills;
   const public_key = typeof body.public_key === "string" ? body.public_key.slice(0, 256) : undefined;
-  return { state, status, model, skills, public_key };
+  const webhook_url = normalizeWebhookUrl(body.webhook_url);
+  if (webhook_url instanceof Response) return webhook_url;
+  return { state, status, model, skills, public_key, webhook_url };
+}
+
+function normalizeWebhookUrl(value: unknown): string | null | undefined | Response {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  if (typeof value !== "string" || value.length > 2048) return json({ error: "webhook_url must be an https URL" }, 400);
+  try {
+    if (new URL(value).protocol === "https:") return value;
+  } catch { /* invalid URL */ }
+  return json({ error: "webhook_url must be an https URL" }, 400);
 }
 
 export function createJoinedParticipant(participantId: string, profile: ParticipantProfile, tokenHash?: string): Participant {
@@ -72,6 +86,7 @@ export function createJoinedParticipant(participantId: string, profile: Particip
     ...(profile.model ? { model: profile.model } : {}),
     ...(profile.skills ? { skills: profile.skills } : {}),
     ...(profile.public_key ? { public_key: profile.public_key } : {}),
+    ...(profile.webhook_url ? { webhook_url: profile.webhook_url } : {}),
     ...(tokenHash ? { tokenHash } : {}),
   };
 }
@@ -92,8 +107,11 @@ export function withTokenIndex(invite: InviteState, tokenOnlyHash: string | unde
 
 function updateParticipantProfile(participant: Participant, profile: ParticipantProfile): Participant {
   const now = new Date().toISOString();
+  const { webhook_url: currentWebhookUrl, ...rest } = participant;
+  const webhook_url = profile.webhook_url === undefined ? currentWebhookUrl : profile.webhook_url ?? undefined;
   return {
-    ...participant,
+    ...rest,
+    ...(webhook_url ? { webhook_url } : {}),
     state: profile.state ?? participant.state ?? "free",
     status: profile.status ?? participant.status ?? "joined",
     status_updated_at: now,

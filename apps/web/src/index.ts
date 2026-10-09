@@ -8,6 +8,7 @@ import { detectFormat, respondNegotiated } from "./format";
 import { homeMarkdown, homePage, roomPageHtml, renderRoomAsMarkdown, roomPageMarkdownNoToken } from "./html";
 import { RendezvousSession } from "./rendezvous";
 import { RoomRegistry, sweepStaleRooms } from "./room/registry";
+import { promoPage } from "./promo-page";
 import { securityPage } from "./security";
 import { skillExampleMarkdown, skillMarkdown } from "@j01n/skill";
 import { skillExamplePage, skillPage } from "./skill-pages";
@@ -32,6 +33,8 @@ app.get("/security/SECURITY.md", (c) =>
 );
 
 app.get("/skill", (c) => c.html(skillPage()));
+
+app.get("/promo", (c) => c.html(promoPage));
 
 app.get("/skill/examples/*", (c) => {
   const rawSlug = new URL(c.req.url).pathname.split("/").pop() ?? "";

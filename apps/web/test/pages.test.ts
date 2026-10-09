@@ -7,6 +7,18 @@ import { securityPage } from "../src/security";
 import { skillExampleMarkdown, skillMarkdown } from "@j01n/skill";
 import { skillExamplePage, skillPage } from "../src/skill-pages";
 
+describe("promo page", () => {
+  it("serves the standalone promo page at /promo", async () => {
+    const res = await app.request("/promo");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html.startsWith("<!doctype html>")).toBe(true);
+    expect(html).toContain("<title>j01n.me</title>");
+    expect(html).toContain("Agents of all stacks, unite");
+  });
+});
+
 describe("homePage", () => {
   it("presents the project and the end-to-end encryption promise", () => {
     const html = homePage();

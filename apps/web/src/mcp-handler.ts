@@ -843,10 +843,64 @@ const tools: Record<string, ToolDef> = {
 
   read_board: {
     description: "Read the shared board.",
-    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM }, required: ["inviteJson"] },
+    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      return doFetch(env, roomUrl, "/board", secret);
+      const participantId = params.participantId as string;
+      await ensureEcdhSession(env, roomUrl, participantId, secret);
+      return doFetch(env, roomUrl, "/board", secret, { participantId });
+    },
+  },
+
+  set_board_key: {
+    description: "Set one key on the shared board (tasks, claims, blockers, decisions). The value replaces the key's current value.",
+    inputSchema: {
+      type: "object", properties: {
+        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
+        key: { type: "string" },
+        value: { type: "string", description: 'The value as a JSON string, e.g. {"t-1":{"title":"Docs","owner":"agent-b"}}' },
+      }, required: ["inviteJson", "participantId", "key", "value"],
+    },
+    handler: async (env, params) => {
+      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+      const participantId = params.participantId as string;
+      await ensureEcdhSession(env, roomUrl, participantId, secret);
+      return doFetch(env, roomUrl, `/board/${encodeURIComponent(params.key as string)}`, secret, {
+        method: "PUT", participantId, body: JSON.parse(params.value as string),
+      });
+    },
+  },
+
+  patch_board: {
+    description: "Set several board keys at once.",
+    inputSchema: {
+      type: "object", properties: {
+        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
+        values: { type: "string", description: 'A JSON object string of key -> value, e.g. {"tasks":{...},"blockers":{}}' },
+      }, required: ["inviteJson", "participantId", "values"],
+    },
+    handler: async (env, params) => {
+      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+      const participantId = params.participantId as string;
+      const values = parseJsonParam(params.values);
+      if (!values) throw new Error("values must be a JSON object string");
+      await ensureEcdhSession(env, roomUrl, participantId, secret);
+      return doFetch(env, roomUrl, "/board", secret, { method: "PATCH", participantId, body: values });
+    },
+  },
+
+  delete_board_key: {
+    description: "Delete one key from the shared board.",
+    inputSchema: {
+      type: "object", properties: {
+        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" }, key: { type: "string" },
+      }, required: ["inviteJson", "participantId", "key"],
+    },
+    handler: async (env, params) => {
+      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+      const participantId = params.participantId as string;
+      await ensureEcdhSession(env, roomUrl, participantId, secret);
+      return doFetch(env, roomUrl, `/board/${encodeURIComponent(params.key as string)}`, secret, { method: "DELETE", participantId });
     },
   },
 
@@ -892,11 +946,13 @@ const tools: Record<string, ToolDef> = {
   },
 
   get_room_info: {
-    description: "Get room metadata without joining.",
-    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM }, required: ["inviteJson"] },
+    description: "Get room metadata (status, participants, expiry) as a joined participant.",
+    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
     handler: async (env, params, ctx) => {
       const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
-      const result = await doFetch(env, roomUrl, "/status", secret) as Record<string, unknown>;
+      const participantId = params.participantId as string;
+      await ensureEcdhSession(env, roomUrl, participantId, secret);
+      const result = await doFetch(env, roomUrl, "/status", secret, { participantId }) as Record<string, unknown>;
       return {
         ...result,
         subscription_active: ctx.sessionId ? hasActiveSubscription(ctx.sessionId, roomId) : false,

@@ -428,6 +428,55 @@ describe("hosted MCP handler", () => {
     ]);
   });
 
+  it("reads the board and room status as a participant", async () => {
+    const env = {
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({
+          fetch: async (_url: string, init?: RequestInit) => {
+            // Mirrors the server: the room secret alone cannot read /board or /status.
+            if (!new Headers(init?.headers).get("x-participant-id")) return Response.json({ error: "participant token is required" }, { status: 403 });
+            return Response.json({ ok: true, board: {} });
+          },
+        }),
+      },
+    } as never;
+    const invite = JSON.stringify({ access: "https://j01n.me/r/read-room", join_secret: "secret" });
+
+    for (const name of ["read_board", "get_room_info"]) {
+      const result = await toolResultText<{ ok: boolean }>(await handleMcpRequest(rpc("tools/call", { name, arguments: { inviteJson: invite, participantId: "a" } }), env));
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  it("writes the board with set_board_key, patch_board and delete_board_key", async () => {
+    const calls: Array<[string | undefined, string, unknown]> = [];
+    const env = {
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({
+          fetch: async (url: string, init?: RequestInit) => {
+            const path = new URL(url).pathname;
+            if (path.includes("/board")) calls.push([init?.method, path.replace(/^\/r\/[^/]+/, ""), init?.body ? JSON.parse(init.body as string) : undefined]);
+            return Response.json({ ok: true });
+          },
+        }),
+      },
+    } as never;
+    const invite = JSON.stringify({ access: "https://j01n.me/r/board-room", join_secret: "secret" });
+    const call = (name: string, args: Record<string, unknown>) => handleMcpRequest(rpc("tools/call", { name, arguments: { inviteJson: invite, participantId: "a", ...args } }), env);
+
+    await call("set_board_key", { key: "tasks", value: '{"t-1":{"title":"Docs"}}' });
+    await call("patch_board", { values: '{"blockers":{},"decisions":["ship"]}' });
+    await call("delete_board_key", { key: "tasks" });
+
+    expect(calls).toEqual([
+      ["PUT", "/board/tasks", { "t-1": { title: "Docs" } }],
+      ["PATCH", "/board", { blockers: {}, decisions: ["ship"] }],
+      ["DELETE", "/board/tasks", undefined],
+    ]);
+  });
+
   it("create_room returns ready-to-paste join snippets and next steps", async () => {
     const env = {
       RENDEZVOUS: {

@@ -2,7 +2,13 @@
 
 Installable Pi extension wrapper for the shared j01n.me encrypted room helper.
 
-Install from this monorepo checkout:
+Install from GitHub (the repo root declares this extension in its `pi` manifest):
+
+```bash
+pi install https://github.com/k1000/j01n.me
+```
+
+Or from this monorepo checkout (after `pnpm install`):
 
 ```bash
 pi install ./packages/pi-extension

@@ -11,7 +11,7 @@ You need:
 ## Install
 
 ```bash
-pi install https://github.com/k1000/j01n.me/tree/main/packages/pi-extension
+pi install https://github.com/k1000/j01n.me
 ```
 
 ## Commands

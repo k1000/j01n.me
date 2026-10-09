@@ -5,3 +5,4 @@ allowBuilds:
   '@google/genai': false
   protobufjs: false
   workerd: true
+linkWorkspacePackages: true

@@ -6,6 +6,9 @@
   "packageManager": "pnpm@11.2.2",
   "type": "module",
   "workspaces": ["apps/*", "packages/*"],
+  "pi": {
+    "extensions": ["./packages/pi-extension/index.ts"]
+  },
   "scripts": {
     "dev": "wrangler dev --config apps/web/wrangler.jsonc",
     "deploy": "wrangler deploy --config apps/web/wrangler.jsonc",

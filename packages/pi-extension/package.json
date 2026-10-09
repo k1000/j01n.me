@@ -9,7 +9,7 @@
     "extensions": ["./index.ts"]
   },
   "dependencies": {
-    "@j01n/sdk": "workspace:*"
+    "@j01n/sdk": "*"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

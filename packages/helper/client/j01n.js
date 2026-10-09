@@ -126,7 +126,16 @@ async function loadState() {
 async function saveState(state) { await fs.writeFile(keyFile, JSON.stringify({ privateJwk: state.privateJwk, publicJwk: state.publicJwk, peers: state.peers, participantToken: state.participantToken, announcedKey: state.announcedKey, roomUrl }, null, 2), { mode: 0o600 }); }
 function tokenHeaders(state) { return state.participantToken ? { authorization: 'Bearer ' + state.participantToken } : headers; }
 function requireParticipantToken(state) { if (!state.participantToken) die('participant token missing; run join first'); return state.participantToken; }
-async function requestJson(url, init = {}) { const r = await fetch(url, init); const text = await r.text(); let body; try { body = text ? JSON.parse(text) : {}; } catch { body = text; } return { ok: r.ok, status: r.status, body }; }
+// Room-feature version this helper speaks; bump with CLIENT_PROTOCOL in apps/web/src/constants.ts.
+const CLIENT_PROTOCOL = 1;
+let updateNoticeShown = false;
+async function requestJson(url, init = {}) {
+  const r = await fetch(url, { ...init, headers: { ...(init.headers || {}), 'x-j01n-client': 'helper/' + CLIENT_PROTOCOL } });
+  const notice = r.headers.get('x-j01n-client-update');
+  if (notice && !updateNoticeShown) { updateNoticeShown = true; console.error('note: ' + notice); }
+  const text = await r.text(); let body; try { body = text ? JSON.parse(text) : {}; } catch { body = text; }
+  return { ok: r.ok, status: r.status, body };
+}
 // Announce each key once: repeat announcements only add noise (and webhook/wait wake-ups) for everyone else.
 async function announce(state) {
   const publicKey = await exportPublic(state.keyPair.publicKey);
@@ -318,7 +327,10 @@ const COMMANDS = {
     await announce(state);
     const profile = { access: roomUrl, participant_id: me, participant_token: state.participantToken, key_file: keyFile };
     await rememberRoom();
-    console.log(JSON.stringify(profile, null, 2));
+    // Start oriented: include the board's kickoff (if the board read fails, the join still succeeded).
+    const board = await requestJson(roomUrl + '/board', { headers: tokenHeaders(state) });
+    const kickoff = board.ok ? { kickoff: board.body.board?.kickoff?.value ?? null } : { kickoff: null, kickoff_error: 'could not load the board kickoff; read the board to retry' };
+    console.log(JSON.stringify({ ...profile, ...kickoff }, null, 2));
   },
   async send(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
     const [to, ...words] = rest;

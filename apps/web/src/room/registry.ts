@@ -8,6 +8,13 @@ interface RoomRegistryEntry {
 }
 
 const ROOM_PREFIX = "room:";
+const MCP_PREFIX = "mcp:";
+const MCP_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface McpSessionEntry {
+  rooms: Array<{ room_url: string; participant_id: string }>;
+  expires_at: number;
+}
 const REGISTRY_NAME = "global";
 
 export class RoomRegistry implements DurableObject {
@@ -20,7 +27,29 @@ export class RoomRegistry implements DurableObject {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/register") return this.register(request);
     if (request.method === "POST" && url.pathname === "/sweep") return this.sweep();
+    if (url.pathname === "/mcp-session") return this.mcpSession(request);
     return new Response("not found", { status: 404 });
+  }
+
+  /**
+   * Rooms joined by one MCP session (keyed by its server-minted Mcp-Session-Id): room URL + participant id only.
+   * GET ?sid= lists them; POST { sid, room_url, participant_id, remove? } adds or removes one.
+   */
+  private async mcpSession(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "GET") {
+      const entry = await this.state.storage.get<McpSessionEntry>(`${MCP_PREFIX}${url.searchParams.get("sid") ?? ""}`);
+      return json({ rooms: entry && entry.expires_at > Date.now() ? entry.rooms : [] });
+    }
+    const body = await request.json().catch(() => ({})) as { sid?: string; room_url?: string; participant_id?: string; remove?: boolean };
+    if (!body.sid || !body.room_url || !body.participant_id) return json({ error: "sid, room_url and participant_id are required" }, 400);
+    const key = `${MCP_PREFIX}${body.sid}`;
+    const current = await this.state.storage.get<McpSessionEntry>(key);
+    const others = (current && current.expires_at > Date.now() ? current.rooms : [])
+      .filter((r) => !(r.room_url === body.room_url && r.participant_id === body.participant_id));
+    const rooms = body.remove ? others : [...others, { room_url: body.room_url, participant_id: body.participant_id }];
+    await this.state.storage.put<McpSessionEntry>(key, { rooms, expires_at: Date.now() + MCP_SESSION_TTL_MS });
+    return json({ rooms });
   }
 
   private async register(request: Request): Promise<Response> {

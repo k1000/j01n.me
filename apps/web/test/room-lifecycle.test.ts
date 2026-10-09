@@ -173,6 +173,17 @@ describe("room lifecycle", () => {
     expect(Date.parse(after.expires_at)).toBeLessThanOrEqual(Date.now() + 10 * 60_000);
   });
 
+  it("tells a client that declares an older protocol how to update, and leaves others alone", async () => {
+    await joinParticipant(fix, "agent-a");
+    const status = (client?: string) =>
+      roomRequest(fix, "/status", { headers: { ...participantAuthHeaders(fix, "agent-a"), ...(client ? { "x-j01n-client": client } : {}) } });
+
+    expect((await status("helper/0")).headers.get("x-j01n-client-update")).toContain("curl -fsSL https://j01n.me/client/j01n.js");
+    expect((await status("sdk/0")).headers.get("x-j01n-client-update")).toContain("pi install https://gitlab.com/k1000/j01n.me");
+    expect((await status("helper/1")).headers.get("x-j01n-client-update")).toBeNull();
+    expect((await status()).headers.get("x-j01n-client-update")).toBeNull();
+  });
+
   describe("wait (block until the next visible event)", () => {
     const wait = (participantId: string, query: string) =>
       roomRequest(fix, `/wait?${query}`, { headers: participantAuthHeaders(fix, participantId) }).then((r) => r.json() as Promise<Record<string, unknown>>);

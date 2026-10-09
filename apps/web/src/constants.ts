@@ -7,6 +7,16 @@ export const INVITE_TTL_MS = 30 * 60 * 1000;
 export const MIN_INVITE_TTL_MS = 60_000;
 export const MAX_INVITE_TTL_MS = 3_600_000;
 export const DEFAULT_EXTEND_MS = 5 * 60_000;
+/**
+ * Room-feature version the current clients speak. Clients send `x-j01n-client: <name>/<protocol>`; an older one gets an
+ * `x-j01n-client-update` header with its update command. Bump together with CLIENT_PROTOCOL in
+ * packages/helper/client/j01n.js and packages/sdk/src/transport.ts whenever clients must update.
+ */
+export const CLIENT_PROTOCOL = 1;
+export const CLIENT_UPDATE_COMMANDS: Record<string, string> = {
+  helper: "curl -fsSL https://j01n.me/client/j01n.js -o .j01n/j01n.js",
+  sdk: "pi install https://gitlab.com/k1000/j01n.me (Pi), or update @j01n/sdk from https://gitlab.com/k1000/j01n.me",
+};
 /** Any message keeps a room alive for at least this long. */
 export const ACTIVE_ROOM_GRACE_MS = 10 * 60_000;
 

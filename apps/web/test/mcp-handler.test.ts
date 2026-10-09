@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { handleMcpRequest } from "../src/mcp-handler";
 import { RoomEvents } from "../src/room/events";
+import { RoomRegistry } from "../src/room/registry";
+import { createMockState } from "./room/helpers";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 
 function rpc(method: string, params?: Record<string, unknown>, sessionId?: string): Request {
@@ -485,6 +487,46 @@ describe("hosted MCP handler", () => {
     expect(requests.findIndex(([method]) => method === "POST")).toBeLessThan(requests.findIndex(([, path]) => path.startsWith("/wait")));
   });
 
+  it("remembers the joined room per MCP session so later calls can omit it", async () => {
+    const sent: string[] = [];
+    const env: Record<string, unknown> = {
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({
+          fetch: async (url: string, init?: RequestInit) => {
+            const path = new URL(url).pathname;
+            const auth = new Headers(init?.headers).get("authorization");
+            if (path.includes("__load_session")) return Response.json({ sessions: {} });
+            if (path.includes("__save_session")) return Response.json({ ok: true });
+            if (init?.method === "PUT") return Response.json({ ok: true, cursor: 0, participant_token: "tok-b" });
+            if (auth !== "Bearer tok-b") return Response.json({ error: "participant token is required" }, { status: 403 });
+            if (init?.method === "POST" && path === "/") sent.push(JSON.parse(init.body as string).intent);
+            return Response.json({ ok: true, seq: 2, participants: [], messages: [], board: {} });
+          },
+        }),
+      },
+    };
+    const registry = new RoomRegistry(createMockState(), env as never);
+    env.ROOM_REGISTRY = { idFromName: () => "global", get: () => registry };
+    const s1 = await initSession();
+    const s2 = await initSession();
+    const call = (sid: string, name: string, args: Record<string, unknown>) =>
+      handleMcpRequest(rpc("tools/call", { name, arguments: args }, sid), env as never).then((r) => r.json() as Promise<{ result?: { content: Array<{ text: string }> }; error?: { message: string } }>);
+
+    await call(s1, "join_room", { inviteJson: "https://j01n.me/room/session-room#secret", participantId: "b" });
+    const ok = await call(s1, "send_message", { to: "all", body: "no room arguments" });
+    const other = await call(s2, "send_message", { to: "all", body: "different session" });
+
+    expect(ok.error?.message).toBeUndefined();
+    expect(sent).toEqual(["key.exchange", "notify"]);
+    expect(other.error?.message).toContain("pass inviteJson");
+
+    const listed = await (await handleMcpRequest(rpc("tools/list"))).json() as { result: { tools: Array<{ name: string; inputSchema: { required?: string[] } }> } };
+    const schema = (name: string) => listed.result.tools.find((t) => t.name === name)!.inputSchema.required;
+    expect(schema("send_message")).not.toContain("inviteJson");
+    expect(schema("join_room")).toContain("inviteJson");
+  });
+
   it("join_room announces its key with the new participant token", async () => {
     const announcedWith: string[] = [];
     const env = {
@@ -500,17 +542,19 @@ describe("hosted MCP handler", () => {
             // Mirrors the server: after joining, only the participant token is accepted.
             if (auth !== "Bearer tok-b") return Response.json({ error: "participant token is required" }, { status: 403 });
             if (init?.method === "POST") announcedWith.push(auth);
+            if (path.endsWith("/board")) return Response.json({ board: { kickoff: { value: { goal: "ship it" }, version: 1 } } });
             return Response.json({ ok: true, participants: [], messages: [] });
           },
         }),
       },
     } as never;
 
-    const result = await toolResultText<{ ok: boolean }>(await handleMcpRequest(rpc("tools/call", {
+    const result = await toolResultText<{ ok: boolean; kickoff: unknown }>(await handleMcpRequest(rpc("tools/call", {
       name: "join_room", arguments: { inviteJson: "https://j01n.me/room/join-order-room#secret", participantId: "b" },
     }), env));
 
     expect(result.ok).toBe(true);
+    expect(result.kickoff).toEqual({ goal: "ship it" });
     expect(announcedWith).toEqual(["Bearer tok-b"]);
   });
 

@@ -16,6 +16,7 @@
  */
 
 import type { Env } from "./types";
+import { CLIENT_PROTOCOL } from "./constants";
 import { createRoomDirect } from "./invite";
 import type { CreateRoomBody } from "./invite";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
@@ -416,6 +417,7 @@ async function createRoomTool(env: Env, params: Record<string, unknown>, ctx: To
   const link = inviteLink(room.roomUrl, room.joinSecret);
   const expiresAt = room.data.expires_at as string | undefined;
   const ttlMinutes = expiresAt ? Math.round((Date.parse(expiresAt) - Date.now()) / 60_000) : undefined;
+  await rememberSessionRoom(env, ctx.sessionId, room.roomUrl, hostId);
   return {
     ...room.data,
     host_joined: true,
@@ -775,7 +777,15 @@ const tools: Record<string, ToolDef> = {
       // Auto-subscribe the MCP session to room events (no separate subscribe_room call needed)
       const subscribed = await autoSubscribeRoom(env, ctx, roomUrl, secret, participantId, roomUrl.split("/").pop()!);
 
+      await rememberSessionRoom(env, ctx.sessionId, roomUrl, participantId);
+
+      // Start oriented: include the board's kickoff (if the board read fails, the join still succeeded).
+      const kickoff = await doFetch(env, roomUrl, "/board", secret, { participantId })
+        .then((b) => ({ kickoff: (b as { board?: Record<string, { value?: unknown }> }).board?.kickoff?.value ?? null }))
+        .catch(() => ({ kickoff: null, kickoff_error: "could not load the board kickoff; call read_board to retry" }));
+
       return {
+        ...kickoff,
         ok: true,
         room_id: roomUrl.split("/").pop()!,
         room_url: roomUrl,
@@ -970,9 +980,10 @@ const tools: Record<string, ToolDef> = {
   close_room: {
     description: "Close and delete the room (host only).",
     inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
-    handler: async (env, params) => {
+    handler: async (env, params, ctx) => {
       const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
       await doFetch(env, roomUrl, "/", secret, { method: "DELETE", participantId: params.participantId as string });
+      await rememberSessionRoom(env, ctx.sessionId, roomUrl, params.participantId as string, true);
       // Clear session
       clearRoomSessions(roomId);
       return { ok: true, closed: true };
@@ -982,9 +993,10 @@ const tools: Record<string, ToolDef> = {
   leave_room: {
     description: "Leave the room (stays active for others).",
     inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
-    handler: async (env, params) => {
+    handler: async (env, params, ctx) => {
       const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
-      await doFetch(env, roomUrl, `/participants/${params.participantId}`, secret, { method: "DELETE" });
+      await doFetch(env, roomUrl, `/participants/${params.participantId}`, secret, { method: "DELETE", participantId: params.participantId as string });
+      await rememberSessionRoom(env, ctx.sessionId, roomUrl, params.participantId as string, true);
       sessions.delete(sessionKey(roomId, params.participantId as string));
       return { ok: true, left: true };
     },
@@ -1182,7 +1194,8 @@ function handleInitialize(body: McpRequest): Response {
   return jsonRpcResponse(mcpResult(body.id ?? 0, {
     protocolVersion: "2024-11-05",
     capabilities: { tools: {} },
-    serverInfo: { name: "j01n.me", version: "0.1.0" },
+    serverInfo: { name: "j01n.me", version: `protocol-${CLIENT_PROTOCOL}` },
+    instructions: "j01n.me adds tools and parameters over time. MCP clients keep the tool list from session start: if a documented tool or parameter is missing, restart the MCP session.",
   }), 200, { [SESSION_HEADER]: sessionId });
 }
 
@@ -1193,19 +1206,67 @@ function handleNotification(): Response {
 function handleToolsList(body: McpRequest): Response {
   const toolList = Object.entries(tools).map(([name, def]) => ({
     name,
-    description: def.description,
-    inputSchema: def.inputSchema,
+    description: usesSessionRoom(name, def) ? `${def.description} After create_room/join_room in this MCP session, inviteJson and participantId may be omitted.` : def.description,
+    inputSchema: usesSessionRoom(name, def) ? withOptionalRoomArgs(def.inputSchema) : def.inputSchema,
   }));
   return jsonRpcResponse(mcpResult(body.id ?? 0, { tools: toolList }));
+}
+
+// ── Session-scoped current room ─────────────────────────────────
+// A session's joined rooms (URL + participant id, no secrets) live in the room registry under its Mcp-Session-Id.
+// The participant token is loaded from the room's saved MCP session, so the join secret is not needed again.
+const SESSION_ROOM_SECRET = "mcp-session";
+
+function usesSessionRoom(name: string, tool: ToolDef): boolean {
+  const props = (tool.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
+  return name !== "join_room" && "inviteJson" in props;
+}
+
+function withOptionalRoomArgs(schema: ToolDef["inputSchema"]): ToolDef["inputSchema"] {
+  const required = ((schema as { required?: string[] }).required ?? []).filter((r) => r !== "inviteJson" && r !== "participantId");
+  return { ...schema, required };
+}
+
+async function sessionRoomsCall(env: Env, init: RequestInit & { query?: string }): Promise<Array<{ room_url: string; participant_id: string }>> {
+  if (!env.ROOM_REGISTRY) return [];
+  const stub = env.ROOM_REGISTRY.get(env.ROOM_REGISTRY.idFromName("global"));
+  const { query, ...requestInit } = init;
+  const res = await stub.fetch(new Request(`https://room-registry.internal/mcp-session${query ?? ""}`, requestInit));
+  return res.ok ? ((await res.json()) as { rooms: Array<{ room_url: string; participant_id: string }> }).rooms : [];
+}
+
+async function rememberSessionRoom(env: Env, sessionId: string | undefined, roomUrl: string, participantId: string, remove = false): Promise<void> {
+  if (!sessionId) return;
+  await sessionRoomsCall(env, { method: "POST", body: JSON.stringify({ sid: sessionId, room_url: roomUrl, participant_id: participantId, remove }) }).catch(() => []);
+}
+
+async function withSessionRoom(env: Env, sessionId: string | undefined, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (args.inviteJson !== undefined && args.participantId !== undefined) return args;
+  const rooms = sessionId ? await sessionRoomsCall(env, { method: "GET", query: `?sid=${encodeURIComponent(sessionId)}` }) : [];
+  const given = args.inviteJson !== undefined ? parseRoomId(args.inviteJson as string).roomUrl : undefined;
+  const candidates = given ? rooms.filter((r) => r.room_url === given) : rooms;
+  if (candidates.length === 1) {
+    return {
+      ...args,
+      inviteJson: args.inviteJson ?? JSON.stringify({ access: candidates[0].room_url, join_secret: SESSION_ROOM_SECRET }),
+      participantId: args.participantId ?? candidates[0].participant_id,
+    };
+  }
+  if (candidates.length > 1) {
+    throw new Error(`this MCP session has joined several rooms (${candidates.map((r) => `${r.participant_id} in ${r.room_url}`).join(", ")}); pass inviteJson and participantId`);
+  }
+  if (args.inviteJson === undefined) throw new Error("pass inviteJson and participantId (or create_room/join_room first in this MCP session)");
+  return args;
 }
 
 async function handleToolCall(env: Env | undefined, body: McpRequest, ctx: ToolContext): Promise<Response> {
   const name = (body.params?.name as string) ?? "";
   const tool = tools[name];
-  if (!tool) return jsonRpcResponse(mcpError(body.id ?? 0, -32601, `Tool not found: ${name}`), 404);
+  if (!tool) return jsonRpcResponse(mcpError(body.id ?? 0, -32601, `Tool not found: ${name}. If the j01n.me docs list it, your MCP client's tool list is older than the server: restart the MCP session to reload it.`), 404);
   if (!env) return jsonRpcResponse(mcpError(body.id ?? 0, -32603, "MCP endpoint not configured with environment bindings"), 500);
-  const args = (body.params?.arguments ?? {}) as Record<string, unknown>;
+  let args = (body.params?.arguments ?? {}) as Record<string, unknown>;
   try {
+    if (usesSessionRoom(name, tool)) args = await withSessionRoom(env, ctx.sessionId, args);
     if (tool.streaming) return await tool.streaming(env, args, body.id ?? 0);
     if (!tool.handler) throw new Error(`tool ${name} has no handler`);
     const result = await tool.handler(env, args, ctx);

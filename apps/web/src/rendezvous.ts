@@ -1,6 +1,6 @@
 import { json, respondNegotiated, detectFormat } from "./format";
 import { inviteInstructionsMarkdown, inviteInstructionsPage } from "./html";
-import { DEFAULT_EXTEND_MS, MAX_INVITE_TTL_MS, MIN_INVITE_TTL_MS } from "./constants";
+import { CLIENT_PROTOCOL, CLIENT_UPDATE_COMMANDS, DEFAULT_EXTEND_MS, MAX_INVITE_TTL_MS, MIN_INVITE_TTL_MS } from "./constants";
 import { tokenAuthThen, participantTokenAuthThen, requireJoined } from "./room/auth-context";
 import { RoomBoardController } from "./room/board-controller";
 import { RoomEvents } from "./room/events";
@@ -54,7 +54,7 @@ export class RendezvousSession implements DurableObject {
     if (invite instanceof Response) return invite;
 
     const routed = this.routeRequest(request, url, invite);
-    if (routed) return routed;
+    if (routed) return withClientUpdateNotice(request, await routed);
 
     if (request.headers.get("Upgrade") === "websocket") {
       return new Response("WebSocket transport has been removed. Use the collab space.", { status: 410 });
@@ -370,4 +370,14 @@ export class RendezvousSession implements DurableObject {
       return json(roomExport(invite));
     });
   }
+}
+
+/** Tell a client that declares an older protocol (x-j01n-client: name/N) how to update. Clients that send nothing get nothing. */
+function withClientUpdateNotice(request: Request, response: Response): Response {
+  const declared = /^([a-z-]+)\/(\d+)$/.exec(request.headers.get("x-j01n-client") ?? "");
+  if (!declared || Number(declared[2]) >= CLIENT_PROTOCOL) return response;
+  const command = CLIENT_UPDATE_COMMANDS[declared[1]] ?? "update your j01n.me client: https://j01n.me/client";
+  const updated = new Response(response.body, response);
+  updated.headers.set("x-j01n-client-update", `j01n.me client protocol ${declared[2]} is older than ${CLIENT_PROTOCOL}; update with: ${command}`);
+  return updated;
 }

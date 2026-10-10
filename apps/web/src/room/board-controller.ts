@@ -25,9 +25,15 @@ export class RoomBoardController {
    * puts it in the room history, so readers, late joiners, SSE and the web page see board progress too.
    */
   private async announce(invite: InviteState, board: InviteState["board"], updatedBy: string, changes: Record<string, BoardChange>): Promise<void> {
-    await announceSystemMessage(this.storage, this.events, invite, "board.changed",
+    let current = await announceSystemMessage(this.storage, this.events, invite, "board.changed",
       { text: boardChangeText(updatedBy, changes, invite.board, board), updated_by: updatedBy, changes },
       { board }, { changes, updatedBy });
+    for (const { id, owner } of newlyUnblocked(changes, invite.board, board)) {
+      if (owner && current.participants[owner] && !current.participants[owner].left_at) {
+        current = await announceSystemMessage(this.storage, this.events, current, "task.unblocked",
+          { text: `${id} is now unblocked`, task_id: id }, {}, undefined, owner);
+      }
+    }
   }
 
   get(request: Request, invite: InviteState): Promise<Response> {
@@ -112,6 +118,20 @@ function taskValue(entry: BoardEntry | undefined): Record<string, unknown> | und
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
+function newlyUnblocked(changes: Record<string, BoardChange>, before: InviteState["board"], after: InviteState["board"]): Array<{ id: string; owner?: string }> {
+  const done = Object.keys(changes).filter((key) => key.startsWith("task.") && taskValue(before[key])?.status !== "done" && taskValue(after[key])?.status === "done").map((key) => key.slice(5));
+  if (!done.length) return [];
+  return Object.entries(after).flatMap(([key, entry]) => {
+    if (!key.startsWith("task.")) return [];
+    const task = taskValue(entry);
+    const deps = task?.depends_on;
+    if (!task || task.status === "done" || task.status === "blocked" || !Array.isArray(deps) || !deps.some((id) => done.includes(id)) ||
+      !deps.every((id) => typeof id === "string" && taskValue(after[`task.${id}`])?.status === "done") ||
+      deps.every((id) => typeof id === "string" && taskValue(before[`task.${id}`])?.status === "done")) return [];
+    return [{ id: key.slice(5), ...(typeof task.owner === "string" ? { owner: task.owner } : {}) }];
+  });
+}
+
 function boardChangeText(updatedBy: string, changes: Record<string, BoardChange>, before: InviteState["board"], after: InviteState["board"]): string {
   const lines = Object.entries(changes).map(([key, change]) => {
     if (!change) return `${updatedBy} deleted ${key}`;
@@ -128,18 +148,7 @@ function boardChangeText(updatedBy: string, changes: Record<string, BoardChange>
     const value = JSON.stringify(change.value) ?? "null";
     return `${updatedBy} set ${key} (v${change.version}): ${value.length > 300 ? `${value.slice(0, 300)}…` : value}`;
   });
-  const done = Object.keys(changes).filter((key) => key.startsWith("task.") && taskValue(before[key])?.status !== "done" && taskValue(after[key])?.status === "done").map((key) => key.slice(5));
-  if (done.length) {
-    for (const [key, entry] of Object.entries(after)) {
-      if (!key.startsWith("task.")) continue;
-      const task = taskValue(entry);
-      const deps = task?.depends_on;
-      if (task?.status === "done" || task?.status === "blocked" || !Array.isArray(deps) || !deps.some((id) => done.includes(id)) ||
-        !deps.every((id) => typeof id === "string" && taskValue(after[`task.${id}`])?.status === "done") ||
-        deps.every((id) => typeof id === "string" && taskValue(before[`task.${id}`])?.status === "done")) continue;
-      lines.push(`${key.slice(5)} is now unblocked`);
-    }
-  }
+  for (const { id } of newlyUnblocked(changes, before, after)) lines.push(`${id} is now unblocked`);
   return lines.join("; ");
 }
 

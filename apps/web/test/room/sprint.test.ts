@@ -72,6 +72,19 @@ describe("sprint template", () => {
     expect(messages.filter((message) => message.intent === "board.changed").at(-1)?.body.text).toBe("T2 done: integrated; T3 is now unblocked");
   });
 
+  it("sends a direct unblocked system notice only to a joined dependent owner", async () => {
+    const fix = await sprintRoom(tasks);
+    await joinParticipant(fix, "agent-b");
+    await setTask(fix, "T2", { title: "Use API", files: [], depends_on: ["T1"], status: "claimed", owner: "agent-a" });
+    await setTask(fix, "T1", { title: "Build API", files: [], depends_on: [], status: "done", summary: "ready" });
+    const read = async (id: string) => (await getRoomJson<{ messages: Array<{ intent: string; to: string; body: { task_id: string } }> }>(fix, "/?view=all", id)).messages;
+    expect((await read("agent-a")).filter((message) => message.intent === "task.unblocked")).toEqual([
+      expect.objectContaining({ to: "agent-a", body: { text: "T2 is now unblocked", task_id: "T2" } }),
+    ]);
+    expect((await read("host")).some((message) => message.intent === "task.unblocked")).toBe(false);
+    expect((await read("agent-b")).some((message) => message.intent === "task.unblocked")).toBe(false);
+  });
+
   it("does not call an independently blocked dependent unblocked", async () => {
     const fix = await sprintRoom(tasks);
     await setTask(fix, "T2", { title: "Use API", files: [], depends_on: ["T1"], status: "blocked", blocked_reason: "awaiting approval" });

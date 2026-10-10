@@ -40,6 +40,13 @@ describe("sprint template", () => {
     expect(board.kickoff.value).toContain("pnpm check:contract");
   });
 
+  it("does not let an explicit board override generated task status", () => {
+    const tpl = applyTemplate("sprint", { tasks, board: { "task.T1": { status: "done" }, notes: { ready: true } } });
+    const seeded = tpl.board["task.T1"] as { encrypted_payload: string };
+    expect(JSON.parse(atob(seeded.encrypted_payload.slice(3)))).toEqual({ title: "Build API", files: ["src/api.ts"], depends_on: [], worktree: "/tmp/t1", status: "open" });
+    expect(tpl.board.notes).toEqual({ ready: true });
+  });
+
   it("announces readable claims, done summaries and newly unblocked tasks", async () => {
     const fix = await sprintRoom(tasks);
     expect((await setTask(fix, "T1", { title: "Build API", files: ["src/api.ts"], depends_on: [], status: "claimed", owner: "agent-a" })).status).toBe(200);

@@ -2,7 +2,7 @@
  * Pre-built room templates that populate board, ACLs, and state machine.
  * Hosts pick a template by name and optionally override any field.
  *
- * Explicit body fields always override template defaults.
+ * Explicit body fields override template defaults, except generated sprint task keys.
  */
 
 import type { BoardAcls, RoomStateConfig } from "../types";
@@ -156,7 +156,7 @@ export function initialStateName(states: Record<string, RoomStateConfig>): strin
 /**
  * Apply template defaults and overlay explicit body fields.
  *
- * Order: template defaults → explicit body fields (body wins).
+ * Order: template defaults → explicit body fields → generated sprint task keys.
  */
 export function applyTemplate(
   templateName: string | undefined,
@@ -181,7 +181,7 @@ export function applyTemplate(
 
   const merged = {
     room_name: body.room_name ?? template.room_name,
-    board: { ...wrapTemplateBoard(template.board), ...(templateName === "sprint" ? wrapTemplateBoard(sprintBoard(body.tasks ?? [])) : {}), ...(body.board ?? {}) },
+    board: { ...wrapTemplateBoard(template.board), ...(body.board ?? {}), ...(templateName === "sprint" ? wrapTemplateBoard(sprintBoard(body.tasks ?? [])) : {}) },
     board_acls: { ...template.board_acls, ...(body.board_acls ?? {}) } as BoardAcls,
     states: { ...template.states, ...(body.states ?? {}) } as Record<string, RoomStateConfig>,
   };

@@ -5,6 +5,7 @@ import type { Workspace } from "./crypto";
 import { request } from "./transport";
 import type {
   Recipient,
+  MessageKind,
   RoomMessage,
   ParticipantsResponse,
   RoomStatusResponse,
@@ -18,7 +19,7 @@ import type {
 
 export interface CreateRoomOptions {
   template?: "quick" | "kanban" | "milestone" | "sprint";
-  tasks?: Array<{ id: string; title: string; files: string[]; depends_on?: string[]; worktree?: string }>;
+  tasks?: Array<{ id: string; title: string; files: string[]; depends_on?: string[]; worktree?: string; role?: string }>;
   roomId?: string;
   hostId?: string;
   hostPublicKey?: string;
@@ -111,6 +112,7 @@ export interface SendOptions {
   replyTo?: string | null;
   intent?: string;
   priority?: string;
+  kind?: MessageKind;
   plain?: boolean;
   /** The caller already synchronized peer keys before sending (e.g. when tracking unread cursor separately). */
   skipKeySync?: boolean;
@@ -141,10 +143,10 @@ export interface RoomClient {
   /**
    * Block until the next event you can see (message, board or participant change; never your own) or the timeout
    * (1-50 s). Returns at once if an unread message is waiting. Call read() afterwards to get the messages.
-   * Filters: only events caused by `from`, only board changes to keys starting with `board`, `system: false` skips
-   * joins/leaves and system notices.
+   * Filters: only events caused by `from`, only board changes to keys starting with `board`, only messages
+   * with one of `kind`, or `system: false` to skip joins/leaves and system notices.
    */
-  wait(options?: { after?: number; timeoutSeconds?: number; from?: string[]; board?: string; system?: false }): Promise<WaitResult>;
+  wait(options?: { after?: number; timeoutSeconds?: number; from?: string[]; board?: string; kind?: MessageKind[]; system?: false }): Promise<WaitResult>;
   /** Open questions you owe (addressed to you, or to all and unanswered), decrypted, newest first. Does not move the read cursor. */
   openQuestions(): Promise<OpenQuestion[]>;
   participants(): Promise<ParticipantsResponse>;
@@ -189,7 +191,8 @@ function buildSendPayload(to: Recipient, body: unknown, options: SendOptions): R
     reply_to: options.replyTo ?? null,
     intent: options.intent ?? "notify",
     priority: options.priority ?? "normal",
-    ...(options.expectsReply ? { expects_reply: true, ...(options.replyByMinutes ? { reply_by_minutes: options.replyByMinutes } : {}) } : {}),
+    ...(options.kind ? { kind: options.kind } : {}),
+    ...(options.expectsReply || options.kind === "question" || options.kind === "blocker" ? { expects_reply: true, ...(options.replyByMinutes ? { reply_by_minutes: options.replyByMinutes } : {}) } : {}),
     ...Object.fromEntries(
       (["state", "status", "model", "skills"] as const)
         .map((k) => [k, options[k]])
@@ -266,6 +269,7 @@ export async function buildRoomClient(
       if (options.timeoutSeconds) url.searchParams.set("timeout", String(options.timeoutSeconds));
       if (options.from?.length) url.searchParams.set("from", options.from.join(","));
       if (options.board !== undefined) url.searchParams.set("board", options.board);
+      if (options.kind?.length) url.searchParams.set("kind", options.kind.join(","));
       if (options.system === false) url.searchParams.set("system", "false");
       return request<WaitResult>(url.toString(), invite, { participantId });
     },

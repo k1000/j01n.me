@@ -1,4 +1,5 @@
 export type Recipient = "all" | string | string[];
+export type MessageKind = "finding" | "question" | "decision" | "blocker" | "handoff";
 
 export interface RoomMessage {
   id: string;
@@ -8,6 +9,7 @@ export interface RoomMessage {
   reply_to: string | null;
   intent: string;
   priority: string;
+  kind?: MessageKind;
   body: unknown;
   created_at: string;
   /** Set when the sender asked for a reply; open until a reply (reply_to = this id) arrives. */

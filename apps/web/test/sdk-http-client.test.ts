@@ -36,6 +36,19 @@ describe("SDK HTTP client", () => {
     expires_at: new Date(Date.now() + 60_000).toISOString(),
   });
 
+  it("sends kind metadata with implied reply and forwards wait kind filters", async () => {
+    const calls: Array<{ url: string; body?: Record<string, unknown> }> = [];
+    const transportFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      return Response.json({ ok: true, id: "ask-1", seq: 1, cursor: 1, timeout: true });
+    }) as typeof fetch;
+    const client = await resumeRoom({ ...makeInvite(), transportFetch }, "agent-a");
+    await client.send("all", { text: "Need help" }, { kind: "question", plain: true });
+    await client.wait({ kind: ["question", "blocker"], timeoutSeconds: 1 });
+    expect(calls[0].body).toMatchObject({ kind: "question", expects_reply: true });
+    expect(calls[1].url).toContain("kind=question%2Cblocker");
+  });
+
   it("forwards opaque checkout and human profile fields while sealing workspace", async () => {
     let body: Record<string, unknown> = {};
     const impl = (async (_url: string | URL | Request, init?: RequestInit) => {

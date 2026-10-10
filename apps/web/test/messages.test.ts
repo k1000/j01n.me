@@ -224,6 +224,24 @@ describe("createSentMessage", () => {
     expect(result.message.body).toEqual({ encrypted_payload: "j01n1:abc:def:ghi:jkl" });
   });
 
+  it("preserves valid kinds on encrypted messages and makes questions/blockers open asks", async () => {
+    const { createSentMessage } = await import("../src/room/messages");
+    const invite = makeInvite({ participants: { alice: {
+      id: "alice", joined_at: "", last_seen_at: "", last_read_seq: 0,
+      state: "free", status: "", status_updated_at: "",
+    } } });
+    for (const kind of ["finding", "question", "decision", "blocker", "handoff"] as const) {
+      const result = createSentMessage({ to: "all", kind, body: { encrypted_payload: "j01n1:abc:def:ghi:jkl" } }, "alice", invite);
+      expect(result).not.toBeInstanceOf(Response);
+      if (result instanceof Response) continue;
+      expect(result.message.kind).toBe(kind);
+      expect(!!result.message.expects_reply).toBe(kind === "question" || kind === "blocker");
+      expect(result.message.body).toEqual({ encrypted_payload: "j01n1:abc:def:ghi:jkl" });
+    }
+    expect(createSentMessage({ to: "all", kind: "urgent", body: {} }, "alice", invite)).toBeInstanceOf(Response);
+    expect(createSentMessage({ to: "all", kind: 42, body: {} }, "alice", invite)).toBeInstanceOf(Response);
+  });
+
   it("rejects message with invalid recipient", async () => {
     const { createSentMessage } = await import("../src/room/messages");
     const invite = makeInvite();

@@ -25,7 +25,7 @@ async function setTask(fix: RoomFixture, id: string, value: Record<string, unkno
 
 describe("sprint template", () => {
   const tasks = [
-    { id: "T1", title: "Build API", files: ["src/api.ts"], worktree: "/tmp/t1" },
+    { id: "T1", title: "Build API", files: ["src/api.ts"], worktree: "/tmp/t1", role: "builder" },
     { id: "T2", title: "Use API", files: ["src/ui.ts"], depends_on: ["T1"] },
   ];
 
@@ -33,17 +33,23 @@ describe("sprint template", () => {
     const fix = await sprintRoom(tasks);
     const { board } = await getRoomJson<{ board: Record<string, { value: unknown; version: number }> }>(fix, "/board");
     expect(Object.keys(board).sort()).toEqual(["kickoff", "task.T1", "task.T2"]);
-    expect(board["task.T1"].value).toEqual({ title: "Build API", files: ["src/api.ts"], depends_on: [], worktree: "/tmp/t1", status: "open" });
+    expect(board["task.T1"].value).toEqual({ title: "Build API", files: ["src/api.ts"], depends_on: [], worktree: "/tmp/t1", role: "builder", status: "open" });
     expect(board["task.T2"].value).toEqual({ title: "Use API", files: ["src/ui.ts"], depends_on: ["T1"], status: "open" });
     expect(board["task.T2"].version).toBe(1);
-    expect(board.kickoff.value).toContain("claim <id>");
-    expect(board.kickoff.value).toContain("pnpm check:contract");
+    const kickoff = board.kickoff.value as { rules: string[]; etiquette: string[] };
+    expect(kickoff.rules.join(" ")).toContain("claim <id>");
+    expect(kickoff.rules.join(" ")).toContain("pnpm check:contract");
+    for (const role of ["Builder", "Verifier", "Auditor", "Tester"]) expect(kickoff.rules.join(" ")).toContain(`${role}:`);
+    expect(kickoff.etiquette).toHaveLength(6);
+    expect(kickoff.etiquette.join(" ")).toContain("--kind question");
+    expect(kickoff.etiquette.join(" ")).toContain("--reply-to");
+    expect(kickoff.etiquette.join(" ")).toContain("board key notes");
   });
 
   it("does not let an explicit board override generated task status", () => {
     const tpl = applyTemplate("sprint", { tasks, board: { "task.T1": { status: "done" }, notes: { ready: true } } });
     const seeded = tpl.board["task.T1"] as { encrypted_payload: string };
-    expect(JSON.parse(atob(seeded.encrypted_payload.slice(3)))).toEqual({ title: "Build API", files: ["src/api.ts"], depends_on: [], worktree: "/tmp/t1", status: "open" });
+    expect(JSON.parse(atob(seeded.encrypted_payload.slice(3)))).toEqual({ title: "Build API", files: ["src/api.ts"], depends_on: [], worktree: "/tmp/t1", role: "builder", status: "open" });
     expect(tpl.board.notes).toEqual({ ready: true });
   });
 

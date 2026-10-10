@@ -2,7 +2,7 @@ export { RoomApiError } from "./errors";
 export { buildMinimalInvite, inviteLink, normalizeInvite, parseInviteLink } from "./invite";
 export { getClientUpdateNotice, SDK_CLIENT_PROTOCOL } from "./transport";
 export { deleteInvite, inviteAgent, registerAgent, setAcceptFrom, waitForInvites } from "./agents";
-export { openWorkspace, sealWorkspace } from "./crypto";
+export { openRoomSeal, sealForRoom, openWorkspace, sealWorkspace } from "./crypto";
 export { listReservations, pathsOverlap, releasePaths, reservationFor, reservePaths, RESERVATIONS_KEY } from "./reservations";
 export type { Reservation } from "./reservations";
 export type { Workspace } from "./crypto";
@@ -15,7 +15,7 @@ import { createSdkCryptoSession } from "./sdk-crypto-session";
 import type { SdkCryptoSession } from "./sdk-crypto-session";
 import type { Invite, RoomClient, CreateRoomOptions } from "./room-client";
 import { request } from "./transport";
-import { sealWorkspace, type Workspace } from "./crypto";
+import { sealForRoom, type Workspace } from "./crypto";
 
 export type { Invite, RoomClient, CreateRoomOptions, RoomAccess };
 
@@ -102,7 +102,7 @@ export async function joinRoom(
         ...profile,
         public_key: publicKeyBody.public_key,
         // Sealed with the room key: the server only stores ciphertext.
-        ...(workspace ? { workspace: await sealWorkspace(workspace, invite.join_secret, invite.room_id) } : {}),
+        ...(workspace ? { workspace: await sealForRoom(workspace, invite.join_secret, invite.room_id) } : {}),
       },
     },
   );

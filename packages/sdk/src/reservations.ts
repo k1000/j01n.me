@@ -1,7 +1,7 @@
 // File reservations: who is changing which paths of which repo, so agents in one room do not edit the same files.
 // Stored on the board key "reservations" as { "<id>": { by, since, sealed } }; `sealed` holds { repo, paths, reason }
 // sealed with the room key (like workspaces), so the server only sees who holds a reservation, never the paths.
-import { openKickoff, sealKickoff } from "./crypto";
+import { openRoomSeal, sealForRoom } from "./crypto";
 import { RoomApiError } from "./errors";
 import type { RoomClient } from "./room-client";
 
@@ -41,7 +41,7 @@ async function load(client: RoomClient): Promise<{ stored: Record<string, Stored
   const stored = (entry?.value && typeof entry.value === "object" ? entry.value : {}) as Record<string, StoredReservation>;
   const reservations = await Promise.all(Object.entries(stored).map(async ([id, r]) => {
     // Sealed like the kickoff: AES-GCM with a key derived from the room secret.
-    const opened = await openKickoff({ encrypted_payload: r.sealed }, client.invite.join_secret, client.invite.room_id).catch(() => null) as { repo?: string; paths?: string[]; reason?: string } | null;
+    const opened = await openRoomSeal(r.sealed, client.invite.join_secret, client.invite.room_id).catch(() => null) as { repo?: string; paths?: string[]; reason?: string } | null;
     return { id, by: r.by, since: r.since, repo: opened?.repo ?? "", paths: opened?.paths ?? [], ...(opened?.reason ? { reason: opened.reason } : {}) };
   }));
   return { stored, version: entry?.version ?? 0, reservations };
@@ -76,7 +76,7 @@ export async function reservePaths(client: RoomClient, repo: string, paths: stri
       const held = reservationFor(reservations, client.participantId, repo, path);
       if (held) return new Error(`${path} is already reserved by ${held.by}${held.reason ? ` (${held.reason})` : ""}`);
     }
-    const sealed = (await sealKickoff({ repo, paths, ...(reason ? { reason } : {}) }, client.invite.join_secret, client.invite.room_id)).encrypted_payload;
+    const sealed = await sealForRoom({ repo, paths, ...(reason ? { reason } : {}) }, client.invite.join_secret, client.invite.room_id);
     return { ...stored, [crypto.randomUUID()]: { by: client.participantId, since: new Date().toISOString(), sealed } };
   });
 }

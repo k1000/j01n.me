@@ -22,7 +22,7 @@ import type { CreateRoomBody } from "./invite";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { SdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
-import { isEncryptedBody, isSealedKickoff, openKickoff, openWorkspace, sealKickoff, sealWorkspace } from "@j01n/sdk/crypto";
+import { isEncryptedBody, isSealedKickoff, openRoomSeal, sealForRoom } from "@j01n/sdk/crypto";
 import type { Workspace } from "@j01n/sdk/crypto";
 import type { RoomMessage } from "./types";
 import { deleteInvite, inviteAgent, registerAgent, waitForInvites } from "@j01n/sdk/agents";
@@ -320,13 +320,13 @@ async function decryptRoomMessages(crypto: SdkCryptoSession, messages: RoomMessa
   const roomId = roomUrl.split("/").pop()!;
   return Promise.all(messages.map(async (msg) => {
     if (isSealedKickoff(msg.body)) {
-      const kickoff = secret === SESSION_ROOM_SECRET ? undefined : await openKickoff(msg.body, secret, roomId).catch(() => undefined);
+      const kickoff = secret === SESSION_ROOM_SECRET ? undefined : await openRoomSeal(msg.body.encrypted_payload, secret, roomId).catch(() => undefined);
       return kickoff === undefined ? { ...msg, decrypt_error: "sealed kickoff: pass the room link (inviteJson) to open it" } : { ...msg, body: kickoff };
     }
     // A profile.changed announcement carries the new workspace sealed with the room key.
     const announced = msg.body as { workspace?: unknown } | null;
     if (msg.intent === "profile.changed" && typeof announced?.workspace === "string" && secret !== SESSION_ROOM_SECRET) {
-      return { ...msg, body: { ...announced, workspace: await openWorkspace(announced.workspace, secret, roomId).catch(() => null) } };
+      return { ...msg, body: { ...announced, workspace: await openRoomSeal(announced.workspace, secret, roomId).catch(() => null) } };
     }
     const body = await crypto.decryptMessageBody(msg).catch(() => msg.body);
     return isEncryptedBody(body)
@@ -439,7 +439,7 @@ async function createRoomTool(env: Env, params: Record<string, unknown>, ctx: To
   });
 
   if (typeof params.firstMessage === "string" && params.firstMessage.trim()) {
-    const sealed = await sealKickoff(parseMessageBody(params.firstMessage), room.joinSecret, room.roomId);
+    const sealed = { encrypted_payload: await sealForRoom(parseMessageBody(params.firstMessage), room.joinSecret, room.roomId) };
     await doFetch(env, room.roomUrl, "/", room.joinSecret, { method: "POST", participantId: hostId, body: { to: "all", intent: "kickoff", body: sealed } });
   }
 
@@ -830,7 +830,7 @@ const tools: Record<string, ToolDef> = {
         // Otherwise the sealed kickoff message (readable with the join secret this call was given).
         const history = await doFetch(env, roomUrl, "/?view=all", secret, { participantId }).catch(() => ({ messages: [] })) as { messages?: RoomMessage[] };
         const sealed = (history.messages ?? []).find((m) => m.intent === "kickoff" && isSealedKickoff(m.body));
-        if (sealed) Object.assign(kickoff, { kickoff: await openKickoff(sealed.body as { encrypted_payload: string }, secret, roomUrl.split("/").pop()!).catch(() => null) });
+        if (sealed) Object.assign(kickoff, { kickoff: await openRoomSeal((sealed.body as { encrypted_payload: string }).encrypted_payload, secret, roomUrl.split("/").pop()!).catch(() => null) });
       }
 
       // Questions waiting for this participant's reply (answer with send_message replyTo).
@@ -1401,7 +1401,7 @@ async function profileBody(params: Record<string, unknown>, secret: string, room
   if (params.workspace && typeof params.workspace === "object") {
     if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link) to announce a workspace: it is sealed with the room key");
     const { path, repo, branch } = params.workspace as Workspace;
-    body.workspace = await sealWorkspace({ path, repo: repo?.replace(/\/\/[^@/]+@/, "//"), branch }, secret, roomUrl.split("/").pop()!);
+    body.workspace = await sealForRoom({ path, repo: repo?.replace(/\/\/[^@/]+@/, "//"), branch }, secret, roomUrl.split("/").pop()!);
   }
   return body;
 }
@@ -1412,7 +1412,7 @@ async function teamOf(env: Env, roomUrl: string, secret: string, participantId: 
   return Promise.all(participants.map(async (p) => ({
     ...p,
     ...(typeof p.workspace === "string" && secret !== SESSION_ROOM_SECRET
-      ? { workspace: await openWorkspace(p.workspace, secret, roomUrl.split("/").pop()!).catch(() => null) }
+      ? { workspace: await openRoomSeal(p.workspace, secret, roomUrl.split("/").pop()!).catch(() => null) }
       : {}),
   })));
 }
@@ -1428,10 +1428,10 @@ async function loadReservations(env: Env, params: Record<string, unknown>) {
   const entry = board[RESERVATIONS_KEY];
   const stored = (entry?.value && typeof entry.value === "object" ? entry.value : {}) as StoredReservations;
   const list: Reservation[] = await Promise.all(Object.entries(stored).map(async ([id, r]) => {
-    const opened = await openKickoff({ encrypted_payload: r.sealed }, secret, roomId).catch(() => null) as { repo?: string; paths?: string[]; reason?: string } | null;
+    const opened = await openRoomSeal(r.sealed, secret, roomId).catch(() => null) as { repo?: string; paths?: string[]; reason?: string } | null;
     return { id, by: r.by, since: r.since, repo: opened?.repo ?? "", paths: opened?.paths ?? [], ...(opened?.reason ? { reason: opened.reason } : {}) };
   }));
-  return { stored, version: entry?.version ?? 0, list, seal: async (value: unknown) => (await sealKickoff(value, secret, roomId)).encrypted_payload };
+  return { stored, version: entry?.version ?? 0, list, seal: async (value: unknown) => sealForRoom(value, secret, roomId) };
 }
 
 /** Write the reservations only if nobody changed them since we read them; on a race, read again and retry. */

@@ -1,6 +1,6 @@
 import { createSdkCryptoSession } from "./sdk-crypto-session";
 import type { SdkCryptoSession } from "./sdk-crypto-session";
-import { isEncryptedBody, isSealedKickoff, openKickoff, openWorkspace, sealWorkspace } from "./crypto";
+import { isEncryptedBody, isSealedKickoff, openRoomSeal, sealForRoom } from "./crypto";
 import type { Workspace } from "./crypto";
 import { request } from "./transport";
 import type {
@@ -210,13 +210,13 @@ export async function buildRoomClient(
     return Promise.all(
       messages.map(async (msg) => {
         if (isSealedKickoff(msg.body)) {
-          const kickoff = await openKickoff(msg.body, invite.join_secret, invite.room_id).catch(() => undefined);
+          const kickoff = await openRoomSeal(msg.body.encrypted_payload, invite.join_secret, invite.room_id).catch(() => undefined);
           return kickoff === undefined ? { ...msg, decrypt_error: "sealed kickoff: open it with the room link or invitation (join secret)" } : { ...msg, body: kickoff };
         }
         // A profile.changed announcement carries the new workspace sealed with the room key.
         const announced = msg.body as { workspace?: unknown } | null;
         if (msg.intent === "profile.changed" && typeof announced?.workspace === "string") {
-          return { ...msg, body: { ...announced, workspace: await openWorkspace(announced.workspace, invite.join_secret, invite.room_id).catch(() => null) } };
+          return { ...msg, body: { ...announced, workspace: await openRoomSeal(announced.workspace, invite.join_secret, invite.room_id).catch(() => null) as Workspace | null } };
         }
         // Not decryptable with this key (e.g. sent to an older key): keep it encrypted and say so.
         const body = await session.decryptMessageBody(msg).catch(() => msg.body);
@@ -291,7 +291,7 @@ export async function buildRoomClient(
     },
     async updateStatus(state: "free" | "busy", status: string, opts: { workspace?: Workspace | null } = {}) {
       const { workspace, ...profile } = opts;
-      const sealed = workspace === undefined ? {} : { workspace: workspace && await sealWorkspace(workspace, invite.join_secret, invite.room_id) };
+      const sealed = workspace === undefined ? {} : { workspace: workspace && await sealForRoom(workspace, invite.join_secret, invite.room_id) };
       return request<{ ok: true; participant: Participant }>(
         `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
         invite,
@@ -301,7 +301,7 @@ export async function buildRoomClient(
     async setProfile(profile) {
       const body: Record<string, unknown> = {};
       if (profile.capabilities !== undefined) body.capabilities = profile.capabilities;
-      if (profile.workspace !== undefined) body.workspace = profile.workspace && await sealWorkspace(profile.workspace, invite.join_secret, invite.room_id);
+      if (profile.workspace !== undefined) body.workspace = profile.workspace && await sealForRoom(profile.workspace, invite.join_secret, invite.room_id);
       return request<{ ok: true; participant: Participant }>(
         `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
         invite,
@@ -316,7 +316,7 @@ export async function buildRoomClient(
         status: p.status,
         last_seen_at: p.last_seen_at,
         capabilities: p.capabilities ?? [],
-        workspace: p.workspace ? await openWorkspace(p.workspace, invite.join_secret, invite.room_id).catch(() => null) : null,
+        workspace: p.workspace ? await openRoomSeal(p.workspace, invite.join_secret, invite.room_id).catch(() => null) as Workspace | null : null,
       })));
     },
     async setWebhook(url: string | null) {

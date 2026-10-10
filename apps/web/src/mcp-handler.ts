@@ -20,16 +20,18 @@ import { CLIENT_PROTOCOL } from "./constants";
 import { createRoomDirect } from "./invite";
 import type { CreateRoomBody } from "./invite";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
+import { buildMinimalInvite } from "@j01n/sdk/invite";
+import { joinRoom, resumeRoom, RoomApiError } from "@j01n/sdk";
+import type { Invite, RoomClient } from "@j01n/sdk";
+import { listReservations, releasePaths, reservePaths } from "@j01n/sdk/reservations";
 import type { SdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
-import { isEncryptedBody, isSealedKickoff, openRoomSeal, sealForRoom } from "@j01n/sdk/crypto";
+import { isSealedKickoff, openRoomSeal, sealForRoom } from "@j01n/sdk/crypto";
 import type { Workspace } from "@j01n/sdk/crypto";
 import type { RoomMessage } from "./types";
 import { deleteInvite, inviteAgent, registerAgent, waitForInvites } from "@j01n/sdk/agents";
 import type { AgentFetch, AgentIdentity } from "@j01n/sdk/agents";
 import { agentRoutes } from "./agents/routes";
-import { pathsOverlap, RESERVATIONS_KEY } from "@j01n/sdk/reservations";
-import type { Reservation } from "@j01n/sdk/reservations";
 
 // ── Unified session store (per-worker-isolate, in-memory) ───────
 // Key: roomId:participantId. Stores ECDH session + per-participant token.
@@ -214,6 +216,27 @@ function getRoomStub(env: Env, roomUrlOrId: string): DurableObjectStub {
   return env.RENDEZVOUS.get(id);
 }
 
+/** SDK requests stay in this Worker; the room DO accepts root-relative paths. */
+function roomFetch(env: Env, roomUrl: string): typeof fetch {
+  const root = new URL(roomUrl).pathname.replace(/\/$/, "");
+  const stub = getRoomStub(env, roomUrl);
+  return ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const path = url.pathname.startsWith(root + "/") ? url.pathname.slice(root.length) : url.pathname === root ? "/" : url.pathname;
+    return stub.fetch(`${url.origin}${path}${url.search}`, init);
+  }) as typeof fetch;
+}
+
+async function roomClient(env: Env, roomUrl: string, secret: string, participantId: string): Promise<RoomClient> {
+  const crypto = await ensureEcdhSession(env, roomUrl, participantId, secret);
+  const invite: Invite = { ...buildMinimalInvite(roomUrl, secret),
+    ...(sessions.get(sessionKey(roomUrl.split("/").pop()!, participantId))?.token
+      ? { participant_token: getEffectiveSecret(roomUrl, participantId, secret) } : {}),
+    transportFetch: roomFetch(env, roomUrl),
+  };
+  return resumeRoom(invite, participantId, crypto);
+}
+
 async function doFetchRaw(
   env: Env,
   roomUrl: string,
@@ -245,21 +268,6 @@ async function doFetchRaw(
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
-}
-
-async function doFetch(
-  env: Env,
-  roomUrl: string,
-  path: string,
-  secret: string,
-  options: { method?: string; body?: unknown; participantId?: string } = {},
-): Promise<unknown> {
-  const response = await doFetchRaw(env, roomUrl, path, secret, options);
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${path} failed: ${response.status} ${formatRoomError(text)}`);
-  }
-  return response.json();
 }
 
 function formatRoomError(text: string): string {
@@ -300,7 +308,7 @@ async function waitForLinkedReply(env: Env, params: Record<string, unknown>, sen
     if (reply) return { sent, woke: "reply", timeout: false, reply, cursor, messages, ...(Object.keys(board).length ? { board } : {}) };
     if (timedOut || Date.now() >= deadline) return { sent, timeout: true, reply: null, cursor, messages, ...(Object.keys(board).length ? { board } : {}) };
     const seconds = Math.min(50, Math.max(1, Math.ceil((deadline - Date.now()) / 1000)));
-    const event = await doFetch(env, roomUrl, `/wait?timeout=${seconds}&after=${cursor}`, secret, { participantId }) as { timeout?: boolean; changes?: Record<string, unknown> };
+    const event = await (await roomClient(env, roomUrl, secret, participantId)).wait({ timeoutSeconds: seconds, after: cursor });
     if (event.changes) Object.assign(board, event.changes);
     timedOut = event.timeout === true;
   }
@@ -312,11 +320,12 @@ async function waitForEvent(env: Env, params: Record<string, unknown>) {
   const participantId = params.participantId as string;
   await ensureEcdhSession(env, roomUrl, participantId, secret);
   const timeout = Math.min(Math.max(Number(params.timeoutSeconds) || 50, 1), 50);
-  const filter = new URLSearchParams({ timeout: String(timeout) });
-  if (params.from) filter.set("from", String(params.from));
-  if (typeof params.board === "string") filter.set("board", params.board);
-  if (params.system === false) filter.set("system", "false");
-  const woke = await doFetch(env, roomUrl, `/wait?${filter}`, secret, { participantId }) as { timeout?: boolean; event?: string; changes?: unknown };
+  const woke = await (await roomClient(env, roomUrl, secret, participantId)).wait({
+    timeoutSeconds: timeout,
+    ...(params.from ? { from: String(params.from).split(",") } : {}),
+    ...(typeof params.board === "string" ? { board: params.board } : {}),
+    ...(params.system === false ? { system: false as const } : {}),
+  });
   if (woke.timeout) return { timeout: true };
   const read = await readRoomMessages(env, { inviteJson: params.inviteJson, participantId });
   return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), ...read };
@@ -334,41 +343,10 @@ function parseMessageBody(raw: string): unknown {
 async function readRoomMessages(env: Env, params: Record<string, unknown>) {
   const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
   const participantId = params.participantId as string;
-  const crypto = await ensureEcdhSession(env, roomUrl, participantId, secret);
-  await refreshPeerKeys(env, roomUrl, secret, participantId, crypto);
-
-  const query = [params.all ? "view=all" : "", params.includeSelf ? "include_self=true" : "", params.afterSeq !== undefined ? `after=${params.afterSeq}` : ""].filter(Boolean).join("&");
-  const path = query ? `/?${query}` : "/";
-  const result = await doFetch(env, roomUrl, path, secret, { participantId }) as { messages?: RoomMessage[]; cursor?: number };
-  const messages = result.messages ?? [];
-  // Peers that join without a public_key announce it only via key.exchange messages.
-  await crypto.processKeyExchange(messages);
-
-  // Use SDK's proven decryption
-  const decrypted = await decryptRoomMessages(crypto, messages, secret, roomUrl);
-  // A ready reply for participants' messages: answering with replyTo closes a question.
-  const withReplies = decrypted.map((m) => (m.from === "system" || m.intent === "key.exchange" ? m : { ...m, reply: { tool: "send_message", to: m.from, replyTo: m.id } }));
-  return { cursor: result.cursor ?? 0, count: withReplies.length, messages: withReplies };
-}
-
-/** Decrypt room messages for a participant; sealed kickoffs need the real join secret. */
-async function decryptRoomMessages(crypto: SdkCryptoSession, messages: RoomMessage[], secret: string, roomUrl: string) {
-  const roomId = roomUrl.split("/").pop()!;
-  return Promise.all(messages.map(async (msg) => {
-    if (isSealedKickoff(msg.body)) {
-      const kickoff = secret === SESSION_ROOM_SECRET ? undefined : await openRoomSeal(msg.body.encrypted_payload, secret, roomId).catch(() => undefined);
-      return kickoff === undefined ? { ...msg, decrypt_error: "sealed kickoff: pass the room link (inviteJson) to open it" } : { ...msg, body: kickoff };
-    }
-    // A profile.changed announcement carries the new workspace sealed with the room key.
-    const announced = msg.body as { workspace?: unknown } | null;
-    if (msg.intent === "profile.changed" && typeof announced?.workspace === "string" && secret !== SESSION_ROOM_SECRET) {
-      return { ...msg, body: { ...announced, workspace: await openRoomSeal(announced.workspace, secret, roomId).catch(() => null) } };
-    }
-    const body = await crypto.decryptMessageBody(msg).catch(() => msg.body);
-    return isEncryptedBody(body)
-      ? { ...msg, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" }
-      : { ...msg, body };
-  }));
+  const client = await roomClient(env, roomUrl, secret, participantId);
+  const messages = await client.read({ all: !!params.all, includeSelf: !!params.includeSelf, after: params.afterSeq as number | undefined });
+  const withReplies = messages.map((m) => (m.from === "system" || m.intent === "key.exchange" ? m : { ...m, reply: { tool: "send_message", to: m.from, replyTo: m.id } }));
+  return { cursor: client.cursor ?? 0, count: withReplies.length, messages: withReplies };
 }
 
 function parseSkills(value?: string): string[] | undefined {
@@ -383,8 +361,7 @@ async function refreshPeerKeys(
   crypto: SdkCryptoSession,
 ): Promise<number> {
   try {
-    const result = await doFetch(env, roomUrl, "/participants", secret, { participantId }) as Record<string, unknown>;
-    const participants = (result.participants ?? []) as Array<{ id: string; public_key?: string; last_read_seq?: number }>;
+    const { participants = [] } = await (await roomClient(env, roomUrl, secret, participantId)).participants();
     const peers = participants.filter(p => p.id !== participantId && p.public_key).map(p => ({ id: p.id, public_key: p.public_key! }));
     if (peers.length > 0) await crypto.processPeerKeys(peers);
     return participants.find(p => p.id === participantId)?.last_read_seq ?? 0;
@@ -476,7 +453,7 @@ async function createRoomTool(env: Env, params: Record<string, unknown>, ctx: To
 
   if (typeof params.firstMessage === "string" && params.firstMessage.trim()) {
     const sealed = { encrypted_payload: await sealForRoom(parseMessageBody(params.firstMessage), room.joinSecret, room.roomId) };
-    await doFetch(env, room.roomUrl, "/", room.joinSecret, { method: "POST", participantId: hostId, body: { to: "all", intent: "kickoff", body: sealed } });
+    await (await roomClient(env, room.roomUrl, room.joinSecret, hostId)).send("all", sealed, { intent: "kickoff", plain: true });
   }
 
   // Auto-subscribe the MCP session to room events (no separate subscribe_room call needed)
@@ -767,13 +744,8 @@ const WORKSPACE_PARAM = {
   properties: { path: { type: "string" }, repo: { type: "string" }, branch: { type: "string" } },
 };
 
-async function readOpenQuestions(env: Env, roomUrl: string, secret: string, participantId: string, crypto: SdkCryptoSession) {
-  const { asks = [] } = await doFetch(env, roomUrl, "/asks", secret, { participantId }) as {
-    asks?: Array<{ ask_id: string; seq: number; from: string; due_at: string; overdue: boolean; message: RoomMessage }>;
-  };
-  const messages = await decryptRoomMessages(crypto, asks.map(a => a.message), secret, roomUrl);
-  return asks.map((a, i) => ({ id: a.ask_id, seq: a.seq, from: a.from, body: messages[i].body, due_at: a.due_at, overdue: a.overdue,
-    ...("decrypt_error" in messages[i] ? { decrypt_error: messages[i].decrypt_error } : {}) }));
+async function readOpenQuestions(env: Env, roomUrl: string, secret: string, participantId: string) {
+  return (await roomClient(env, roomUrl, secret, participantId)).openQuestions();
 }
 
 async function resumeRoomTool(env: Env, params: Record<string, unknown>, ctx: ToolContext) {
@@ -800,8 +772,8 @@ async function resumeRoomTool(env: Env, params: Record<string, unknown>, ctx: To
   const profile = resumeProfile(roomUrl, participantId);
   if (!profile || (supplied && supplied.participantToken !== profile.participantToken)) throw new Error("Cannot resume this saved MCP identity: profile or saved keys are unavailable or invalid");
   // Validate that the saved token still represents an active member before reading or binding a new session.
-  const status = await doFetch(env, roomUrl, "/status", profile.participantToken, { participantId }) as Record<string, unknown>;
-  const crypto = sessions.get(sessionKey(roomUrl.split("/").pop()!, participantId))!.ecdh;
+  const client = await roomClient(env, roomUrl, profile.participantToken, participantId);
+  const status = await client.status() as unknown as Record<string, unknown>;
   await rememberSessionRoom(env, ctx.sessionId, roomUrl, participantId);
   const roomId = roomUrl.split("/").pop()!;
   const active = ctx.sessionId && hasActiveSubscription(ctx.sessionId, roomId, participantId);
@@ -809,8 +781,8 @@ async function resumeRoomTool(env: Env, params: Record<string, unknown>, ctx: To
   // Subscribe before catch-up so events arriving during the snapshot are not lost.
   const read = await readRoomMessages(env, { inviteJson: JSON.stringify({ access: roomUrl, join_secret: profile.participantToken }), participantId, afterSeq: params.afterSeq });
   const [boardResult, questions] = await Promise.all([
-    doFetch(env, roomUrl, "/board", profile.participantToken, { participantId }).catch(() => null) as Promise<{ board: Record<string, unknown> } | null>,
-    readOpenQuestions(env, roomUrl, profile.participantToken, participantId, crypto).catch(() => null),
+    client.board().catch(() => null),
+    readOpenQuestions(env, roomUrl, profile.participantToken, participantId).catch(() => null),
   ]);
   return { ok: true, resumed: true, room_id: roomId, room_url: roomUrl, participant_id: participantId,
     room: status.room, phase: status.phase, participants: status.participants, expires_at: status.expires_at,
@@ -823,9 +795,6 @@ async function resumeRoomTool(env: Env, params: Record<string, unknown>, ctx: To
 const INVITE_JSON_PARAM = { type: "string", description: 'The room link from create_room (https://j01n.me/room/<id>#<secret>) or the handoff JSON {"access":"<room_url>","join_secret":"<secret>"}' };
 const WEBHOOK_URL_PARAM = { type: "string", description: 'Optional, only if you can expose a public https endpoint: the room POSTs events you can see (messages to you or all, board and participant changes) there as wake-up signals, then call read_messages. Omit to use wait_for_event between turns (default). "off" removes it.' };
 const IF_VERSION_PARAM = { type: "number", description: "Optional: only write if the key is still at this version (from read_board / wait_for_event; 0 = the key must not exist yet). A conflict returns the current value." };
-const boardKeyPath = (key: unknown, ifVersion: unknown) =>
-  `/board/${encodeURIComponent(key as string)}${typeof ifVersion === "number" ? `?if_version=${ifVersion}` : ""}`;
-const webhookUrlBody = (value: unknown) => (typeof value === "string" ? { webhook_url: value === "off" ? null : value } : {});
 
 const tools: Record<string, ToolDef> = {
   create_room: {
@@ -878,29 +847,21 @@ const tools: Record<string, ToolDef> = {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       const participantId = params.participantId as string;
       const crypto = await ensureEcdhSession(env, roomUrl, participantId, secret);
-      const { public_key } = await crypto.announceKeyBody();
-      const profile = await profileBody(params, secret, roomUrl);
-
-      // Joining uses the room secret; the participant id is in the path.
-      const joinResult = await doFetch(env, roomUrl, `/participants/${encodeURIComponent(participantId)}`, secret, {
-        method: "PUT",
-        body: { public_key, state: "free", status: "joined via hosted MCP", ...webhookUrlBody(params.webhookUrl), ...profile },
-      }) as JoinResponse & { cursor?: number };
-
-      // Store the per-participant token first: every call below (and later tools) authenticates with it.
+      const workspace = params.workspace as Workspace | undefined;
+      const joined = await joinRoom({ ...buildMinimalInvite(roomUrl, secret), transportFetch: roomFetch(env, roomUrl) }, participantId, {
+        state: "free", status: "joined via hosted MCP",
+        ...(typeof params.webhookUrl === "string" ? { webhook_url: params.webhookUrl === "off" ? null : params.webhookUrl } : {}),
+        ...(typeof params.capabilities === "string" ? { capabilities: parseSkills(params.capabilities) } : {}),
+        ...(typeof params.model === "string" && params.model.trim() ? { model: params.model.trim() } : {}),
+        ...(typeof params.provider === "string" && params.provider.trim() ? { provider: params.provider.trim() } : {}),
+        ...(workspace ? { workspace: { ...workspace, repo: workspace.repo?.replace(/\/\/[^@/]+@/, "//") } } : {}),
+      }, crypto);
+      const joinResult = { cursor: joined.cursor, participant_token: joined.invite.participant_token };
       if (joinResult.participant_token) {
         storeToken(roomUrl.split("/").pop()!, participantId, joinResult.participant_token, roomUrl);
         await persistSessionToDo(env, roomUrl, participantId, true);
       }
-
-      // Refresh peer keys from server (handles cross-isolate session loss)
       await refreshPeerKeys(env, roomUrl, secret, participantId, crypto);
-
-      // Announce key
-      await doFetch(env, roomUrl, "/", secret, {
-        method: "POST", participantId,
-        body: { to: "all", intent: "key.exchange", body: { public_key } },
-      });
 
       // Auto-subscribe the MCP session to room events (no separate subscribe_room call needed)
       const subscribed = await autoSubscribeRoom(env, ctx, roomUrl, secret, participantId, roomUrl.split("/").pop()!);
@@ -908,21 +869,21 @@ const tools: Record<string, ToolDef> = {
       await rememberSessionRoom(env, ctx.sessionId, roomUrl, participantId);
 
       // Start oriented: include the board's kickoff (if the board read fails, the join still succeeded).
-      const board = await doFetch(env, roomUrl, "/board", secret, { participantId })
-        .then((b) => (b as { board?: Record<string, { value?: unknown }> }).board ?? {})
+      const board = await joined.board()
+        .then((b) => b.board ?? {})
         .catch(() => null);
       const kickoff = board
         ? { kickoff: board.kickoff?.value ?? null }
         : { kickoff: null, kickoff_error: "could not load the board; call read_board to retry" };
       if (kickoff.kickoff === null) {
         // Otherwise the sealed kickoff message (readable with the join secret this call was given).
-        const history = await doFetch(env, roomUrl, "/?view=all", secret, { participantId }).catch(() => ({ messages: [] })) as { messages?: RoomMessage[] };
-        const sealed = (history.messages ?? []).find((m) => m.intent === "kickoff" && isSealedKickoff(m.body));
-        if (sealed) Object.assign(kickoff, { kickoff: await openRoomSeal((sealed.body as { encrypted_payload: string }).encrypted_payload, secret, roomUrl.split("/").pop()!).catch(() => null) });
+        const history = await joined.read({ all: true }).catch(() => []);
+        const sealed = history.find((m) => m.intent === "kickoff" && !isSealedKickoff(m.body));
+        if (sealed) Object.assign(kickoff, { kickoff: sealed.body });
       }
 
       // Questions waiting for this participant's reply (answer with send_message replyTo).
-      const questions = await readOpenQuestions(env, roomUrl, secret, participantId, crypto).catch(() => []);
+      const questions = await readOpenQuestions(env, roomUrl, secret, participantId).catch(() => []);
 
       return {
         ...kickoff,
@@ -976,16 +937,16 @@ const tools: Record<string, ToolDef> = {
       const lastReadSeq = await refreshPeerKeys(env, roomUrl, secret, participantId, crypto);
 
       const to = params.to === "all" ? "all" : (params.to as string).includes(",") ? (params.to as string).split(",").map((s) => s.trim()) : params.to as string;
-      const encryptedBody = await crypto.encryptForSend(parseMessageBody(params.body as string), to);
-
-      const body: Record<string, unknown> = {
-        to, body: encryptedBody,
-        reply_to: params.replyTo ?? null, intent: params.intent ?? "notify", priority: params.priority ?? "normal",
-        ...(params.expectsReply || waitMode === "reply" ? { expects_reply: true, reply_by_minutes: params.replyByMinutes } : {}),
-        state: params.state, status: params.status,
-        model: params.model, skills: parseSkills(params.skills as string),
-      };
-      const sent = await doFetch(env, roomUrl, "/", secret, { method: "POST", participantId, body }) as { id: string; seq: number };
+      const client = await roomClient(env, roomUrl, secret, participantId);
+      const sent = await client.send(to, parseMessageBody(params.body as string), {
+        replyTo: params.replyTo as string | undefined,
+        intent: params.intent as string | undefined, priority: params.priority as string | undefined,
+        expectsReply: !!params.expectsReply || waitMode === "reply",
+        replyByMinutes: params.replyByMinutes as number | undefined,
+        state: params.state as "free" | "busy" | undefined, status: params.status as string | undefined,
+        model: params.model as string | undefined, skills: parseSkills(params.skills as string),
+        skipKeySync: true, forceEncrypt: true,
+      });
       if (waitMode === "reply") return waitForLinkedReply(env, params, sent, to, lastReadSeq);
       return waitMode === "event" ? { sent, ...await waitForEvent(env, params) } : sent;
     },
@@ -1088,18 +1049,18 @@ const tools: Record<string, ToolDef> = {
     },
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      const profile = await profileBody(params, secret, roomUrl);
-      return doFetch(env, roomUrl, `/participants/${params.participantId}`, secret, {
-        method: "PATCH",
-        participantId: params.participantId as string,
-        body: {
-          state: params.state,
-          status: params.status,
+      if (params.workspace && secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link) to announce a workspace: it is sealed with the room key");
+      const workspace = params.workspace as Workspace | undefined;
+      return (await roomClient(env, roomUrl, secret, params.participantId as string)).updateStatus(
+        params.state as "free" | "busy", params.status as string, {
           skills: parseSkills(params.skills as string),
-          ...webhookUrlBody(params.webhookUrl),
-          ...profile,
+          ...(typeof params.webhookUrl === "string" ? { webhookUrl: params.webhookUrl === "off" ? null : params.webhookUrl } : {}),
+          ...(typeof params.capabilities === "string" ? { capabilities: parseSkills(params.capabilities) } : {}),
+          ...(typeof params.model === "string" && params.model.trim() ? { model: params.model.trim() } : {}),
+          ...(typeof params.provider === "string" && params.provider.trim() ? { provider: params.provider.trim() } : {}),
+          ...(workspace ? { workspace: { ...workspace, repo: workspace.repo?.replace(/\/\/[^@/]+@/, "//") } } : {}),
         },
-      });
+      );
     },
   },
 
@@ -1109,8 +1070,7 @@ const tools: Record<string, ToolDef> = {
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       const participantId = params.participantId as string;
-      await ensureEcdhSession(env, roomUrl, participantId, secret);
-      return doFetch(env, roomUrl, "/board", secret, { participantId });
+      return (await roomClient(env, roomUrl, secret, participantId)).board();
     },
   },
 
@@ -1127,10 +1087,9 @@ const tools: Record<string, ToolDef> = {
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       const participantId = params.participantId as string;
-      await ensureEcdhSession(env, roomUrl, participantId, secret);
-      return doFetch(env, roomUrl, boardKeyPath(params.key, params.ifVersion), secret, {
-        method: "PUT", participantId, body: JSON.parse(params.value as string),
-      });
+      return (await roomClient(env, roomUrl, secret, participantId)).setBoardKey(
+        params.key as string, JSON.parse(params.value as string), { ifVersion: params.ifVersion as number | undefined },
+      );
     },
   },
 
@@ -1148,10 +1107,8 @@ const tools: Record<string, ToolDef> = {
       const participantId = params.participantId as string;
       const values = parseJsonParam(params.values);
       if (!values) throw new Error("values must be a JSON object string");
-      await ensureEcdhSession(env, roomUrl, participantId, secret);
       const ifVersions = parseJsonParam(params.ifVersions);
-      const path = ifVersions ? `/board?if_versions=${encodeURIComponent(JSON.stringify(ifVersions))}` : "/board";
-      return doFetch(env, roomUrl, path, secret, { method: "PATCH", participantId, body: values });
+      return (await roomClient(env, roomUrl, secret, participantId)).patchBoard(values, { ifVersions: ifVersions as Record<string, number> | undefined });
     },
   },
 
@@ -1166,8 +1123,9 @@ const tools: Record<string, ToolDef> = {
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       const participantId = params.participantId as string;
-      await ensureEcdhSession(env, roomUrl, participantId, secret);
-      return doFetch(env, roomUrl, boardKeyPath(params.key, params.ifVersion), secret, { method: "DELETE", participantId });
+      return (await roomClient(env, roomUrl, secret, participantId)).deleteBoardKey(
+        params.key as string, { ifVersion: params.ifVersion as number | undefined },
+      );
     },
   },
 
@@ -1181,11 +1139,7 @@ const tools: Record<string, ToolDef> = {
     },
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      return doFetch(env, roomUrl, "/transition", secret, {
-        method: "POST",
-        participantId: params.participantId as string,
-        body: { event: params.event },
-      });
+      return (await roomClient(env, roomUrl, secret, params.participantId as string)).transition(params.event as string);
     },
   },
 
@@ -1199,7 +1153,7 @@ const tools: Record<string, ToolDef> = {
     },
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      return doFetch(env, roomUrl, "/host", secret, { method: "POST", participantId: params.participantId as string, body: { to: params.to } });
+      return (await roomClient(env, roomUrl, secret, params.participantId as string)).transferHost(params.to as string);
     },
   },
 
@@ -1208,7 +1162,7 @@ const tools: Record<string, ToolDef> = {
     inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
     handler: async (env, params, ctx) => {
       const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
-      await doFetch(env, roomUrl, "/", secret, { method: "DELETE", participantId: params.participantId as string });
+      await (await roomClient(env, roomUrl, secret, params.participantId as string)).close();
       await rememberSessionRoom(env, ctx.sessionId, roomUrl, params.participantId as string, true);
       // Clear session
       clearRoomSessions(roomId);
@@ -1221,7 +1175,7 @@ const tools: Record<string, ToolDef> = {
     inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" }, release: { type: "boolean", description: "Also release your file reservations" } }, required: ["inviteJson", "participantId"] },
     handler: async (env, params, ctx) => {
       const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
-      await doFetch(env, roomUrl, `/participants/${params.participantId}${params.release ? "?release=true" : ""}`, secret, { method: "DELETE", participantId: params.participantId as string });
+      await (await roomClient(env, roomUrl, secret, params.participantId as string)).leave({ release: !!params.release });
       await rememberSessionRoom(env, ctx.sessionId, roomUrl, params.participantId as string, true);
       sessions.delete(sessionKey(roomId, params.participantId as string));
       return { ok: true, left: true };
@@ -1240,14 +1194,9 @@ const tools: Record<string, ToolDef> = {
       const me = params.participantId as string;
       const paths = parseSkills(params.paths as string) ?? [];
       if (paths.length === 0) throw new Error("paths is required");
-      return { reservations: await updateReservations(env, params, async (stored, list, seal) => {
-        for (const path of paths) {
-          const held = list.find((r) => r.by !== me && r.repo === params.repo && r.paths.some((p) => pathsOverlap(p, path)));
-          if (held) throw new Error(`${path} is already reserved by ${held.by}${held.reason ? ` (${held.reason})` : ""}; ask them with send_message (expectsReply)`);
-        }
-        const sealed = await seal({ repo: params.repo, paths, ...(params.reason ? { reason: params.reason } : {}) });
-        return { ...stored, [crypto.randomUUID()]: { by: me, since: new Date().toISOString(), sealed } };
-      }) };
+      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+      if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): reservations are sealed with the room key");
+      return { reservations: await reservePaths(await roomClient(env, roomUrl, secret, me), params.repo as string, paths, params.reason as string | undefined) };
     },
   },
 
@@ -1261,17 +1210,20 @@ const tools: Record<string, ToolDef> = {
     },
     handler: async (env, params) => {
       const paths = parseSkills(params.paths as string) ?? [];
-      return { reservations: await updateReservations(env, params, async (stored, list) => {
-        const mine = list.filter((r) => r.by === params.participantId && (paths.length === 0 || (r.repo === params.repo && r.paths.some((p) => paths.some((q) => pathsOverlap(p, q))))));
-        return mine.length ? Object.fromEntries(Object.entries(stored).filter(([id]) => !mine.some((r) => r.id === id))) : null;
-      }) };
+      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+      if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): reservations are sealed with the room key");
+      return { reservations: await releasePaths(await roomClient(env, roomUrl, secret, params.participantId as string), params.repo as string | undefined, paths) };
     },
   },
 
   list_reservations: {
     description: "List file reservations in the room: who reserved which paths of which repo, and why.",
     inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
-    handler: async (env, params) => ({ reservations: (await loadReservations(env, params)).list }),
+    handler: async (env, params) => {
+      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+      if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): reservations are sealed with the room key");
+      return { reservations: await listReservations(await roomClient(env, roomUrl, secret, params.participantId as string)) };
+    },
   },
 
   get_room_info: {
@@ -1281,7 +1233,7 @@ const tools: Record<string, ToolDef> = {
       const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
       const participantId = params.participantId as string;
       await ensureEcdhSession(env, roomUrl, participantId, secret);
-      const result = await doFetch(env, roomUrl, "/status", secret, { participantId }) as Record<string, unknown>;
+      const result = await (await roomClient(env, roomUrl, secret, participantId)).status();
       return {
         ...result,
         subscription_active: ctx.sessionId ? hasActiveSubscription(ctx.sessionId, roomId, participantId) : false,
@@ -1481,62 +1433,18 @@ function handleToolsList(body: McpRequest): Response {
 
 // ── Capabilities and workspace ──
 
-async function profileBody(params: Record<string, unknown>, secret: string, roomUrl: string): Promise<Record<string, unknown>> {
-  const body: Record<string, unknown> = {};
-  if (typeof params.capabilities === "string") body.capabilities = parseSkills(params.capabilities);
-  if (typeof params.model === "string" && params.model.trim()) body.model = params.model.trim();
-  if (typeof params.provider === "string" && params.provider.trim()) body.provider = params.provider.trim();
-  if (params.workspace && typeof params.workspace === "object") {
-    if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link) to announce a workspace: it is sealed with the room key");
-    const { path, repo, branch } = params.workspace as Workspace;
-    body.workspace = await sealForRoom({ path, repo: repo?.replace(/\/\/[^@/]+@/, "//"), branch }, secret, roomUrl.split("/").pop()!);
-  }
-  return body;
-}
-
 /** Participants with capabilities and opened workspaces (left sealed when only the session room is known). */
 async function teamOf(env: Env, roomUrl: string, secret: string, participantId: string) {
-  const { participants = [] } = await doFetch(env, roomUrl, "/participants", secret, { participantId }) as { participants?: Array<Record<string, unknown>> };
+  const client = await roomClient(env, roomUrl, secret, participantId);
+  const { participants = [] } = await client.participants();
+  if (secret === SESSION_ROOM_SECRET) return participants;
+  const team = await client.team();
+  const workspaces = new Map(team.map((member) => [member.id, member.workspace]));
   return Promise.all(participants.map(async (p) => ({
     ...p,
-    ...(typeof p.workspace === "string" && secret !== SESSION_ROOM_SECRET
-      ? { workspace: await openRoomSeal(p.workspace, secret, roomUrl.split("/").pop()!).catch(() => null) }
-      : {}),
+    ...(workspaces.has(p.id) ? { workspace: workspaces.get(p.id) }
+      : typeof p.workspace === "string" ? { workspace: await openRoomSeal(p.workspace, secret, roomUrl.split("/").pop()!).catch(() => null) } : {}),
   })));
-}
-
-// ── File reservations: board key "reservations" = { id: { by, since, sealed } }, sealed = { repo, paths, reason } ──
-type StoredReservations = Record<string, { by: string; since: string; sealed: string }>;
-
-async function loadReservations(env: Env, params: Record<string, unknown>) {
-  const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-  if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): reservations are sealed with the room key");
-  const roomId = roomUrl.split("/").pop()!;
-  const { board = {} } = await doFetch(env, roomUrl, "/board", secret, { participantId: params.participantId as string }) as { board?: Record<string, { value?: unknown; version?: number }> };
-  const entry = board[RESERVATIONS_KEY];
-  const stored = (entry?.value && typeof entry.value === "object" ? entry.value : {}) as StoredReservations;
-  const list: Reservation[] = await Promise.all(Object.entries(stored).map(async ([id, r]) => {
-    const opened = await openRoomSeal(r.sealed, secret, roomId).catch(() => null) as { repo?: string; paths?: string[]; reason?: string } | null;
-    return { id, by: r.by, since: r.since, repo: opened?.repo ?? "", paths: opened?.paths ?? [], ...(opened?.reason ? { reason: opened.reason } : {}) };
-  }));
-  return { stored, version: entry?.version ?? 0, list, seal: async (value: unknown) => sealForRoom(value, secret, roomId) };
-}
-
-/** Write the reservations only if nobody changed them since we read them; on a race, read again and retry. */
-async function updateReservations(
-  env: Env, params: Record<string, unknown>,
-  change: (stored: StoredReservations, list: Reservation[], seal: (value: unknown) => Promise<string>) => Promise<StoredReservations | null>,
-): Promise<Reservation[]> {
-  const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const current = await loadReservations(env, params);
-    const next = await change(current.stored, current.list, current.seal);
-    if (next === null) return current.list;
-    const res = await doFetchRaw(env, roomUrl, `/board/${RESERVATIONS_KEY}?if_version=${current.version}`, secret, { method: "PUT", participantId: params.participantId as string, body: next });
-    if (res.ok) return (await loadReservations(env, params)).list;
-    if (res.status !== 409) throw new Error(`reservations: ${res.status} ${await res.text()}`);
-  }
-  throw new Error("reservations kept changing; try again");
 }
 
 // ── Agent inboxes: served by the same Worker, so they are called in-process ──
@@ -1610,7 +1518,9 @@ async function handleToolCall(env: Env | undefined, body: McpRequest, ctx: ToolC
     const result = await tool.handler(env, args, ctx);
     return jsonRpcResponse(mcpToolResult(body.id ?? 0, result));
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = err instanceof RoomApiError
+      ? `${new URL(err.message.split(" failed: ")[0]).pathname.replace(/^\/r\/[^/]+/, "") || "/"} failed: ${err.status} ${formatRoomError(err.body)}`
+      : err instanceof Error ? err.message : String(err);
     return jsonRpcResponse(mcpError(body.id ?? 0, -32603, message), 500);
   }
 }

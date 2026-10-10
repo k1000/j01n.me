@@ -118,6 +118,53 @@ describe("SDK HTTP client", () => {
     expect(joinBody.public_key).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
+  it("uses an invite-scoped fetch after normalization, without changing the default join payload", async () => {
+    const calls: Array<{ url: string; body?: Record<string, unknown> }> = [];
+    const transportFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      return Response.json({ ok: true, cursor: 0, participant_token: "scoped-token", board: {} });
+    }) as typeof fetch;
+    const invite = { access: "https://j01n.me/r/invite", join_secret: "secret", transportFetch };
+    const room = await joinRoom(invite, "agent-a");
+    await room.board();
+
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://j01n.me/r/invite/participants/agent-a",
+      "https://j01n.me/r/invite",
+      "https://j01n.me/r/invite/board",
+    ]);
+    expect(calls[0].body).not.toHaveProperty("state");
+    expect(calls[0].body).not.toHaveProperty("status");
+  });
+
+  it("preserves default global fetch and identifies a participant when only the join secret is available", async () => {
+    const requests: Array<{ url: string; headers: Headers }> = [];
+    const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(url), headers: new Headers(init?.headers) });
+      return Response.json({ participants: [], board: {}, room: {} });
+    }) as typeof fetch;
+    await withFetch(impl, async () => {
+      const room = await resumeRoom(makeInvite(), "agent-a");
+      await room.participants();
+      await room.board();
+      await room.status();
+    });
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://j01n.me/r/invite/participants", "https://j01n.me/r/invite/board", "https://j01n.me/r/invite/status",
+    ]);
+    expect(requests.every(({ headers }) => headers.get("authorization") === "Bearer secret" && headers.get("x-participant-id") === "agent-a")).toBe(true);
+  });
+
+  it("adds state and status only when joinRoom receives them", async () => {
+    let joinBody: Record<string, unknown> = {};
+    const transportFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "PUT") joinBody = JSON.parse(String(init.body));
+      return Response.json({ ok: true, cursor: 0 });
+    }) as typeof fetch;
+    await joinRoom({ ...makeInvite(), transportFetch }, "agent-a", { state: "free", status: "joined via hosted MCP" });
+    expect(joinBody).toMatchObject({ state: "free", status: "joined via hosted MCP" });
+  });
+
   it("sends falsy JSON bodies", async () => {
     const invite = makeInvite();
     const requests: Array<{ url: string; init?: RequestInit }> = [];

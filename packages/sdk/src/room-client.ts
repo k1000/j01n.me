@@ -67,6 +67,8 @@ export interface Invite {
   suggested_skills?: string[];
   /** Per-participant token returned after join; used instead of join_secret for participant-scoped calls. */
   participant_token?: string;
+  /** Request-scoped transport (e.g. in-process Worker Durable Object fetch). Defaults to global fetch. */
+  transportFetch?: typeof fetch;
   /** When true, the host was auto-joined during room creation. */
   host_joined?: boolean;
   /** Cursor after auto-join (only when host_joined is true). */
@@ -109,6 +111,10 @@ export interface SendOptions {
   intent?: string;
   priority?: string;
   plain?: boolean;
+  /** The caller already synchronized peer keys before sending (e.g. when tracking unread cursor separately). */
+  skipKeySync?: boolean;
+  /** Encrypt even when using the key.exchange intent (legacy bridges that expose intent). */
+  forceEncrypt?: boolean;
   /** Optional participant status update sent alongside the message (one round trip). */
   state?: "free" | "busy";
   status?: string;
@@ -130,7 +136,7 @@ export interface RoomClient {
     body: unknown,
     options?: SendOptions,
   ): Promise<{ ok: true; id: string; seq: number; participant?: Participant }>;
-  read(options?: { includeSelf?: boolean; all?: boolean }): Promise<RoomMessage[]>;
+  read(options?: { includeSelf?: boolean; all?: boolean; after?: number }): Promise<RoomMessage[]>;
   /**
    * Block until the next event you can see (message, board or participant change; never your own) or the timeout
    * (1-50 s). Returns at once if an unread message is waiting. Call read() afterwards to get the messages.
@@ -142,7 +148,7 @@ export interface RoomClient {
   openQuestions(): Promise<OpenQuestion[]>;
   participants(): Promise<ParticipantsResponse>;
   /** workspace is sealed with the room key before it is sent; null clears it. */
-  updateStatus(state: "free" | "busy", status: string, options?: { model?: string; skills?: string[]; capabilities?: string[]; workspace?: Workspace | null }): Promise<{ ok: true; participant: Participant }>;
+  updateStatus(state: "free" | "busy", status: string, options?: { model?: string; skills?: string[]; provider?: string; capabilities?: string[]; workspace?: Workspace | null; webhookUrl?: string | null }): Promise<{ ok: true; participant: Participant }>;
   /** Announce what you can do and where you work (only the given fields change; workspace is sealed, null clears it). */
   setProfile(profile: { capabilities?: string[]; workspace?: Workspace | null; model?: string; provider?: string }): Promise<{ ok: true; participant: Participant }>;
   /** Everyone in the room with their capabilities and opened workspace (null when it cannot be opened). */
@@ -170,7 +176,7 @@ export interface RoomClient {
 // ── Send payload helpers ────────────────────────────────────────
 
 function shouldEncrypt(options: SendOptions): boolean {
-  return options.intent !== "key.exchange" && options.plain !== true;
+  return options.plain !== true && (options.forceEncrypt === true || options.intent !== "key.exchange");
 }
 
 function buildSendPayload(to: Recipient, body: unknown, options: SendOptions): Record<string, unknown> {
@@ -242,7 +248,7 @@ export async function buildRoomClient(
     },
 
     async send(to: Recipient, body: unknown, options = {}) {
-      if (shouldEncrypt(options)) await client.read({ all: true, includeSelf: true });
+      if (shouldEncrypt(options) && !options.skipKeySync) await client.read({ all: true, includeSelf: true });
       const sendBody = shouldEncrypt(options) ? await session.encryptForSend(body, to) : body;
       return request(invite.room_url, invite, {
         method: "POST",
@@ -268,6 +274,7 @@ export async function buildRoomClient(
         url.searchParams.set("view", "all");
       }
       if (options.includeSelf) url.searchParams.set("include_self", "true");
+      if (options.after !== undefined) url.searchParams.set("after", String(options.after));
       const result = await request<{ cursor: number; messages: RoomMessage[] }>(
         url.toString(), invite, { participantId },
       );
@@ -287,15 +294,16 @@ export async function buildRoomClient(
     },
 
     async participants() {
-      return request<ParticipantsResponse>(invite.api.participants, invite);
+      return request<ParticipantsResponse>(invite.api.participants, invite, { participantId });
     },
-    async updateStatus(state: "free" | "busy", status: string, opts: { workspace?: Workspace | null } = {}) {
-      const { workspace, ...profile } = opts;
+    async updateStatus(state: "free" | "busy", status: string, opts: { workspace?: Workspace | null; webhookUrl?: string | null } = {}) {
+      const { workspace, webhookUrl, ...profile } = opts;
       const sealed = workspace === undefined ? {} : { workspace: workspace && await sealForRoom(workspace, invite.join_secret, invite.room_id) };
+      const webhook = webhookUrl === undefined ? {} : { webhook_url: webhookUrl };
       return request<{ ok: true; participant: Participant }>(
         `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
         invite,
-        { method: "PATCH", participantId, body: { state, status, ...profile, ...sealed } },
+        { method: "PATCH", participantId, body: { state, status, ...profile, ...webhook, ...sealed } },
       );
     },
     async setProfile(profile) {
@@ -331,7 +339,7 @@ export async function buildRoomClient(
       );
     },
     async board() {
-      return request<BoardResponse>(invite.api.board, invite);
+      return request<BoardResponse>(invite.api.board, invite, { participantId });
     },
     async setBoardKey(key: string, value: unknown, options = {}) {
       return request<{ ok: true; key: string; entry: BoardResponse["board"][string] }>(
@@ -354,7 +362,7 @@ export async function buildRoomClient(
       );
     },
     async status() {
-      return request<RoomStatusResponse>(invite.api.status, invite);
+      return request<RoomStatusResponse>(invite.api.status, invite, { participantId });
     },
     async leave(options = {}) {
       await request(`${invite.room_url}/participants/${encodeURIComponent(participantId)}${options.release ? "?release=true" : ""}`, invite, {

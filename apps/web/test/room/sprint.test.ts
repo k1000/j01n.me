@@ -65,6 +65,14 @@ describe("sprint template", () => {
     expect(messages.filter((message) => message.intent === "board.changed").at(-1)?.body.text).toBe("T2 done: integrated; T3 is now unblocked");
   });
 
+  it("does not call an independently blocked dependent unblocked", async () => {
+    const fix = await sprintRoom(tasks);
+    await setTask(fix, "T2", { title: "Use API", files: [], depends_on: ["T1"], status: "blocked", blocked_reason: "awaiting approval" });
+    await setTask(fix, "T1", { title: "Build API", files: [], depends_on: [], status: "done", summary: "ready" });
+    const { messages } = await getRoomJson<{ messages: Array<{ intent: string; body: { text: string } }> }>(fix, "/?view=all", "host");
+    expect(messages.filter((message) => message.intent === "board.changed").at(-1)?.body.text).toBe("T1 done: ready");
+  });
+
   it("rejects duplicate IDs, unknown dependencies and generated task files", () => {
     expect(() => applyTemplate("sprint", { tasks: [tasks[0], tasks[0]] })).toThrow("invalid sprint task");
     expect(() => applyTemplate("sprint", { tasks: [{ ...tasks[1], depends_on: ["missing"] }] })).toThrow("unknown or self dependency");

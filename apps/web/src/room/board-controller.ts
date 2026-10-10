@@ -134,7 +134,7 @@ function boardChangeText(updatedBy: string, changes: Record<string, BoardChange>
       if (!key.startsWith("task.")) continue;
       const task = taskValue(entry);
       const deps = task?.depends_on;
-      if (task?.status === "done" || !Array.isArray(deps) || !deps.some((id) => done.includes(id)) ||
+      if (task?.status === "done" || task?.status === "blocked" || !Array.isArray(deps) || !deps.some((id) => done.includes(id)) ||
         !deps.every((id) => typeof id === "string" && taskValue(after[`task.${id}`])?.status === "done") ||
         deps.every((id) => typeof id === "string" && taskValue(before[`task.${id}`])?.status === "done")) continue;
       lines.push(`${key.slice(5)} is now unblocked`);

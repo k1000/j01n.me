@@ -65,6 +65,26 @@ describe("task primitives", () => {
     expect((await listTasks(a))[0].owner).toBe(winner.owner);
   });
 
+  it("records blocked claimants with CAS without claiming or reserving, then clears waiters on claim", async () => {
+    const { client, add, board } = room();
+    add("T1", task());
+    add("T2", { ...task(["src/b.ts"]), depends_on: ["T1"] });
+    const a = client("a"), b = client("b"), c = client("c");
+    const waiting = await Promise.allSettled([claimTask(b, "T2", "repo"), claimTask(c, "T2", "repo")]);
+    expect(waiting.every((result) => result.status === "rejected" && String(result.reason).includes("waits for T1"))).toBe(true);
+    await expect(claimTask(b, "T2", "repo")).rejects.toThrow("waits for T1");
+    expect(board["task.T2"].value).toMatchObject({ status: "open" });
+    expect((board["task.T2"].value as { waiting_for: string[] }).waiting_for.sort()).toEqual(["b", "c"]);
+    expect((board["task.T2"].value as { owner?: string }).owner).toBeUndefined();
+    expect(board["task.T2"].version).toBe(3);
+    expect(await listReservations(b)).toEqual([]);
+    await claimTask(a, "T1", "repo");
+    await completeTask(a, "T1", "repo", "done", { commits: ["abc"], tests: "vitest" });
+    expect(await claimTask(b, "T2", "repo")).toMatchObject({ status: "claimed", owner: "b" });
+    expect((board["task.T2"].value as { waiting_for?: string[] }).waiting_for).toBeUndefined();
+    expect((await listReservations(b)).map((reservation) => reservation.by)).toEqual(["b"]);
+  });
+
   it("rejects unfinished dependencies, then completes with evidence and releases reservations", async () => {
     const { client, add } = room();
     add("T1", task(["src/a.ts"]));

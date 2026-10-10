@@ -13,6 +13,7 @@ export interface Task {
   behaviour_changes?: string;
   evidence?: { commits: string[]; tests: string; contract?: string };
   blocked_reason?: string;
+  waiting_for?: string[];
 }
 export type ListedTask = Task & { id: string; blocked_by: string[]; unblocked: boolean };
 
@@ -26,6 +27,7 @@ function taskFrom(value: unknown): Task {
   const task = value as Task;
   if (typeof task.title !== "string" || !Array.isArray(task.files) || !task.files.every((x) => typeof x === "string") ||
     !Array.isArray(task.depends_on) || !task.depends_on.every((x) => typeof x === "string") ||
+    (task.waiting_for !== undefined && (!Array.isArray(task.waiting_for) || !task.waiting_for.every((x) => typeof x === "string"))) ||
     !["open", "claimed", "blocked", "done"].includes(task.status)) throw new Error("invalid task entry");
   return task;
 }
@@ -51,17 +53,38 @@ function owned(client: RoomClient, id: string, task: Task): void {
 }
 
 export async function claimTask(client: RoomClient, id: string, repo: string): Promise<Task> {
-  const { task, version } = await load(client, id);
-  if (task.status !== "open") throw new Error(`task ${id} is ${task.status}${task.owner ? ` by ${task.owner}` : ""}`);
-  const board = (await client.board()).board;
-  const waiting = task.depends_on.filter((dep) => board[key(dep)]?.value && taskFrom(board[key(dep)].value).status === "done" ? false : true);
-  if (waiting.length) throw new Error(`task ${id} waits for ${waiting.join(", ")}`);
+  let task: Task | undefined, version = 0;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const board = (await client.board()).board;
+    const entry = board[key(id)];
+    if (!entry) throw new Error(`task ${id} does not exist`);
+    const current = taskFrom(entry.value);
+    if (current.status !== "open") throw new Error(`task ${id} is ${current.status}${current.owner ? ` by ${current.owner}` : ""}`);
+    const waiting = current.depends_on.filter((dep) => board[key(dep)]?.value && taskFrom(board[key(dep)].value).status === "done" ? false : true);
+    if (waiting.length) {
+      if (!current.waiting_for?.includes(client.participantId)) {
+        try {
+          await client.setBoardKey(key(id), { ...current, waiting_for: [...(current.waiting_for ?? []), client.participantId] }, { ifVersion: entry.version ?? 0 });
+        } catch (error) {
+          if (error instanceof RoomApiError && error.status === 409) continue;
+          throw error;
+        }
+      }
+      throw new Error(`task ${id} waits for ${waiting.join(", ")}`);
+    }
+    task = current;
+    version = entry.version ?? 0;
+    break;
+  }
+  if (!task) throw new Error(`task ${id} kept changing; try again`);
   if (task.files.length && !repo) throw new Error("repo is required to reserve task files");
   const before = task.files.length ? new Set((await listReservations(client)).map((r) => r.id)) : new Set<string>();
   const reserved = task.files.length ? await reservePaths(client, repo, task.files, `task ${id}`) : [];
   const newIds = reserved.filter((r) => r.by === client.participantId && !before.has(r.id) && r.reason === `task ${id}`).map((r) => r.id);
+  const claimed: Task = { ...task, status: "claimed", owner: client.participantId };
+  delete claimed.waiting_for;
   try {
-    await client.setBoardKey(key(id), { ...task, status: "claimed", owner: client.participantId }, { ifVersion: version });
+    await client.setBoardKey(key(id), claimed, { ifVersion: version });
   } catch (error) {
     if (newIds.length) await releaseReservationIds(client, newIds);
     if (error instanceof RoomApiError && error.status === 409) {
@@ -70,7 +93,7 @@ export async function claimTask(client: RoomClient, id: string, repo: string): P
     }
     throw error;
   }
-  return { ...task, status: "claimed", owner: client.participantId };
+  return claimed;
 }
 
 export async function completeTask(client: RoomClient, id: string, repo: string, summary: string, evidence: { commits: string[]; tests: string; contract?: string }, behaviourChanges?: string): Promise<Task> {

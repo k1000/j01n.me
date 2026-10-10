@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SDK_CLIENT_PROTOCOL } from "@j01n/sdk";
 
 const ROOM = "https://j01n.me/r/room-1";
 const calls: Array<{ method: string; url: string; auth: string | null }> = [];
@@ -55,6 +56,47 @@ describe("pi-extension sessions", () => {
     const result = JSON.parse(await runj01n(["join", ROOM, "secret", "pi-agent"]));
     expect(result).toMatchObject({ ok: true, kickoff: null, kickoff_error: expect.any(String) });
     expect(JSON.parse(readFileSync(".j01n-_r_room-1-pi-agent.json", "utf8")).participantToken).toBe("tok-1");
+  });
+
+  it("doctor reports the SDK protocol, update notice and open-question count", async () => {
+    const baseFetch = globalThis.fetch;
+    let asksAuth: string | null = null;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/participants") && (init?.method ?? "GET") === "GET") {
+        return Response.json({ participants: [{ id: "pi-agent" }] }, { headers: { "x-j01n-client-update": "Update the Pi extension" } });
+      }
+      if (String(url).endsWith("/asks")) {
+        asksAuth = new Headers(init?.headers).get("authorization");
+        return Response.json({ asks: [{ ask_id: "question-1", seq: 1, from: "host", due_at: null, overdue: false,
+          message: { id: "question-1", seq: 1, from: "host", to: "pi-agent", intent: "notify", body: { text: "Ready?" } } }] });
+      }
+      return baseFetch(url, init);
+    });
+
+    const { runj01n } = await import("../commands");
+    const result = JSON.parse(await runj01n(["doctor", ROOM, "secret", "pi-agent"]));
+    expect(result).toMatchObject({ client_protocol: SDK_CLIENT_PROTOCOL, client_update: "Update the Pi extension", open_questions: 1 });
+    expect(asksAuth).toBe("Bearer tok-1");
+  });
+
+  it.each(["http", "network"])("doctor keeps other diagnostics when /asks has a %s error", async (failure) => {
+    const baseFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/participants") && (init?.method ?? "GET") === "GET") {
+        return Response.json({ participants: [{ id: "pi-agent" }] });
+      }
+      if (String(url).endsWith("/asks")) {
+        if (failure === "network") throw new TypeError("network unavailable");
+        return Response.json({ error: "not found" }, { status: 404 });
+      }
+      return baseFetch(url, init);
+    });
+
+    const { runj01n } = await import("../commands");
+    const result = JSON.parse(await runj01n(["doctor", ROOM, "secret", "pi-agent"]));
+    expect(result).toMatchObject({ ok: true, joined: true, client_protocol: SDK_CLIENT_PROTOCOL,
+      open_questions: null, open_questions_error: expect.any(String) });
+    expect(result.open_questions_error).toContain(failure === "http" ? "404" : "network");
   });
 
   it("uses the sole room for status without repeating credentials", async () => {

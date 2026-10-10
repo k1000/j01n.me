@@ -117,7 +117,7 @@ async function derive(privateKey, publicKey) { return subtle.deriveKey({ name: '
 async function loadState() {
   try {
     const state = JSON.parse(await fs.readFile(keyFile, 'utf8'));
-    return { ...state, created: false, keyPair: { privateKey: await subtle.importKey('jwk', state.privateJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']), publicKey: await subtle.importKey('jwk', state.publicJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, []) } };
+    return { ...state, peers: state.peers ?? {}, created: false, keyPair: { privateKey: await subtle.importKey('jwk', state.privateJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']), publicKey: await subtle.importKey('jwk', state.publicJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, []) } };
   } catch {
     const keyPair = await makeKeys();
     const state = { privateJwk: await subtle.exportKey('jwk', keyPair.privateKey), publicJwk: await subtle.exportKey('jwk', keyPair.publicKey), peers: {}, created: true, keyPair };
@@ -131,9 +131,11 @@ function requireParticipantToken(state) { if (!state.participantToken) die('part
 // Room-feature version this helper speaks; bump with CLIENT_PROTOCOL in apps/web/src/constants.ts.
 const CLIENT_PROTOCOL = 4;
 let updateNoticeShown = false;
+let clientUpdateNotice = null;
 async function requestJson(url, init = {}) {
   const r = await fetch(url, { ...init, headers: { ...(init.headers || {}), 'x-j01n-client': 'helper/' + CLIENT_PROTOCOL } });
   const notice = r.headers.get('x-j01n-client-update');
+  if (notice) clientUpdateNotice = notice;
   if (notice && !updateNoticeShown) { updateNoticeShown = true; console.error('note: ' + notice); }
   const text = await r.text(); let body; try { body = text ? JSON.parse(text) : {}; } catch { body = text; }
   return { ok: r.ok, status: r.status, body };
@@ -306,9 +308,13 @@ function parseSseEvent(raw) {
   try { return { event, data: JSON.parse(text) }; }
   catch { return { event, data: text }; }
 }
-function doctorReport(state, joinedResult, messages, stats) {
+function doctorReport(state, joinedResult, messages, stats, openQuestions, openQuestionsError) {
   return {
     ok: joinedResult.ok,
+    client_protocol: CLIENT_PROTOCOL,
+    ...(clientUpdateNotice ? { client_update: clientUpdateNotice } : {}),
+    open_questions: openQuestions,
+    ...(openQuestionsError ? { open_questions_error: openQuestionsError } : {}),
     participant_id: me,
     joined: joinedResult.ok,
     key_file: keyFile,
@@ -394,7 +400,19 @@ const COMMANDS = {
     const j = await joined();
     const messages = await doctorMessages(state, j.ok);
     const stats = await encryptedStats(state, messages);
-    console.log(JSON.stringify(doctorReport(state, j, messages, stats), null, 2));
+    let openQuestions = null;
+    let openQuestionsError = j.ok ? undefined : 'not joined';
+    if (j.ok) {
+      try {
+        const asks = await requestJson(roomUrl + '/asks', { headers: tokenHeaders(state) });
+        if (asks.ok) openQuestions = (asks.body.asks || []).length;
+        else openQuestionsError = 'HTTP ' + asks.status + (typeof asks.body?.error === 'string' ? ': ' + asks.body.error : '');
+      } catch (error) {
+        if (!(error instanceof TypeError)) throw error;
+        openQuestionsError = 'network error while reading /asks';
+      }
+    }
+    console.log(JSON.stringify(doctorReport(state, j, messages, stats, openQuestions, openQuestionsError), null, 2));
   },
   async kickoff(state, { rest }) {
     if (rest.length === 0) die('kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)');

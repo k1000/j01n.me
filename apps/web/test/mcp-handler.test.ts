@@ -571,6 +571,7 @@ describe("hosted MCP handler", () => {
 
   it("waits for an event, takes a room link and plain text, and reads others' messages by default", async () => {
     const requests: Array<[string | undefined, string, unknown]> = [];
+    let unreadMessages: unknown[] = [];
     const env = {
       RENDEZVOUS: {
         idFromName: () => "id",
@@ -580,7 +581,7 @@ describe("hosted MCP handler", () => {
             requests.push([init?.method ?? "GET", u.pathname + u.search, init?.body ? JSON.parse(init.body as string) : undefined]);
             if (u.pathname.endsWith("/wait")) return Response.json({ event: "message", cursor: 3 });
             if (u.pathname.endsWith("/participants")) return Response.json({ participants: [] });
-            return Response.json({ ok: true, cursor: 3, messages: [], seq: 4 });
+            return Response.json({ ok: true, cursor: 3, messages: unreadMessages, seq: 4 });
           },
         }),
       },
@@ -593,6 +594,14 @@ describe("hosted MCP handler", () => {
     expect(requests.some(([, path]) => path === "/wait?timeout=5")).toBe(true);
     expect(requests.some(([method, path]) => method === "GET" && path === "/")).toBe(true);
 
+    unreadMessages = [
+      { id: "finding-1", seq: 1, from: "b", to: "a", kind: "finding", intent: "notify", body: { text: "context" }, created_at: "2026-01-01" },
+      { id: "blocker-1", seq: 2, from: "b", to: "a", kind: "blocker", intent: "notify", body: { text: "help" }, created_at: "2026-01-01" },
+    ];
+    expect(await call("wait_for_event", { kind: "blocker" })).toMatchObject({
+      messages: [{ id: "blocker-1" }], other_messages: [{ id: "finding-1" }],
+    });
+    unreadMessages = [];
     requests.length = 0;
     await call("send_message", { to: "all", body: "hello there" });
     const sent = requests.find(([method, path]) => method === "POST" && path === "/");

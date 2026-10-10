@@ -322,9 +322,11 @@ async function waitForEvent(env: Env, params: Record<string, unknown>) {
   } as Parameters<RoomClient["wait"]>[0]);
   if (woke.timeout) return { timeout: true };
   const read = await readRoomMessages(env, { inviteJson: params.inviteJson, participantId });
-  // Reading consumes all unread messages even when the response selects one kind.
-  const messages = params.kind ? read.messages.filter((message) => parseMessageKinds(params.kind).includes((message as typeof message & { kind?: string }).kind as ReturnType<typeof parseMessageKinds>[number])) : read.messages;
-  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), ...read, count: messages.length, messages };
+  // Reading consumes every unread message. Include nonmatching ones so a kind-filtered wait never hides them.
+  if (!params.kind) return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), ...read };
+  const kinds = parseMessageKinds(params.kind);
+  const messages = read.messages.filter((message) => kinds.includes((message as typeof message & { kind?: string }).kind as ReturnType<typeof parseMessageKinds>[number]));
+  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), ...read, count: messages.length, messages, other_messages: read.messages.filter((message) => !messages.includes(message)) };
 }
 
 /** A JSON object is sent as is; anything else is sent as { text }. */

@@ -63,9 +63,9 @@ describe("durable room notes and summary", () => {
     await runRoomCommand(me, "send", ["ravi", "Need help", "--kind", "blocker"]);
     expect(send).toHaveBeenCalledWith("ravi", { text: "Need help" }, expect.objectContaining({ kind: "blocker", expectsReply: true }));
     expect(await runRoomCommand(me, "wait", ["--kind", "blocker"]))
-      .toMatchObject({ messages: [{ id: "b" }] });
+      .toMatchObject({ messages: [{ id: "b" }], other_messages: [{ id: "a", kind: "finding" }] });
     expect(wait).toHaveBeenCalledWith(expect.objectContaining({ kind: ["blocker"] }));
-    // A filtered wait consumes every unread message through read(); callers should not expect "finding" on a later read.
+    // read() consumes both kinds; unmatched messages must remain visible in this response.
     expect(read).toHaveBeenCalledTimes(1);
     await expect(runRoomCommand(me, "send", ["ravi", "Oops", "--kind", "invalid"])).rejects.toThrow("--kind");
   });

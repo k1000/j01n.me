@@ -39,9 +39,11 @@ export function roomReplyHints<T extends { id: string; from: string; intent?: st
 export async function waitRoom(client: RoomClient, timeoutSeconds?: number, filter: Parameters<RoomClient["wait"]>[0] & { kind?: MessageKind[] } = {}, prefix = "/j01n") {
   const woke = await client.wait({ ...filter, timeoutSeconds });
   if (woke.timeout) return { timeout: true };
-  // read() consumes all unread messages; a kind filter only narrows what is returned.
+  // read() advances the cursor for every unread message, including other kinds. Return those too.
   const messages = roomReplyHints(await client.read(), prefix);
-  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), messages: filter.kind?.length ? messages.filter((message) => filter.kind?.includes((message as typeof message & { kind?: MessageKind }).kind as MessageKind)) : messages };
+  if (!filter.kind?.length) return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), messages };
+  const matching = messages.filter((message) => filter.kind?.includes((message as typeof message & { kind?: MessageKind }).kind as MessageKind));
+  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), messages: matching, other_messages: messages.filter((message) => !matching.includes(message)) };
 }
 
 /** Shared room-command execution; entry points retain their own session, key-file and output policies. */

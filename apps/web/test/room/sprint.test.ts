@@ -55,6 +55,7 @@ describe("sprint template", () => {
     const notices = messages.filter((message) => message.intent === "board.changed").map((message) => message.body.text);
     expect(notices).toContain("agent-a claimed T1");
     expect(notices).toContain("T1 done: endpoint shipped; T2 is now unblocked");
+    expect(messages.some((message) => message.intent === "task.unblocked")).toBe(false);
   });
 
   it("does not announce a dependent until all dependencies are done", async () => {
@@ -75,7 +76,7 @@ describe("sprint template", () => {
   it("sends a direct unblocked system notice only to a joined dependent owner", async () => {
     const fix = await sprintRoom(tasks);
     await joinParticipant(fix, "agent-b");
-    await setTask(fix, "T2", { title: "Use API", files: [], depends_on: ["T1"], status: "claimed", owner: "agent-a" });
+    await setTask(fix, "T2", { title: "Use API", files: [], depends_on: ["T1"], status: "claimed", owner: "agent-a", waiting_for: ["agent-a", "agent-a"] });
     await setTask(fix, "T1", { title: "Build API", files: [], depends_on: [], status: "done", summary: "ready" });
     const read = async (id: string) => (await getRoomJson<{ messages: Array<{ intent: string; to: string; body: { task_id: string } }> }>(fix, "/?view=all", id)).messages;
     expect((await read("agent-a")).filter((message) => message.intent === "task.unblocked")).toEqual([
@@ -83,6 +84,22 @@ describe("sprint template", () => {
     ]);
     expect((await read("host")).some((message) => message.intent === "task.unblocked")).toBe(false);
     expect((await read("agent-b")).some((message) => message.intent === "task.unblocked")).toBe(false);
+  });
+
+  it("wakes registered waiters on an open dependent task after its prerequisite finishes", async () => {
+    const fix = await sprintRoom(tasks);
+    await joinParticipant(fix, "agent-b");
+    // A rejected claim records interest without claiming or reserving the still-blocked task.
+    await setTask(fix, "T2", { title: "Use API", files: ["src/ui.ts"], depends_on: ["T1"], status: "open", waiting_for: ["agent-a", "agent-b"] });
+    await setTask(fix, "T1", { title: "Build API", files: [], depends_on: [], status: "done", summary: "ready" });
+    for (const id of ["agent-a", "agent-b"]) {
+      const { messages } = await getRoomJson<{ messages: Array<{ intent: string; to: string; body: { task_id: string } }> }>(fix, "/?view=all", id);
+      expect(messages.filter((message) => message.intent === "task.unblocked")).toEqual([
+        expect.objectContaining({ to: id, body: { text: "T2 is now unblocked", task_id: "T2" } }),
+      ]);
+    }
+    const { board } = await getRoomJson<{ board: Record<string, { value: { status: string; waiting_for: string[] } }> }>(fix, "/board", "host");
+    expect(board["task.T2"].value).toMatchObject({ status: "open", waiting_for: ["agent-a", "agent-b"] });
   });
 
   it("does not call an independently blocked dependent unblocked", async () => {

@@ -171,6 +171,13 @@ describe("pi-extension sessions", () => {
     expect(calls.some((c) => c.method === "PUT" && c.url.includes("/board/reservations"))).toBe(false); // alone in this checkout
   });
 
+  it("create passes the sprint template and tasks to the server", async () => {
+    const { runj01n } = await import("../commands");
+    await runj01n(["create", JSON.stringify({ host_id: "nora", template: "sprint", tasks: [{ id: "T1", title: "API", files: ["src/api.ts"] }] })]).catch(() => undefined);
+    const body = JSON.parse(calls.find((c) => c.method === "POST" && c.url.endsWith("/rooms"))!.body!);
+    expect(body).toMatchObject({ host_id: "nora", template: "sprint", tasks: [{ id: "T1", title: "API" }] });
+  });
+
   it("returns no kickoff for an empty board without failing the join", async () => {
     const { runj01n } = await import("../commands");
     expect(JSON.parse(await runj01n(["join", ROOM, "secret", "pi-agent"])).kickoff).toBeNull();

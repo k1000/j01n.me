@@ -28,8 +28,8 @@
 // packages/helper/src/cli.ts
 import * as fs from "node:fs/promises";
 import { createHash, webcrypto } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { relative, resolve } from "node:path";
+import { execFileSync as execFileSync3 } from "node:child_process";
+import { relative, resolve as resolve2 } from "node:path";
 
 // packages/sdk/src/errors.ts
 var RoomApiError = class extends Error {
@@ -292,15 +292,21 @@ function pathsOverlap(a, b) {
   const [x, y] = [clean(a), clean(b)];
   return x === y || x === "" || y === "" || x.startsWith(y + "/") || y.startsWith(x + "/");
 }
-function reservationFor(reservations, me, repo2, path) {
-  return reservations.find((r) => r.by !== me && r.repo === repo2 && r.paths.some((p) => pathsOverlap(p, path)));
+function reservationFor(reservations, me, repo2, path, checkout) {
+  if (!checkout) return void 0;
+  return reservations.find((r) => r.by !== me && r.checkout === checkout && r.repo === repo2 && r.paths.some((p) => pathsOverlap(p, path)));
+}
+async function sharedCheckout(client) {
+  const team = await client.team();
+  const checkout = team.find((p) => p.id === client.participantId)?.checkout;
+  return checkout && team.some((p) => p.id !== client.participantId && p.checkout === checkout) ? checkout : void 0;
 }
 async function load(client) {
   const entry = (await client.board()).board[RESERVATIONS_KEY];
   const stored = entry?.value && typeof entry.value === "object" ? entry.value : {};
   const reservations = await Promise.all(Object.entries(stored).map(async ([id, r]) => {
     const opened = await openRoomSeal(r.sealed, client.invite.join_secret, client.invite.room_id).catch(() => null);
-    return { id, by: r.by, since: r.since, repo: opened?.repo ?? "", paths: opened?.paths ?? [], ...opened?.reason ? { reason: opened.reason } : {} };
+    return { id, by: r.by, since: r.since, ...r.checkout ? { checkout: r.checkout } : {}, repo: opened?.repo ?? "", paths: opened?.paths ?? [], ...opened?.reason ? { reason: opened.reason } : {} };
   }));
   return { stored, version: entry?.version ?? 0, reservations };
 }
@@ -324,13 +330,15 @@ async function update(client, change) {
 }
 async function reservePaths(client, repo2, paths, reason) {
   if (paths.length === 0) throw new Error("reserve needs at least one path");
+  const checkout = await sharedCheckout(client);
+  if (!checkout) return [];
   return update(client, async ({ stored, reservations }) => {
     for (const path of paths) {
-      const held = reservationFor(reservations, client.participantId, repo2, path);
+      const held = reservationFor(reservations, client.participantId, repo2, path, checkout);
       if (held) return new Error(`${path} is already reserved by ${held.by}${held.reason ? ` (${held.reason})` : ""}`);
     }
     const sealed = await sealForRoom({ repo: repo2, paths, ...reason ? { reason } : {} }, client.invite.join_secret, client.invite.room_id);
-    return { ...stored, [crypto.randomUUID()]: { by: client.participantId, since: (/* @__PURE__ */ new Date()).toISOString(), sealed } };
+    return { ...stored, [crypto.randomUUID()]: { by: client.participantId, since: (/* @__PURE__ */ new Date()).toISOString(), checkout, sealed } };
   });
 }
 async function releaseReservationIds(client, ids) {
@@ -365,7 +373,8 @@ async function listTasks(client) {
   const done = new Set(tasks.filter((task) => task.status === "done").map((task) => task.id));
   return tasks.map((task) => {
     const blocked_by = task.depends_on.filter((id) => !done.has(id));
-    return { ...task, blocked_by, unblocked: task.status === "open" && blocked_by.length === 0 };
+    const overlaps = tasks.filter((other) => other.id !== task.id && other.status !== "done" && task.files.some((a) => other.files.some((b) => pathsOverlap(a, b)))).map((other) => other.id);
+    return { ...task, blocked_by, unblocked: task.status === "open" && blocked_by.length === 0, ...overlaps.length ? { overlaps } : {} };
   });
 }
 async function load2(client, id) {
@@ -665,8 +674,8 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
       return request(invite.api.participants, invite, { participantId });
     },
     async updateStatus(state, status, opts = {}) {
-      const { workspace: workspace2, webhookUrl, ...profile } = opts;
-      const sealed = workspace2 === void 0 ? {} : { workspace: workspace2 && await sealForRoom(workspace2, invite.join_secret, invite.room_id) };
+      const { workspace, webhookUrl, ...profile } = opts;
+      const sealed = workspace === void 0 ? {} : { workspace: workspace && await sealForRoom(workspace, invite.join_secret, invite.room_id) };
       const webhook = webhookUrl === void 0 ? {} : { webhook_url: webhookUrl };
       return request(
         `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
@@ -679,11 +688,21 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
       if (profile.capabilities !== void 0) body.capabilities = profile.capabilities;
       if (profile.model !== void 0) body.model = profile.model;
       if (profile.provider !== void 0) body.provider = profile.provider;
+      if (profile.checkout !== void 0) body.checkout = profile.checkout;
+      if (profile.display_name !== void 0) body.display_name = profile.display_name;
+      if (profile.role !== void 0) body.role = profile.role;
       if (profile.workspace !== void 0) body.workspace = profile.workspace && await sealForRoom(profile.workspace, invite.join_secret, invite.room_id);
       return request(
         `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
         invite,
         { method: "PATCH", participantId, body }
+      );
+    },
+    async setParticipantRole(targetId, role) {
+      return request(
+        `${invite.room_url}/participants/${encodeURIComponent(targetId)}`,
+        invite,
+        { method: "PATCH", participantId, body: { role } }
       );
     },
     async team() {
@@ -695,6 +714,13 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
         last_seen_at: p.last_seen_at,
         ...p.model ? { model: p.model } : {},
         ...p.provider ? { provider: p.provider } : {},
+        ...p.checkout ? { checkout: p.checkout } : {},
+        checkout_status: !p.checkout ? "checkout unknown" : (() => {
+          const other = participants.find((candidate) => candidate.id !== p.id && !candidate.left_at && candidate.checkout === p.checkout);
+          return other ? `shares checkout with ${other.display_name || other.id}` : "own checkout";
+        })(),
+        ...p.display_name ? { display_name: p.display_name } : {},
+        ...p.role ? { role: p.role } : {},
         capabilities: p.capabilities ?? [],
         workspace: p.workspace ? await openRoomSeal(p.workspace, invite.join_secret, invite.room_id).catch(() => null) : null
       })));
@@ -780,7 +806,7 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
 // packages/sdk/src/sdk.ts
 async function joinRoom(inviteInput, participantId, opts = {}, existingSession) {
   const invite = normalizeInvite(inviteInput);
-  const { workspace: workspace2, ...profile } = opts;
+  const { workspace, ...profile } = opts;
   const cryptoSession = existingSession ?? await createSdkCryptoSession(participantId);
   const publicKeyBody = await cryptoSession.announceKeyBody();
   const join = await request(
@@ -792,7 +818,7 @@ async function joinRoom(inviteInput, participantId, opts = {}, existingSession) 
         ...profile,
         public_key: publicKeyBody.public_key,
         // Sealed with the room key: the server only stores ciphertext.
-        ...workspace2 ? { workspace: await sealForRoom(workspace2, invite.join_secret, invite.room_id) } : {}
+        ...workspace ? { workspace: await sealForRoom(workspace, invite.join_secret, invite.room_id) } : {}
       }
     }
   );
@@ -831,6 +857,10 @@ async function waitRoom(client, timeoutSeconds, filter = {}, prefix = "/j01n") {
 async function runRoomCommand(client, cmd2, rest, options = {}) {
   const prefix = options.prefix ?? "/j01n";
   if (cmd2 === "tasks") return { tasks: await listTasks(client) };
+  if (cmd2 === "conflicts") {
+    if (!options.conflicts) throw new Error("conflicts needs a local git checkout");
+    return options.conflicts();
+  }
   if (cmd2 === "claim") {
     if (!rest[0]) throw new Error("claim needs: <id>");
     return { task: await claimTask(client, rest[0], options.repo ?? "") };
@@ -846,7 +876,16 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
     for (let i = 0; i < args2.length; i++) if (args2[i] === "--commit" && args2[i + 1] && !args2[i + 1].startsWith("--")) commits.push(args2[++i]);
     const summary = flag("--summary"), tests = flag("--tests"), contract = flag("--contract"), changes = flag("--behaviour-changes");
     if (!summary || !tests || !commits.length) throw new Error("done needs --summary, --commit and --tests");
-    return { task: await completeTask(client, id, options.repo ?? "", summary, { commits, tests, ...contract ? { contract } : {} }, changes) };
+    const task = await completeTask(client, id, options.repo ?? "", summary, { commits, tests, ...contract ? { contract } : {} }, changes);
+    if (!options.conflicts) return { task };
+    try {
+      const branch = (await client.team()).find((p) => p.id === client.participantId)?.workspace?.branch;
+      const report = await options.conflicts(branch);
+      if (report.conflicts.length) await client.send("all", { text: `${id} merge conflicts: ${report.conflicts.map((p) => `${p.branches.join(" vs ")}: ${p.files.join(", ")}`).join("; ")}` });
+      return { task, conflicts: report.conflicts };
+    } catch (error) {
+      return { task, conflicts_error: error instanceof Error ? error.message : String(error) };
+    }
   }
   if (cmd2 === "block") {
     const [id, ...args2] = rest;
@@ -935,9 +974,17 @@ async function runReservationCommand(client, cmd2, rest, options) {
   const paths = (at >= 0 ? rest.slice(0, at) : rest).map(options.path);
   if (options.requirePaths && !paths.length) throw new Error("reserve needs: <path>... [--reason text]");
   const reason = at >= 0 ? rest.slice(at + 1).join(" ") || void 0 : void 0;
-  return { ok: true, reservations: await reservePaths(client, options.repo, paths, reason) };
+  const reservations = await reservePaths(client, options.repo, paths, reason);
+  return { ok: true, reservations, ...reservations.length ? {} : { message: "nobody shares your checkout: no reservation needed" } };
 }
 async function runProfileCommand(client, rest, options) {
+  const target = rest[0] && !rest[0].startsWith("--") ? rest[0] : void 0;
+  if (target) {
+    const role = rest[1] === "--role" ? rest[2] : void 0;
+    if (rest.length !== 3 || role !== "owner" && role !== "clear") throw new Error("profile <participant> needs --role owner|clear");
+    await client.setParticipantRole(target, role === "owner" ? "owner" : null);
+    return { ok: true, team: await client.team() };
+  }
   const flag = (name) => {
     const at2 = rest.indexOf(name);
     return at2 >= 0 && rest[at2 + 1] && !rest[at2 + 1].startsWith("--") ? rest[at2 + 1] : void 0;
@@ -949,13 +996,111 @@ async function runProfileCommand(client, rest, options) {
   const provider = flag("--provider") || options.providerFallback;
   if (model) profile.model = model;
   if (provider) profile.provider = provider;
-  if (rest.includes("--no-workspace")) profile.workspace = null;
-  else if (rest.includes("--workspace")) {
+  if (flag("--display-name")) profile.display_name = flag("--display-name");
+  if (flag("--role")) profile.role = flag("--role");
+  if (rest.includes("--no-workspace")) {
+    profile.workspace = null;
+    profile.checkout = null;
+  } else if (rest.includes("--workspace")) {
     if (options.secret === "resume-only") throw new Error(options.workspaceError);
     profile.workspace = options.workspace();
+    profile.checkout = options.checkout?.();
   }
   if (Object.keys(profile).length) await client.setProfile(profile);
   return { ok: true, team: await client.team() };
+}
+
+// packages/sdk/src/node.ts
+import { execFileSync } from "node:child_process";
+import { createHmac, hkdfSync } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { hostname } from "node:os";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+function git(cwd, ...args2) {
+  try {
+    return execFileSync("git", args2, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
+  } catch {
+    return void 0;
+  }
+}
+function detectWorkspace(joinSecret, roomId, cwd = process.cwd(), host = hostname()) {
+  const root = realpathSync(git(cwd, "rev-parse", "--show-toplevel") || resolve(cwd));
+  const url = pathToFileURL(root);
+  url.hostname = host;
+  const key2 = hkdfSync("sha256", joinSecret, roomId, "j01n.me checkout v1", 32);
+  const checkout = createHmac("sha256", Buffer.from(key2)).update(url.href).digest("base64url");
+  const repo2 = git(cwd, "remote", "get-url", "origin")?.replace(/\/\/[^@/]+@/, "//");
+  const branch = git(cwd, "branch", "--show-current");
+  return { workspace: { path: root, host, ...repo2 ? { repo: repo2 } : {}, ...branch ? { branch } : {} }, checkout };
+}
+
+// packages/sdk/src/conflicts-node.ts
+import { execFileSync as execFileSync2 } from "node:child_process";
+function git2(root, ...args2) {
+  return execFileSync2("git", args2, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+async function checkConflicts(client, root, finishedBranch) {
+  const repo2 = (() => {
+    try {
+      return git2(root, "remote", "get-url", "origin").replace(/\/\/[^@/]+@/, "//");
+    } catch {
+      return git2(root, "rev-parse", "--show-toplevel");
+    }
+  })();
+  const team = await client.team();
+  const branches = /* @__PURE__ */ new Set();
+  for (const task of await listTasks(client)) {
+    const participant = team.find((p) => p.id === task.owner);
+    if (participant?.workspace?.repo === repo2 && participant.workspace.branch) branches.add(participant.workspace.branch);
+    else if (task.worktree) {
+      try {
+        if (git2(task.worktree, "remote", "get-url", "origin").replace(/\/\/[^@/]+@/, "//") === repo2) branches.add(git2(task.worktree, "branch", "--show-current"));
+      } catch {
+      }
+    }
+  }
+  if (finishedBranch) branches.add(finishedBranch);
+  const existing = [...branches].filter((branch) => {
+    try {
+      git2(root, "rev-parse", "--verify", `refs/heads/${branch}`);
+      return true;
+    } catch {
+      return false;
+    }
+  }).sort();
+  const main2 = ["main", "origin/main"].find((branch) => {
+    try {
+      git2(root, "rev-parse", "--verify", branch === "main" ? "refs/heads/main" : "refs/remotes/origin/main");
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (!main2) throw new Error("conflicts needs a local main or origin/main ref");
+  const comparisons = [];
+  for (let i = 0; i < existing.length; i++) {
+    for (const other of [main2, ...existing.slice(i + 1)]) {
+      if (other === existing[i] || finishedBranch && existing[i] !== finishedBranch && other !== finishedBranch) continue;
+      const pair = [existing[i], other];
+      let output2;
+      let conflicted = false;
+      try {
+        output2 = git2(root, "merge-tree", "--write-tree", ...pair);
+      } catch (error) {
+        const e = error;
+        if (e.status !== 1) throw new Error(`merge-tree ${pair.join(" vs ")}: ${e.stderr || String(error)}`);
+        conflicted = true;
+        output2 = e.stdout || "";
+      }
+      const files = conflicted ? [.../* @__PURE__ */ new Set([
+        ...[...output2.matchAll(/^\d{6} [0-9a-f]+ [123]\t(.+)$/gm)].map((match) => match[1]),
+        ...[...output2.matchAll(/^CONFLICT .*? in (.+)$/gm)].map((match) => match[1])
+      ])].sort() : [];
+      comparisons.push({ branches: pair, files });
+    }
+  }
+  return { branches: existing, comparisons, conflicts: comparisons.filter((pair) => pair.files.length > 0) };
 }
 
 // packages/helper/src/cli.ts
@@ -969,18 +1114,17 @@ var safe = (value) => value.replace(/[^a-zA-Z0-9_-]/g, "_");
 var activeDir = ".j01n-rooms";
 var activePath = (url, me) => `${activeDir}/${createHash("sha256").update(url + "\0" + me).digest("hex")}.json`;
 var isUrl = (value) => !!value && /^https?:/.test(value);
-var git = (...argv) => {
+var git3 = (...argv) => {
   try {
-    return execFileSync("git", argv, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
+    return execFileSync3("git", argv, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
   } catch {
     return void 0;
   }
 };
 var repo = () => {
-  const root = git("rev-parse", "--show-toplevel") || process.cwd();
-  return { root, id: git("remote", "get-url", "origin")?.replace(/\/\/[^@/]+@/, "//") || root };
+  const root = git3("rev-parse", "--show-toplevel") || process.cwd();
+  return { root, id: git3("remote", "get-url", "origin")?.replace(/\/\/[^@/]+@/, "//") || root };
 };
-var workspace = () => ({ path: process.cwd(), ...git("remote", "get-url", "origin") ? { repo: git("remote", "get-url", "origin").replace(/\/\/[^@/]+@/, "//") } : {}, ...git("branch", "--show-current") ? { branch: git("branch", "--show-current") } : {} });
 var modelProfile = (rest) => {
   const flag = (name) => {
     const i = rest.indexOf(name);
@@ -988,7 +1132,7 @@ var modelProfile = (rest) => {
   };
   return { ...flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL ? { model: flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL } : {}, ...flag("--provider") || process.env.J01N_PROVIDER ? { provider: flag("--provider") || process.env.J01N_PROVIDER } : {} };
 };
-var roomCommand = (client, command, rest, beforeSend) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend, repo: repo().id });
+var roomCommand = (client, command, rest, beforeSend) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend, repo: repo().id, conflicts: (branch) => checkConflicts(client, repo().root, branch) });
 async function isRoomRef(ref) {
   if (!ref) return false;
   if (ref.trim().startsWith("{")) return true;
@@ -1070,7 +1214,7 @@ async function agents() {
     }
     const invite = pending[0];
     await deleteInvite(identity, invite.id);
-    const joined = JSON.parse(execFileSync(process.execPath, [process.argv[1], "join", invite.room_link, me], { encoding: "utf8", env: process.env }));
+    const joined = JSON.parse(execFileSync3(process.execPath, [process.argv[1], "join", invite.room_link, me], { encoding: "utf8", env: process.env }));
     output({ invited_by: invite.from, ...joined });
   }
 }
@@ -1137,7 +1281,11 @@ async function main() {
     const model = modelProfile(rest);
     if (model.model && model.model !== mine?.model) announced.model = model.model;
     if (model.provider && model.provider !== mine?.provider) announced.provider = model.provider;
-    if (!rest.includes("--no-workspace") && JSON.stringify(workspace()) !== JSON.stringify(mine?.workspace)) announced.workspace = workspace();
+    if (!rest.includes("--no-workspace")) {
+      const detected = detectWorkspace(client.invite.join_secret, client.invite.room_id);
+      if (JSON.stringify(detected.workspace) !== JSON.stringify(mine?.workspace)) announced.workspace = detected.workspace;
+      if (detected.checkout !== mine?.checkout) announced.checkout = detected.checkout;
+    }
     if (Object.keys(announced).length) await client.setProfile(announced);
     const profile = { access: roomUrl, participant_id: me, participant_token: state.participantToken, key_file: keyFile };
     await remember(roomUrl, me);
@@ -1231,7 +1379,7 @@ async function main() {
     output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true }));
     return;
   }
-  if (["webhook", "tasks", "claim", "done", "block", "unblock"].includes(cmd || "")) {
+  if (["webhook", "tasks", "claim", "done", "block", "unblock", "conflicts"].includes(cmd || "")) {
     output(await roomCommand(client, cmd, rest));
     return;
   }
@@ -1239,7 +1387,8 @@ async function main() {
     output(await runProfileCommand(client, rest, {
       modelFallback: process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL,
       providerFallback: process.env.J01N_PROVIDER,
-      workspace,
+      workspace: () => detectWorkspace(client.invite.join_secret, client.invite.room_id).workspace,
+      checkout: () => detectWorkspace(client.invite.join_secret, client.invite.room_id).checkout,
       secret: roomSecret,
       workspaceError: "re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace"
     }));
@@ -1249,7 +1398,7 @@ async function main() {
     const { root, id } = repo();
     output(await runReservationCommand(client, cmd, rest, {
       repo: id,
-      path: (path) => relative(root, resolve(path)) || ".",
+      path: (path) => relative(root, resolve2(path)) || ".",
       requirePaths: true,
       releaseReasonDelimiter: true
     }));
@@ -1265,7 +1414,7 @@ async function main() {
     output(await roomCommand(client, cmd, rest));
     return;
   }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|leave`);
 }
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));

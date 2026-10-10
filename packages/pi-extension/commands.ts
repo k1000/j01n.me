@@ -198,6 +198,9 @@ async function handleCreate(parsed: ParsedArgs): Promise<string> {
     purpose: options.purpose,
     board: parseOptionalObject(options.board),
     boardSchema: parseOptionalObject(options.board_schema),
+    // Sprint rooms: the template seeds the kickoff and one task.<id> key per task.
+    template: options.template,
+    tasks: options.tasks,
   });
   return JSON.stringify(invite, null, 2);
 }

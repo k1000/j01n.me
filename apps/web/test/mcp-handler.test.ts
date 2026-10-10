@@ -41,7 +41,7 @@ function makeRoomEnv(events: RoomEvents) {
     RENDEZVOUS: {
       idFromName: () => "id",
       get: () => ({
-        fetch: async (url: string) => url.includes("__load_session") ? Response.json({ sessions: {} }) : events.subscribe("agent-a", false, 0),
+        fetch: async (url: string) => url.includes("__load_session") ? Response.json({ sessions: {} }) : events.subscribe("agent-a", new URL(url).searchParams.get("include_self") === "true", 0),
       }),
     },
   } as never;
@@ -266,6 +266,95 @@ describe("hosted MCP handler", () => {
     }
   });
 
+  it("cancels a delayed subscription open when its listening stream was replaced", async () => {
+    const sid = await initSession();
+    const first = (await handleMcpRequest(getWithSession(sid))).body!.getReader();
+    await first.read();
+    let release!: () => void, opened!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { opened = resolve; });
+    const events = new RoomEvents();
+    const env = { RENDEZVOUS: { idFromName: () => "id", get: () => ({ fetch: async (url: string) => {
+      if (url.includes("__load_session")) return Response.json({ sessions: {} });
+      opened();
+      await gate;
+      return events.subscribe("agent-a", false, 0);
+    } }) } } as never;
+    const subscribing = handleMcpRequest(rpc("tools/call", { name: "subscribe_room", arguments: { inviteJson: TEST_INVITE, participantId: "agent-a" } }, sid), env);
+    await started;
+    const second = (await handleMcpRequest(getWithSession(sid))).body!.getReader();
+    try {
+      await second.read();
+      release();
+      expect((await subscribing).status).toBe(500);
+      expect(await Promise.race([second.read().then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 25))])).toBe(false);
+    } finally { release(); await second.cancel(); await first.cancel(); }
+  });
+
+  it("suppresses a fulfilled read batch when unsubscribe runs before its continuation", async () => {
+    const sid = await initSession();
+    const listening = (await handleMcpRequest(getWithSession(sid))).body!.getReader();
+    await listening.read();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({ start(c) { controller = c; } });
+    const env = { RENDEZVOUS: { idFromName: () => "id", get: () => ({ fetch: async (url: string) => url.includes("__load_session") ? Response.json({ sessions: {} }) : new Response(stream, { headers: { "content-type": "text/event-stream" } }) }) } } as never;
+    const sub = await toolResultText<{ subscription_id: string }>(await handleMcpRequest(rpc("tools/call", { name: "subscribe_room", arguments: { inviteJson: TEST_INVITE, participantId: "agent-a" } }, sid), env));
+    const request = rpc("tools/call", { name: "unsubscribe_room", arguments: { subscriptionId: sub.subscription_id } }, sid);
+    const body = await request.json();
+    let release!: (value: unknown) => void;
+    request.json = <T>() => new Promise<T>(resolve => { release = value => resolve(value as T); });
+    const unsubscribing = handleMcpRequest(request, env);
+    release(body);
+    // Fulfill the reader between JSON parsing and unsubscribe; its continuation runs after cancellation.
+    queueMicrotask(() => controller.enqueue(new TextEncoder().encode('event: message\ndata: {"id":"queued-one"}\n\nevent: message\ndata: {"id":"queued-two"}\n\n')));
+    try {
+      expect((await unsubscribing).status).toBe(200);
+      expect(await Promise.race([listening.read().then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 25))])).toBe(false);
+    } finally { await listening.cancel(); }
+  });
+
+  it("honors unsubscribe while the listening stream is disconnected", async () => {
+    const events = new RoomEvents();
+    const env = makeRoomEnv(events);
+    const init = await handleMcpRequest(rpc("initialize"), env);
+    const sid = init.headers.get("mcp-session-id")!;
+    const first = (await handleMcpRequest(getWithSession(sid), env)).body!.getReader();
+    await first.read();
+    const subscribed = await toolResultText<{ subscription_id: string }>(await handleMcpRequest(rpc("tools/call", { name: "subscribe_room", arguments: { inviteJson: JSON.stringify({ access: "https://j01n.me/r/offline-unsubscribe", join_secret: "secret" }), participantId: "agent-a" } }, sid), env));
+    await first.cancel();
+    await handleMcpRequest(rpc("tools/call", { name: "unsubscribe_room", arguments: { subscriptionId: subscribed.subscription_id } }, sid), env);
+    const second = (await handleMcpRequest(getWithSession(sid), env)).body!.getReader();
+    try {
+      await second.read();
+      expect(await Promise.race([second.read().then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 25))])).toBe(false);
+    } finally { await second.cancel(); }
+  });
+
+  it("reconnects a listening stream without duplicate room event pumps", async () => {
+    const sid = await initSession();
+    const first = await handleMcpRequest(getWithSession(sid));
+    const firstReader = first.body!.getReader();
+    await firstReader.read();
+    const events = new RoomEvents();
+    await handleMcpRequest(rpc("tools/call", { name: "subscribe_room", arguments: { inviteJson: TEST_INVITE, participantId: "agent-a" } }, sid), makeRoomEnv(events), NOOP_WAIT_UNTIL);
+    const second = await handleMcpRequest(getWithSession(sid));
+    const reader = second.body!.getReader();
+    const decoder = new TextDecoder();
+    try {
+      await reader.read(); // listening
+      expect(decoder.decode((await reader.read()).value)).toContain("notifications/j01n.me/restored");
+      events.notifyMessage({ id: "self-not-echoed", seq: 6, from: "agent-a", to: "all", reply_to: null, intent: "notify", priority: "normal", body: {}, created_at: new Date(0).toISOString() }, 6);
+      events.notifyMessage({ id: "only-once", seq: 7, from: "agent-b", to: "agent-a", reply_to: null, intent: "notify", priority: "normal", body: {}, created_at: new Date(0).toISOString() }, 7);
+      expect(decoder.decode((await reader.read()).value)).toContain("only-once");
+      const extra = await Promise.race([reader.read().then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 15))]);
+      expect(extra).toBe(false);
+    } finally {
+      await reader.cancel();
+      await firstReader.cancel();
+      events.notifyBoard("tasks", "agent-b");
+    }
+  });
+
   it("subscribe_room without an active listening stream errors", async () => {
     const sessionId = await initSession();
     const response = await handleMcpRequest(rpc("tools/call", {
@@ -486,6 +575,95 @@ describe("hosted MCP handler", () => {
     const replied = await call("send_message", { to: "all", body: "and wait", waitForReply: true });
     expect(replied).toMatchObject({ sent: { ok: true }, woke: "message" });
     expect(requests.findIndex(([method]) => method === "POST")).toBeLessThan(requests.findIndex(([, path]) => path.startsWith("/wait")));
+  });
+
+  it("linked-reply waiting ignores unrelated messages and board events while returning their catch-up data", async () => {
+    let reads = 0, waits = 0;
+    let sentBody: Record<string, unknown> = {};
+    const env = { RENDEZVOUS: { idFromName: () => "id", get: () => ({ fetch: async (url: string, init?: RequestInit) => {
+      const u = new URL(url);
+      if (u.pathname.includes("__load_session")) return Response.json({ sessions: {} });
+      if (u.pathname.includes("__save_session")) return Response.json({ ok: true });
+      if (u.pathname.endsWith("/participants")) return Response.json({ participants: [{ id: "a", last_read_seq: 8 }] });
+      if (init?.method === "POST") { sentBody = JSON.parse(String(init.body)); return Response.json({ ok: true, id: "ask-1", seq: 10 }); }
+      if (u.pathname.endsWith("/wait")) {
+        waits++;
+        expect(u.searchParams.get("after")).toBe(String(reads === 1 ? 10 : 11));
+        return Response.json(waits === 1 ? { event: "board", changes: { tasks: { value: "in progress", version: 2 } } } : { event: "message" });
+      }
+      reads++;
+      expect(u.searchParams.get("after")).toBe(String(reads === 1 ? 8 : reads === 2 ? 10 : 11));
+      return Response.json({ cursor: reads === 1 ? 10 : reads === 2 ? 11 : 12, messages: reads === 1 ? [{ id: "older-unread", seq: 9, from: "peer", to: "a", body: { text: "Keep this earlier handoff" } }] : [{
+        id: reads === 2 ? "noise" : "answer", seq: reads === 2 ? 11 : 12, from: "peer", to: "a", reply_to: reads === 2 ? "another-ask" : "ask-1", body: { text: reads === 2 ? "unrelated" : "Ready" },
+      }] });
+    } }) } } as never;
+    const response = await handleMcpRequest(rpc("tools/call", { name: "send_message", arguments: {
+      inviteJson: "https://j01n.me/room/linked-room#secret", participantId: "a", to: "all", body: "Ready?", waitMode: "reply",
+    } }), env);
+    const result = await toolResultText<{ timeout: boolean; reply: { id: string }; messages: Array<{ id: string }>; board: unknown }>(response);
+    expect(result.reply?.id).toBe("answer");
+    expect(result.timeout).toBe(false);
+    expect(result.messages.map(m => m.id)).toEqual(["older-unread", "noise", "answer"]);
+    expect(result.board).toEqual({ tasks: { value: "in progress", version: 2 } });
+    expect(sentBody.expects_reply).toBe(true);
+    expect(waits).toBe(2);
+  });
+
+  it.each(["immediate", "timeout", "reply-at-timeout"])("linked waiting handles %s and does not accept another sender's reply", async (scenario) => {
+    const peer = await createSdkCryptoSession("peer");
+    const { public_key } = await peer.announceKeyBody();
+    let reads = 0, waits = 0;
+    const env = { RENDEZVOUS: { idFromName: () => "id", get: () => ({ fetch: async (url: string, init?: RequestInit) => {
+      const u = new URL(url);
+      if (u.pathname.includes("__load_session")) return Response.json({ sessions: {} });
+      if (u.pathname.includes("__save_session")) return Response.json({ ok: true });
+      if (u.pathname.endsWith("/participants")) return Response.json({ participants: [{ id: "peer", public_key }] });
+      if (init?.method === "POST") return Response.json({ ok: true, id: "ask", seq: 10 });
+      if (u.pathname.endsWith("/wait")) { waits++; return Response.json({ timeout: true }); }
+      reads++;
+      const answered = scenario === "immediate" || (scenario === "reply-at-timeout" && reads === 2);
+      return Response.json({ cursor: answered ? 12 : 11, messages: [{ id: answered ? "answer" : "intruder", seq: answered ? 12 : 11, from: answered ? "peer" : "not-the-recipient", to: "a", reply_to: "ask", body: { text: answered ? "Ready" : "Not your answer" } }] });
+    } }) } } as never;
+    const result = await toolResultText<{ timeout: boolean; reply: { id: string } | null; messages: Array<{ id: string }> }>(await handleMcpRequest(rpc("tools/call", { name: "send_message", arguments: {
+      inviteJson: `https://j01n.me/room/boundary-${scenario}#secret`, participantId: "a", to: "peer", body: "Ready?", waitMode: "reply", timeoutSeconds: 1,
+    } }), env));
+    expect(result.timeout).toBe(scenario === "timeout");
+    expect(result.reply?.id ?? null).toBe(scenario === "timeout" ? null : "answer");
+    expect(waits).toBe(scenario === "immediate" ? 0 : 1);
+    expect(result.messages.filter(m => m.id === "intruder")).toHaveLength(scenario === "immediate" ? 0 : 1);
+  });
+
+  it("retains every message observed across more than one history window", async () => {
+    let reads = 0;
+    const env = { RENDEZVOUS: { idFromName: () => "id", get: () => ({ fetch: async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.includes("__load_session")) return Response.json({ sessions: {} });
+      if (path.includes("__save_session")) return Response.json({ ok: true });
+      if (path.endsWith("/participants")) return Response.json({ participants: [] });
+      if (init?.method === "POST") return Response.json({ ok: true, id: "ask", seq: 201 });
+      if (path.endsWith("/wait")) return Response.json({ event: "message" });
+      reads++;
+      const messages = reads === 1 ? Array.from({ length: 200 }, (_, i) => ({ id: `older-${i}`, seq: i + 1, from: "peer", to: "all", body: { text: "Earlier update" } }))
+        : [{ id: "answer", seq: 202, from: "peer", to: "a", reply_to: "ask", body: { text: "Ready" } }];
+      return Response.json({ cursor: reads === 1 ? 201 : 202, messages });
+    } }) } } as never;
+    const result = await toolResultText<{ messages: Array<{ id: string }> }>(await handleMcpRequest(rpc("tools/call", { name: "send_message", arguments: {
+      inviteJson: "https://j01n.me/room/overflow-wait#secret", participantId: "a", to: "all", body: "Ready?", waitMode: "reply",
+    } }), env));
+    expect(result.messages).toHaveLength(201);
+    expect(result.messages[0].id).toBe("older-0");
+  });
+
+  it("rejects invalid wait options before sending anything", async () => {
+    let fetched = false;
+    const env = { RENDEZVOUS: { idFromName: () => "id", get: () => ({ fetch: async () => { fetched = true; return Response.json({}); } }) } } as never;
+    for (const options of [{ waitMode: "wrong" }, { waitMode: "reply", timeoutSeconds: 0 }, { timeoutSeconds: 51 }]) {
+      const response = await handleMcpRequest(rpc("tools/call", { name: "send_message", arguments: {
+        inviteJson: "https://j01n.me/room/invalid-wait#secret", participantId: "a", to: "all", body: "Do not send", ...options,
+      } }), env);
+      expect(response.status).toBe(500);
+    }
+    expect(fetched).toBe(false);
   });
 
   it("remembers the joined room per MCP session so later calls can omit it", async () => {

@@ -129,7 +129,7 @@ async function saveState(state) { await fs.writeFile(keyFile, JSON.stringify({ p
 function tokenHeaders(state) { return state.participantToken ? { authorization: 'Bearer ' + state.participantToken } : headers; }
 function requireParticipantToken(state) { if (!state.participantToken) die('participant token missing; run join first'); return state.participantToken; }
 // Room-feature version this helper speaks; bump with CLIENT_PROTOCOL in apps/web/src/constants.ts.
-const CLIENT_PROTOCOL = 1;
+const CLIENT_PROTOCOL = 2;
 let updateNoticeShown = false;
 async function requestJson(url, init = {}) {
   const r = await fetch(url, { ...init, headers: { ...(init.headers || {}), 'x-j01n-client': 'helper/' + CLIENT_PROTOCOL } });

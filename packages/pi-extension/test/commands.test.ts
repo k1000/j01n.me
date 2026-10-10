@@ -124,6 +124,23 @@ describe("pi-extension sessions", () => {
     expect(calls).toEqual([]);
   });
 
+  it("join returns the sealed kickoff when the board has none", async () => {
+    const { sealKickoff } = await import("@j01n/sdk/crypto");
+    const sealed = await sealKickoff({ text: "sealed hello" }, "secret", "room-1");
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      calls.push({ method, url: String(url), auth: new Headers(init?.headers).get("authorization") });
+      if (method === "PUT") return Response.json({ ok: true, cursor: 0, participant_token: "tok-1" });
+      if (String(url).endsWith("/board")) return Response.json({ board: {} });
+      if (String(url).includes("/participants")) return Response.json({ participants: [] });
+      if (method === "GET") return Response.json({ cursor: 3, messages: [{ id: "k", seq: 3, from: "host", to: "all", intent: "kickoff", body: sealed }] });
+      return Response.json({ ok: true });
+    });
+    const commands = await import("../commands");
+    const out = JSON.parse(await commands.runj01n(["join", "https://j01n.me/room/room-1#secret", "pi-agent"]));
+    expect(out.kickoff).toEqual({ text: "sealed hello" });
+  });
+
   it("resumes from the saved key file in a new process instead of re-joining", async () => {
     const first = await import("../commands");
     await first.runj01n(["join", ROOM, "secret", "pi-agent"]);

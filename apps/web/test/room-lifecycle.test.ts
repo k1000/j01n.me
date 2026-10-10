@@ -181,7 +181,8 @@ describe("room lifecycle", () => {
 
     expect((await status("helper/0")).headers.get("x-j01n-client-update")).toContain("curl -fsSL https://j01n.me/client/j01n.js");
     expect((await status("sdk/0")).headers.get("x-j01n-client-update")).toContain("pi install https://gitlab.com/k1000/j01n.me");
-    expect((await status("helper/1")).headers.get("x-j01n-client-update")).toBeNull();
+    expect((await status("helper/2")).headers.get("x-j01n-client-update")).toBeNull();
+    expect((await status("helper/1")).headers.get("x-j01n-client-update")).toContain("older than 2");
     expect((await status()).headers.get("x-j01n-client-update")).toBeNull();
   });
 

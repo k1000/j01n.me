@@ -732,8 +732,9 @@ const MODEL_PARAM = { type: "string", description: "Which model you run, e.g. cl
 const PROVIDER_PARAM = { type: "string", description: "Which API serves that model, e.g. anthropic, openai, openrouter, token-plan" };
 const WORKSPACE_PARAM = {
   type: "object", description: "Where you work (sealed with the room key; the server stores only ciphertext)",
-  properties: { path: { type: "string" }, repo: { type: "string" }, branch: { type: "string" } },
+  properties: { path: { type: "string" }, repo: { type: "string" }, branch: { type: "string" }, host: { type: "string" } },
 };
+const CHECKOUT_PARAM = { type: "string", description: "Room-keyed HMAC-SHA256 of file://<machine><worktree path>; compute locally, never send the URL" };
 
 async function readOpenQuestions(env: Env, roomUrl: string, secret: string, participantId: string) {
   return (await roomClient(env, roomUrl, secret, participantId)).openQuestions();
@@ -833,7 +834,7 @@ const tools: Record<string, ToolDef> = {
   },
 
   join_room: roomTool("Join once using the private room link or handoff JSON and a unique name. Returns kickoff, board, open questions and a private resume_profile. Use resume_room after reconnecting, not join_room again. Events are auto-subscribed when GET /mcp is active; otherwise use wait_for_event.", {
-    webhookUrl: WEBHOOK_URL_PARAM, capabilities: CAPABILITIES_PARAM, workspace: WORKSPACE_PARAM,
+    webhookUrl: WEBHOOK_URL_PARAM, capabilities: CAPABILITIES_PARAM, workspace: WORKSPACE_PARAM, checkout: CHECKOUT_PARAM,
     model: MODEL_PARAM, provider: PROVIDER_PARAM,
   }, [], async (env, params, ctx) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
@@ -846,6 +847,7 @@ const tools: Record<string, ToolDef> = {
         ...(typeof params.capabilities === "string" ? { capabilities: parseSkills(params.capabilities) } : {}),
         ...(typeof params.model === "string" && params.model.trim() ? { model: params.model.trim() } : {}),
         ...(typeof params.provider === "string" && params.provider.trim() ? { provider: params.provider.trim() } : {}),
+        ...(typeof params.checkout === "string" ? { checkout: params.checkout } : {}),
         ...(workspace ? { workspace: { ...workspace, repo: workspace.repo?.replace(/\/\/[^@/]+@/, "//") } } : {}),
       }, crypto);
       const joinResult = { cursor: joined.cursor, participant_token: joined.invite.participant_token };
@@ -1001,7 +1003,7 @@ const tools: Record<string, ToolDef> = {
   update_status: roomTool("Update participant availability state and status text, and optionally set or remove your webhook (webhookUrl).", {
     state: { type: "string" }, status: { type: "string" },
     model: MODEL_PARAM, skills: { type: "string" }, provider: PROVIDER_PARAM,
-    webhookUrl: WEBHOOK_URL_PARAM, capabilities: CAPABILITIES_PARAM, workspace: WORKSPACE_PARAM,
+    webhookUrl: WEBHOOK_URL_PARAM, capabilities: CAPABILITIES_PARAM, workspace: WORKSPACE_PARAM, checkout: CHECKOUT_PARAM,
   }, ["state", "status"], async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       if (params.workspace && secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link) to announce a workspace: it is sealed with the room key");
@@ -1013,6 +1015,7 @@ const tools: Record<string, ToolDef> = {
           ...(typeof params.capabilities === "string" ? { capabilities: parseSkills(params.capabilities) } : {}),
           ...(typeof params.model === "string" && params.model.trim() ? { model: params.model.trim() } : {}),
           ...(typeof params.provider === "string" && params.provider.trim() ? { provider: params.provider.trim() } : {}),
+          ...(typeof params.checkout === "string" ? { checkout: params.checkout } : {}),
           ...(workspace ? { workspace: { ...workspace, repo: workspace.repo?.replace(/\/\/[^@/]+@/, "//") } } : {}),
         },
       );

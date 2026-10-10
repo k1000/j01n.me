@@ -945,7 +945,7 @@ describe("hosted MCP handler", () => {
               reservations = { value: JSON.parse(String(init.body)), version: (reservations?.version ?? 0) + 1 };
               return Response.json({ ok: true });
             }
-            return Response.json({ ok: true, participants: [], messages: [] });
+            return Response.json({ ok: true, participants: ["a", "b"].map((id) => ({ id, checkout: "same-checkout" })), messages: [] });
           },
         }),
       },

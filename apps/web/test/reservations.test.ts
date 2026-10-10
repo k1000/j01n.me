@@ -11,6 +11,7 @@ function room() {
     participantId,
     invite: { join_secret: "room-secret-123456", room_id: "room-1" },
     async board() { return { board: structuredClone(board), board_schema: null }; },
+    async team() { return ["agent-a", "agent-b", "agent-c"].map((id) => ({ id, checkout: "shared" })); },
     async setBoardKey(key: string, value: unknown, options: { ifVersion?: number } = {}) {
       raceOnce?.(); raceOnce = undefined;
       if ((board[key]?.version ?? 0) !== options.ifVersion) throw new RoomApiError(409, "version conflict", "/board");
@@ -37,10 +38,22 @@ describe("file reservations", () => {
 
     await expect(reservePaths(b, "gitlab.com/acme/api", ["src/auth/login.ts"])).rejects.toThrow("already reserved by agent-a (refactoring auth)");
     await reservePaths(b, "gitlab.com/acme/web", ["src/auth/login.ts"]); // another repo: no conflict
-    expect(reservationFor(await listReservations(b), "agent-b", "gitlab.com/acme/api", "src/auth/x.ts")?.by).toBe("agent-a");
+    expect(reservationFor(await listReservations(b), "agent-b", "gitlab.com/acme/api", "src/auth/x.ts", "shared")?.by).toBe("agent-a");
 
     await releasePaths(a);
     expect((await listReservations(b)).map((r) => r.by)).toEqual(["agent-b"]);
+  });
+
+  it("does not reserve or block across different checkouts", async () => {
+    const { board, client } = room();
+    const a = client("agent-a");
+    const b = { ...client("agent-b"), async team() { return [
+      { id: "agent-a", checkout: "worktree-a" }, { id: "agent-b", checkout: "worktree-b" },
+    ]; } } as RoomClient;
+    expect(await reservePaths(b, "repo", ["src/x.ts"])).toEqual([]);
+    expect(board.reservations).toBeUndefined();
+    await reservePaths(a, "repo", ["src/x.ts"]);
+    expect(reservationFor(await listReservations(b), "agent-b", "repo", "src/x.ts", "worktree-b")).toBeUndefined();
   });
 
   it("retries when someone else wrote the board in between (no lost reservation)", async () => {

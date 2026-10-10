@@ -14,6 +14,8 @@ import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { RoomApiError } from "@j01n/sdk/errors";
 import { request } from "@j01n/sdk/transport";
 import { parseRoomBody, runProfileCommand, runReservationCommand, runRoomCommand } from "@j01n/sdk/room-commands";
+import { detectWorkspace } from "@j01n/sdk/node";
+import { checkConflicts } from "@j01n/sdk/conflicts-node";
 import type { RoomClient } from "@j01n/sdk";
 
 if (!(globalThis as typeof globalThis & { crypto?: Crypto }).crypto) (globalThis as typeof globalThis & { crypto?: Crypto }).crypto = webcrypto as unknown as Crypto;
@@ -28,12 +30,11 @@ const activePath = (url: string, me: string) => `${activeDir}/${createHash("sha2
 const isUrl = (value?: string) => !!value && /^https?:/.test(value);
 const git = (...argv: string[]) => { try { return execFileSync("git", argv, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined; } catch { return undefined; } };
 const repo = () => { const root = git("rev-parse", "--show-toplevel") || process.cwd(); return { root, id: git("remote", "get-url", "origin")?.replace(/\/\/[^@/]+@/, "//") || root }; };
-const workspace = () => ({ path: process.cwd(), ...(git("remote", "get-url", "origin") ? { repo: git("remote", "get-url", "origin")!.replace(/\/\/[^@/]+@/, "//") } : {}), ...(git("branch", "--show-current") ? { branch: git("branch", "--show-current") } : {}) });
 const modelProfile = (rest: string[]) => {
   const flag = (name: string) => { const i = rest.indexOf(name); return i >= 0 && rest[i + 1] && !rest[i + 1].startsWith("--") ? rest[i + 1] : undefined; };
   return { ...(flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL ? { model: flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL } : {}), ...(flag("--provider") || process.env.J01N_PROVIDER ? { provider: flag("--provider") || process.env.J01N_PROVIDER } : {}) };
 };
-const roomCommand = (client: RoomClient, command: string, rest: string[], beforeSend?: () => Promise<void>) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend, repo: repo().id });
+const roomCommand = (client: RoomClient, command: string, rest: string[], beforeSend?: () => Promise<void>) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend, repo: repo().id, conflicts: (branch) => checkConflicts(client, repo().root, branch) });
 
 async function isRoomRef(ref?: string) {
   if (!ref) return false;
@@ -144,13 +145,17 @@ async function main() {
   } else client = await resumeRoom(invite, me, session);
   const announce = async () => { const key = (await session.announceKeyBody()).public_key; if (state.announcedKey !== key) { await client.announceKey(); state.announcedKey = key; await save(); } };
   if (cmd === "join") {
-    const announced: { capabilities?: string[]; model?: string; provider?: string; workspace?: ReturnType<typeof workspace> } = {};
+    const announced: { capabilities?: string[]; model?: string; provider?: string; workspace?: ReturnType<typeof detectWorkspace>["workspace"]; checkout?: string } = {};
     const i = rest.indexOf("--capabilities"); if (i >= 0) announced.capabilities = names(rest[i + 1]);
     const mine = (await client.team()).find((p) => p.id === me);
     const model = modelProfile(rest);
     if (model.model && model.model !== mine?.model) announced.model = model.model;
     if (model.provider && model.provider !== mine?.provider) announced.provider = model.provider;
-    if (!rest.includes("--no-workspace") && JSON.stringify(workspace()) !== JSON.stringify(mine?.workspace)) announced.workspace = workspace();
+    if (!rest.includes("--no-workspace")) {
+      const detected = detectWorkspace(client.invite.join_secret, client.invite.room_id);
+      if (JSON.stringify(detected.workspace) !== JSON.stringify(mine?.workspace)) announced.workspace = detected.workspace;
+      if (detected.checkout !== mine?.checkout) announced.checkout = detected.checkout;
+    }
     if (Object.keys(announced).length) await client.setProfile(announced);
     const profile = { access: roomUrl, participant_id: me, participant_token: state.participantToken, key_file: keyFile };
     await remember(roomUrl, me);
@@ -216,12 +221,13 @@ async function main() {
     output({ ok: joined, client_protocol: SDK_CLIENT_PROTOCOL, ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}), open_questions: openQuestions, ...(openQuestionsError ? { open_questions_error: openQuestionsError } : {}), participant_id: me, joined, key_file: keyFile, local_key_created: created, key_announced: messages.some((m) => m.from === me && m.intent === "key.exchange"), known_peers: participants.participants.filter((p) => p.id !== me && p.public_key).map((p) => p.id), encrypted_messages_seen: encrypted.length, encrypted_messages_decryptable: decryptable, key_note: `Reuse this key file from the same directory to retain your ECDH keypair across sessions: ${keyFile}` }); return;
   }
   if (cmd === "kickoff") { if (!rest.length) throw Error("kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)"); output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true })); return; }
-  if (["webhook", "tasks", "claim", "done", "block", "unblock"].includes(cmd || "")) { output(await roomCommand(client, cmd!, rest)); return; }
+  if (["webhook", "tasks", "claim", "done", "block", "unblock", "conflicts"].includes(cmd || "")) { output(await roomCommand(client, cmd!, rest)); return; }
   if (cmd === "profile") {
     output(await runProfileCommand(client, rest, {
       modelFallback: process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL,
       providerFallback: process.env.J01N_PROVIDER,
-      workspace,
+      workspace: () => detectWorkspace(client.invite.join_secret, client.invite.room_id).workspace,
+      checkout: () => detectWorkspace(client.invite.join_secret, client.invite.room_id).checkout,
       secret: roomSecret,
       workspaceError: "re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace",
     })); return;
@@ -234,6 +240,6 @@ async function main() {
   }
   if (cmd === "leave") { await client.leave({ release: rest.includes("--release") }); await fs.rm(activePath(roomUrl, me), { force: true }); output({ ok: true, left: true }); return; }
   if (cmd === "host") { output(await roomCommand(client, cmd, rest)); return; }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|leave`);
 }
 main().catch((error: unknown) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

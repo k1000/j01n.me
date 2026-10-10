@@ -10,6 +10,7 @@ function room() {
   const client = (participantId: string) => ({
     participantId, invite: { join_secret: "room-secret-123456", room_id: "room-1" },
     async board() { return { board: structuredClone(board), board_schema: null }; },
+    async team() { return ["a", "b", "c"].map((id) => ({ id, checkout: "shared" })); },
     async setBoardKey(key: string, value: unknown, options: { ifVersion?: number } = {}) {
       if ((board[key]?.version ?? 0) !== options.ifVersion) throw new RoomApiError(409, "version conflict", "/board");
       board[key] = { value, version: (board[key]?.version ?? 0) + 1 };
@@ -35,6 +36,20 @@ describe("task primitives", () => {
       .toMatchObject({ task: { status: "done", evidence: { commits: ["abc"], tests: "vitest", contract: "pass" } } });
   });
 
+  it("done reports real conflict results and announces conflicting branches to the room", async () => {
+    const { client, add } = room();
+    add("T1", task());
+    const a = client("a");
+    await claimTask(a, "T1", "repo");
+    const send = vi.fn().mockResolvedValue({ ok: true });
+    const conflicts = vi.fn().mockResolvedValue({ conflicts: [{ branches: ["feature/a", "feature/b"], files: ["src/a.ts"] }] });
+    const result = await runRoomCommand({ ...a, send, team: async () => [{ id: "a", workspace: { branch: "feature/a" } }] } as unknown as RoomClient,
+      "done", ["T1", "--summary", "finished", "--commit", "abc", "--tests", "pass"], { repo: "repo", conflicts });
+    expect(conflicts).toHaveBeenCalledWith("feature/a");
+    expect(result).toMatchObject({ conflicts: [{ files: ["src/a.ts"] }] });
+    expect(send).toHaveBeenCalledWith("all", { text: expect.stringContaining("feature/a vs feature/b: src/a.ts") });
+  });
+
   it("forwards sprint task seeds through the SDK create request", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ access: "https://j01n.me/r/room-1", join_secret: "secret" }), { status: 200 }));
     try {
@@ -51,6 +66,18 @@ describe("task primitives", () => {
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(["a", "b"]).toContain((board["task.T1"].value as { owner: string }).owner);
     expect(board["task.T1"].version).toBe(2);
+  });
+
+  it("claims without reservations when no participant shares the checkout and warns on overlapping plans", async () => {
+    const { client, add } = room();
+    add("T1", task(["src/a.ts"]));
+    add("T2", task(["src/a.ts"]));
+    const a = { ...client("a"), async team() { return [
+      { id: "a", checkout: "checkout-a" }, { id: "b", checkout: "checkout-b" },
+    ]; } } as RoomClient;
+    expect((await listTasks(a))[0].overlaps).toEqual(["T2"]);
+    await claimTask(a, "T1", "repo");
+    expect(await listReservations(a)).toEqual([]);
   });
 
   it("claims only once, names the owner, and reserves files", async () => {

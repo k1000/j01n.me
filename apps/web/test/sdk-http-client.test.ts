@@ -36,6 +36,21 @@ describe("SDK HTTP client", () => {
     expires_at: new Date(Date.now() + 60_000).toISOString(),
   });
 
+  it("forwards opaque checkout and human profile fields while sealing workspace", async () => {
+    let body: Record<string, unknown> = {};
+    const impl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({ ok: true, participant: {} });
+    }) as typeof fetch;
+    await withFetch(impl, async () => {
+      const client = await resumeRoom({ ...makeInvite(), participant_token: "tok" }, "agent-a");
+      await client.setProfile({ checkout: "opaque-checkout", display_name: "Ravi", role: "builder", workspace: { path: "/private/home", host: "host-a" } });
+    });
+    expect(body).toMatchObject({ checkout: "opaque-checkout", display_name: "Ravi", role: "builder" });
+    expect(body.workspace).toMatch(/^jsk1:/);
+    expect(JSON.stringify(body)).not.toContain("/private/home");
+  });
+
   it("creates rooms with normalized request keys", async () => {
     let requestBody: unknown;
     let requestUrl = "";

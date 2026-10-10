@@ -157,6 +157,7 @@ export interface Workspace {
   path?: string;
   repo?: string;
   branch?: string;
+  host?: string;
 }
 
 function base64Url(bytes: Uint8Array): string {

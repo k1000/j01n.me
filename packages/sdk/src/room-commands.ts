@@ -36,9 +36,14 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
   beforeSend?: () => Promise<void>;
   trimWaitFrom?: boolean;
   repo?: string;
+  conflicts?: (branch?: string) => Promise<{ conflicts: Array<{ branches: [string, string]; files: string[] }> }>;
 } = {}): Promise<unknown> {
   const prefix = options.prefix ?? "/j01n";
   if (cmd === "tasks") return { tasks: await listTasks(client) };
+  if (cmd === "conflicts") {
+    if (!options.conflicts) throw new Error("conflicts needs a local git checkout");
+    return options.conflicts();
+  }
   if (cmd === "claim") {
     if (!rest[0]) throw new Error("claim needs: <id>");
     return { task: await claimTask(client, rest[0], options.repo ?? "") };
@@ -51,7 +56,14 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
     for (let i = 0; i < args.length; i++) if (args[i] === "--commit" && args[i + 1] && !args[i + 1].startsWith("--")) commits.push(args[++i]);
     const summary = flag("--summary"), tests = flag("--tests"), contract = flag("--contract"), changes = flag("--behaviour-changes");
     if (!summary || !tests || !commits.length) throw new Error("done needs --summary, --commit and --tests");
-    return { task: await completeTask(client, id, options.repo ?? "", summary, { commits, tests, ...(contract ? { contract } : {}) }, changes) };
+    const task = await completeTask(client, id, options.repo ?? "", summary, { commits, tests, ...(contract ? { contract } : {}) }, changes);
+    if (!options.conflicts) return { task };
+    try {
+      const branch = (await client.team()).find((p) => p.id === client.participantId)?.workspace?.branch;
+      const report = await options.conflicts(branch);
+      if (report.conflicts.length) await client.send("all", { text: `${id} merge conflicts: ${report.conflicts.map((p) => `${p.branches.join(" vs ")}: ${p.files.join(", ")}`).join("; ")}` });
+      return { task, conflicts: report.conflicts };
+    } catch (error) { return { task, conflicts_error: error instanceof Error ? error.message : String(error) }; }
   }
   if (cmd === "block") {
     const [id, ...args] = rest;
@@ -141,13 +153,15 @@ export async function runReservationCommand(client: RoomClient, cmd: "reserve" |
   const paths = (at >= 0 ? rest.slice(0, at) : rest).map(options.path);
   if (options.requirePaths && !paths.length) throw new Error("reserve needs: <path>... [--reason text]");
   const reason = at >= 0 ? rest.slice(at + 1).join(" ") || undefined : undefined;
-  return { ok: true, reservations: await reservePaths(client, options.repo, paths, reason) };
+  const reservations = await reservePaths(client, options.repo, paths, reason);
+  return { ok: true, reservations, ...(reservations.length ? {} : { message: "nobody shares your checkout: no reservation needed" }) };
 }
 
 export async function runProfileCommand(client: RoomClient, rest: string[], options: {
   modelFallback?: string;
   providerFallback?: string;
   workspace: () => Workspace;
+  checkout?: () => string;
   secret: string;
   workspaceError: string;
 }): Promise<unknown> {
@@ -155,17 +169,20 @@ export async function runProfileCommand(client: RoomClient, rest: string[], opti
     const at = rest.indexOf(name);
     return at >= 0 && rest[at + 1] && !rest[at + 1].startsWith("--") ? rest[at + 1] : undefined;
   };
-  const profile: { capabilities?: string[]; workspace?: Workspace | null; model?: string; provider?: string } = {};
+  const profile: { capabilities?: string[]; workspace?: Workspace | null; checkout?: string | null; display_name?: string; role?: string; model?: string; provider?: string } = {};
   const at = rest.indexOf("--capabilities");
   if (at >= 0) profile.capabilities = (flag("--capabilities") || "").split(",").map((name) => name.trim()).filter(Boolean);
   const model = flag("--model") || options.modelFallback;
   const provider = flag("--provider") || options.providerFallback;
   if (model) profile.model = model;
   if (provider) profile.provider = provider;
-  if (rest.includes("--no-workspace")) profile.workspace = null;
+  if (flag("--display-name")) profile.display_name = flag("--display-name");
+  if (flag("--role")) profile.role = flag("--role");
+  if (rest.includes("--no-workspace")) { profile.workspace = null; profile.checkout = null; }
   else if (rest.includes("--workspace")) {
     if (options.secret === "resume-only") throw new Error(options.workspaceError);
     profile.workspace = options.workspace();
+    profile.checkout = options.checkout?.();
   }
   if (Object.keys(profile).length) await client.setProfile(profile);
   return { ok: true, team: await client.team() };

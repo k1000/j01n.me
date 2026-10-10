@@ -11,6 +11,8 @@ export interface Reservation {
   id: string;
   by: string;
   since: string;
+  /** Room-specific checkout identity; reservations never cross worktrees. */
+  checkout?: string;
   /** Repository identity (git remote without credentials, or the repo root when there is no remote). */
   repo: string;
   /** Paths relative to the repo root; a path also covers everything under it. */
@@ -21,6 +23,7 @@ export interface Reservation {
 interface StoredReservation {
   by: string;
   since: string;
+  checkout?: string;
   sealed: string;
 }
 
@@ -32,8 +35,16 @@ export function pathsOverlap(a: string, b: string): boolean {
 }
 
 /** The first reservation by someone else that covers `path` in `repo`. */
-export function reservationFor(reservations: Reservation[], me: string, repo: string, path: string): Reservation | undefined {
-  return reservations.find((r) => r.by !== me && r.repo === repo && r.paths.some((p) => pathsOverlap(p, path)));
+export function reservationFor(reservations: Reservation[], me: string, repo: string, path: string, checkout?: string): Reservation | undefined {
+  if (!checkout) return undefined;
+  return reservations.find((r) => r.by !== me && r.checkout === checkout && r.repo === repo && r.paths.some((p) => pathsOverlap(p, path)));
+}
+
+/** Unknown checkout identities never imply a shared checkout. */
+export async function sharedCheckout(client: RoomClient): Promise<string | undefined> {
+  const team = await client.team();
+  const checkout = team.find((p) => p.id === client.participantId)?.checkout;
+  return checkout && team.some((p) => p.id !== client.participantId && p.checkout === checkout) ? checkout : undefined;
 }
 
 async function load(client: RoomClient): Promise<{ stored: Record<string, StoredReservation>; version: number; reservations: Reservation[] }> {
@@ -42,7 +53,7 @@ async function load(client: RoomClient): Promise<{ stored: Record<string, Stored
   const reservations = await Promise.all(Object.entries(stored).map(async ([id, r]) => {
     // Sealed like the kickoff: AES-GCM with a key derived from the room secret.
     const opened = await openRoomSeal(r.sealed, client.invite.join_secret, client.invite.room_id).catch(() => null) as { repo?: string; paths?: string[]; reason?: string } | null;
-    return { id, by: r.by, since: r.since, repo: opened?.repo ?? "", paths: opened?.paths ?? [], ...(opened?.reason ? { reason: opened.reason } : {}) };
+    return { id, by: r.by, since: r.since, ...(r.checkout ? { checkout: r.checkout } : {}), repo: opened?.repo ?? "", paths: opened?.paths ?? [], ...(opened?.reason ? { reason: opened.reason } : {}) };
   }));
   return { stored, version: entry?.version ?? 0, reservations };
 }
@@ -71,13 +82,15 @@ async function update(client: RoomClient, change: (state: Awaited<ReturnType<typ
 /** Reserve paths of a repo for yourself. Fails (naming the holder) if someone else already reserved an overlapping path. */
 export async function reservePaths(client: RoomClient, repo: string, paths: string[], reason?: string): Promise<Reservation[]> {
   if (paths.length === 0) throw new Error("reserve needs at least one path");
+  const checkout = await sharedCheckout(client);
+  if (!checkout) return [];
   return update(client, async ({ stored, reservations }) => {
     for (const path of paths) {
-      const held = reservationFor(reservations, client.participantId, repo, path);
+      const held = reservationFor(reservations, client.participantId, repo, path, checkout);
       if (held) return new Error(`${path} is already reserved by ${held.by}${held.reason ? ` (${held.reason})` : ""}`);
     }
     const sealed = await sealForRoom({ repo, paths, ...(reason ? { reason } : {}) }, client.invite.join_secret, client.invite.room_id);
-    return { ...stored, [crypto.randomUUID()]: { by: client.participantId, since: new Date().toISOString(), sealed } };
+    return { ...stored, [crypto.randomUUID()]: { by: client.participantId, since: new Date().toISOString(), checkout, sealed } };
   });
 }
 

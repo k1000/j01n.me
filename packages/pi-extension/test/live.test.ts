@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sealForRoom } from "@j01n/sdk/crypto";
+import { detectWorkspace } from "@j01n/sdk/node";
 import type { RoomClient } from "@j01n/sdk";
 import type { RoomMessage } from "@j01n/sdk/types";
 
@@ -59,12 +60,13 @@ describe("pi live mode", () => {
     const dir = mkdtempSync(join(tmpdir(), "j01n-live-"));
     process.chdir(dir);
     const sealed = await sealForRoom({ repo: process.cwd(), paths: ["src/auth"], reason: "refactoring auth" }, "secret", "room-1");
+    const checkout = detectWorkspace("secret", "room-1").checkout;
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       if (method === "PUT") return Response.json({ ok: true, cursor: 0, participant_token: "tok-1" });
-      if (String(url).endsWith("/board")) return Response.json({ board: { reservations: { value: { r1: { by: "claude-code", since: "now", sealed } }, version: 1 } }, board_schema: null });
+      if (String(url).endsWith("/board")) return Response.json({ board: { reservations: { value: { r1: { by: "claude-code", since: "now", checkout, sealed } }, version: 1 } }, board_schema: null });
       if (String(url).includes("/wait")) { await new Promise((r) => setTimeout(r, 20)); return Response.json({ timeout: true, cursor: 0 }); }
-      return Response.json({ ok: true, cursor: 0, messages: [], participants: [], participant: {} });
+      return Response.json({ ok: true, cursor: 0, messages: [], participants: ["pi-agent", "claude-code"].map((id) => ({ id, checkout })), participant: {} });
     });
     const { runj01n } = await import("../commands");
     await runj01n(["join", ROOM, "secret", "pi-agent", "--no-workspace"]);

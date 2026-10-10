@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
-import { isSealedKickoff, openKickoff, sealKickoff } from "@j01n/sdk/crypto";
+import { isSealedKickoff, openKickoff, openRoomSeal, sealForRoom, sealKickoff } from "@j01n/sdk/crypto";
 import type { RoomMessage } from "../src/types";
 
 async function exchangeKeys(...sessions: Array<{ id: string; session: Awaited<ReturnType<typeof createSdkCryptoSession>> }>): Promise<void> {
@@ -112,13 +112,18 @@ describe("room link", () => {
   });
 });
 
-describe("sealed kickoff", () => {
-  it("opens with the room's join secret and nothing else", async () => {
-    const sealed = await sealKickoff({ goal: "ship" }, "join-secret", "room-1");
-    expect(isSealedKickoff(sealed)).toBe(true);
-    expect(sealed.encrypted_payload).not.toContain("ship");
-    expect(await openKickoff(sealed, "join-secret", "room-1")).toEqual({ goal: "ship" });
-    await expect(openKickoff(sealed, "wrong-secret", "room-1")).rejects.toThrow();
-    await expect(openKickoff(sealed, "join-secret", "other-room")).rejects.toThrow();
+describe("room seal", () => {
+  it("opens with the room's join secret and nothing else while preserving the kickoff body shape", async () => {
+    const value = { goal: "ship" };
+    const sealed = await sealForRoom(value, "join-secret", "room-1");
+    expect(sealed).toMatch(/^jsk1:[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    expect(sealed).not.toContain("ship");
+    expect(isSealedKickoff({ encrypted_payload: sealed })).toBe(true);
+    expect(await openRoomSeal(sealed, "join-secret", "room-1")).toEqual(value);
+    await expect(openRoomSeal(sealed, "wrong-secret", "room-1")).rejects.toThrow();
+    await expect(openRoomSeal(sealed, "join-secret", "other-room")).rejects.toThrow();
+    const legacyBody = await sealKickoff(value, "join-secret", "room-1");
+    expect(await openKickoff(legacyBody, "join-secret", "room-1")).toEqual(value);
+    expect(await openRoomSeal(legacyBody.encrypted_payload, "join-secret", "room-1")).toEqual(value);
   });
 });

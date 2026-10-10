@@ -123,7 +123,7 @@ export async function unwrapKey(encryptedKeyB64: string, ivB64: string, sharedKe
   );
 }
 
-// ── Sealed kickoff: readable by anyone holding the invite (join secret), not by the server ──
+// ── Room seals: readable by anyone holding the invite (join secret), not by the server ──
 // The server stores only a hash of the join secret, so it cannot derive this key.
 const KICKOFF_PREFIX = "jsk1:";
 
@@ -135,10 +135,10 @@ async function kickoffKey(joinSecret: string, roomId: string): Promise<CryptoKey
   );
 }
 
-/** Seal a kickoff for everyone holding the invite. Send it as a message body with intent "kickoff". */
-export async function sealKickoff(plain: unknown, joinSecret: string, roomId: string): Promise<{ encrypted_payload: string }> {
-  const { ciphertext, iv } = await encryptWithKey(await kickoffKey(joinSecret, roomId), JSON.stringify(plain));
-  return { encrypted_payload: `${KICKOFF_PREFIX}${iv}.${ciphertext}` };
+/** Seal a value for everyone holding the invite. */
+export async function sealForRoom(value: unknown, joinSecret: string, roomId: string): Promise<string> {
+  const { ciphertext, iv } = await encryptWithKey(await kickoffKey(joinSecret, roomId), JSON.stringify(value));
+  return `${KICKOFF_PREFIX}${iv}.${ciphertext}`;
 }
 
 export function isSealedKickoff(body: unknown): body is { encrypted_payload: string } {
@@ -146,25 +146,31 @@ export function isSealedKickoff(body: unknown): body is { encrypted_payload: str
     && (body as { encrypted_payload: string }).encrypted_payload.startsWith(KICKOFF_PREFIX);
 }
 
-/** Open a sealed kickoff with the invite's join secret; throws if the secret or room is wrong. */
-export async function openKickoff(body: { encrypted_payload: string }, joinSecret: string, roomId: string): Promise<unknown> {
-  const [iv, ciphertext] = body.encrypted_payload.slice(KICKOFF_PREFIX.length).split(".");
+/** Open a room seal with the invite's join secret; throws if the secret or room is wrong. */
+export async function openRoomSeal(sealed: string, joinSecret: string, roomId: string): Promise<unknown> {
+  const [iv, ciphertext] = sealed.slice(KICKOFF_PREFIX.length).split(".");
   return JSON.parse(await decryptWithKey(await kickoffKey(joinSecret, roomId), ciphertext, iv));
 }
 
-/** Where an agent works. Announced sealed with the room key, like the kickoff, so the server never sees it. */
+/** Where an agent works. Announced sealed with the room key, so the server never sees it. */
 export interface Workspace {
   path?: string;
   repo?: string;
   branch?: string;
 }
 
-export async function sealWorkspace(workspace: Workspace, joinSecret: string, roomId: string): Promise<string> {
-  return (await sealKickoff(workspace, joinSecret, roomId)).encrypted_payload;
+// Compatibility entry points for existing kickoff/workspace callers.
+export async function sealKickoff(value: unknown, joinSecret: string, roomId: string): Promise<{ encrypted_payload: string }> {
+  return { encrypted_payload: await sealForRoom(value, joinSecret, roomId) };
 }
-
+export async function openKickoff(body: { encrypted_payload: string }, joinSecret: string, roomId: string): Promise<unknown> {
+  return openRoomSeal(body.encrypted_payload, joinSecret, roomId);
+}
+export async function sealWorkspace(workspace: Workspace, joinSecret: string, roomId: string): Promise<string> {
+  return sealForRoom(workspace, joinSecret, roomId);
+}
 export async function openWorkspace(sealed: string, joinSecret: string, roomId: string): Promise<Workspace> {
-  return await openKickoff({ encrypted_payload: sealed }, joinSecret, roomId) as Workspace;
+  return openRoomSeal(sealed, joinSecret, roomId) as Promise<Workspace>;
 }
 
 function base64Url(bytes: Uint8Array): string {

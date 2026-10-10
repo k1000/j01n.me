@@ -246,16 +246,16 @@ async function wrappedKeys(state, recipients, messageKey) {
   for (const id of new Set([...recipients, me])) keys[id] = await wrapKey(messageKey, await shared(state, id));
   return keys;
 }
-// Sealed kickoff: AES-GCM with a key derived (HKDF) from the join secret, so invite holders can read it and the
+// Room seals: AES-GCM with a key derived (HKDF) from the join secret, so invite holders can read them and the
 // server cannot. Opening needs the room link or invitation, not just a participant profile.
 async function kickoffKey() {
   const material = await subtle.importKey('raw', enc.encode(joinSecret), 'HKDF', false, ['deriveKey']);
   return subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode(new URL(roomUrl).pathname.split('/').pop()), info: enc.encode('j01n.me kickoff v1') }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 function isSealedKickoff(body) { return typeof body?.encrypted_payload === 'string' && body.encrypted_payload.startsWith('jsk1:'); }
-async function openKickoff(body) { const [iv, ciphertext] = body.encrypted_payload.slice(5).split('.'); return JSON.parse(await aesDecrypt(await kickoffKey(), ciphertext, iv)); }
+async function openRoomSeal(sealed) { const [iv, ciphertext] = sealed.slice(5).split('.'); return JSON.parse(await aesDecrypt(await kickoffKey(), ciphertext, iv)); }
 // Workspaces (where each agent works) are sealed with the same room key, so the server only stores ciphertext.
-async function sealJson(value) { const { iv, ciphertext } = await aesEncrypt(await kickoffKey(), JSON.stringify(value)); return 'jsk1:' + iv + '.' + ciphertext; }
+async function sealForRoom(value) { const { iv, ciphertext } = await aesEncrypt(await kickoffKey(), JSON.stringify(value)); return 'jsk1:' + iv + '.' + ciphertext; }
 async function detectWorkspace() {
   const { execFileSync } = await import('node:child_process');
   const git = (...args) => { try { return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined; } catch { return undefined; } };
@@ -282,7 +282,7 @@ async function loadReservations(state) {
   const entry = r.body.board?.reservations;
   const stored = entry?.value && typeof entry.value === 'object' ? entry.value : {};
   const list = await Promise.all(Object.entries(stored).map(async ([id, s]) => {
-    const o = await openKickoff({ encrypted_payload: s.sealed }).catch(() => null);
+    const o = await openRoomSeal(s.sealed).catch(() => null);
     return { id, by: s.by, since: s.since, repo: o?.repo ?? '', paths: o?.paths ?? [], ...(o?.reason ? { reason: o.reason } : {}) };
   }));
   return { stored, version: entry?.version ?? 0, list };
@@ -308,20 +308,20 @@ async function team(state) {
   if (!r.ok) return [];
   return Promise.all((r.body.participants || []).filter((p) => !p.left_at).map(async (p) => ({
     id: p.id, state: p.state, status: p.status, last_seen_at: p.last_seen_at, capabilities: p.capabilities || [],
-    workspace: p.workspace ? await openKickoff({ encrypted_payload: p.workspace }).catch(() => null) : null,
+    workspace: p.workspace ? await openRoomSeal(p.workspace).catch(() => null) : null,
   })));
 }
 async function decryptedMessages(state, messages) {
   const out = [];
   for (const m of messages) {
     if (isSealedKickoff(m.body)) {
-      const kickoff = await openKickoff(m.body).catch(() => undefined);
+      const kickoff = await openRoomSeal(m.body.encrypted_payload).catch(() => undefined);
       out.push(kickoff === undefined ? { ...m, decrypt_error: 'sealed kickoff: open it with the room link or invitation (join secret)' } : { ...m, body: kickoff });
       continue;
     }
     // A profile.changed announcement carries the new workspace sealed with the room key.
     if (m.intent === 'profile.changed' && typeof m.body?.workspace === 'string') {
-      out.push({ ...m, body: { ...m.body, workspace: await openKickoff({ encrypted_payload: m.body.workspace }).catch(() => null) } });
+      out.push({ ...m, body: { ...m.body, workspace: await openRoomSeal(m.body.workspace).catch(() => null) } });
       continue;
     }
     const body = await decryptBody(state, m);
@@ -472,7 +472,7 @@ const COMMANDS = {
       const workspace = await detectWorkspace();
       // Re-joining from the same place announces nothing new (every seal differs, so compare the opened values).
       const mine = (await team(state)).find((p) => p.id === me);
-      if (JSON.stringify(mine?.workspace) !== JSON.stringify(workspace)) announced.workspace = await sealJson(workspace);
+      if (JSON.stringify(mine?.workspace) !== JSON.stringify(workspace)) announced.workspace = await sealForRoom(workspace);
     }
     if (Object.keys(announced).length) {
       const p = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PATCH', headers: { ...tokenHeaders(state), 'content-type': 'application/json' }, body: JSON.stringify(announced) });
@@ -485,7 +485,7 @@ const COMMANDS = {
     const kickoff = board.ok ? { kickoff: board.body.board?.kickoff?.value ?? null } : { kickoff: null, kickoff_error: 'could not load the board kickoff; read the board to retry' };
     if (kickoff.kickoff === null) {
       const sealed = (await readAllMessages()).find((m) => m.intent === 'kickoff' && isSealedKickoff(m.body));
-      if (sealed) kickoff.kickoff = await openKickoff(sealed.body).catch(() => null);
+      if (sealed) kickoff.kickoff = await openRoomSeal(sealed.body.encrypted_payload).catch(() => null);
     }
     // Questions waiting for your reply (read-only; does not mark anything read). Answer with send <from> <text> --reply-to <id>.
     const asks = await requestJson(roomUrl + '/asks', { headers: tokenHeaders(state) });
@@ -518,17 +518,7 @@ const COMMANDS = {
     console.log(JSON.stringify(withReplyHints(await decryptedMessages(state, messages)), null, 2));
   },
   async team(state) {
-    for (const p of await team(state)) {
-      const minutes = p.last_seen_at ? Math.max(0, Math.floor((Date.now() - Date.parse(p.last_seen_at)) / 60000)) : null;
-      console.log([
-        p.id,
-        'state: ' + p.state,
-        'status: ' + (p.status || '—'),
-        'capabilities: ' + (p.capabilities.length ? p.capabilities.join(', ') : 'none'),
-        'workspace: ' + (p.workspace ? JSON.stringify(p.workspace) : 'not shared'),
-        'active ' + (minutes === null || !Number.isFinite(minutes) ? 'unknown' : minutes + ' min ago'),
-      ].join(' | '));
-    }
+    console.log(JSON.stringify({ ok: true, team: await team(state) }, null, 2));
   },
   async watch(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
     await announce(state).catch(() => undefined);
@@ -555,8 +545,7 @@ const COMMANDS = {
   },
   async kickoff(state, { rest }) {
     if (rest.length === 0) die('kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)');
-    const { iv, ciphertext } = await aesEncrypt(await kickoffKey(), JSON.stringify(parseMessageBody(rest.join(' '))));
-    const body = { encrypted_payload: 'jsk1:' + iv + '.' + ciphertext };
+    const body = { encrypted_payload: await sealForRoom(parseMessageBody(rest.join(' '))) };
     console.log(JSON.stringify(await post({ to: 'all', intent: 'kickoff', body }), null, 2));
   },
   async wait(state, { rest }) {
@@ -586,7 +575,7 @@ const COMMANDS = {
     if (rest.includes('--no-workspace')) body.workspace = null;
     else if (rest.includes('--workspace')) {
       if (joinSecret === 'resume-only') die('re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace');
-      body.workspace = await sealJson(await detectWorkspace());
+      body.workspace = await sealForRoom(await detectWorkspace());
     }
     if (Object.keys(body).length) {
       const r = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PATCH', headers: { ...tokenHeaders(state), 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -605,7 +594,7 @@ const COMMANDS = {
         const held = list.find((r) => r.by !== me && r.repo === repo && r.paths.some((q) => pathsOverlap(p, q)));
         if (held) die(p + ' is already reserved by ' + held.by + (held.reason ? ' (' + held.reason + ')' : '') + '; ask: send ' + held.by + ' <text> --expect-reply');
       }
-      return { ...stored, [crypto.randomUUID()]: { by: me, since: new Date().toISOString(), sealed: await sealJson({ repo, paths: rel, ...(reason ? { reason } : {}) }) } };
+      return { ...stored, [crypto.randomUUID()]: { by: me, since: new Date().toISOString(), sealed: await sealForRoom({ repo, paths: rel, ...(reason ? { reason } : {}) }) } };
     });
     console.log(JSON.stringify({ ok: true, reservations: list }, null, 2));
   },

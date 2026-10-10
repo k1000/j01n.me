@@ -22,7 +22,7 @@
     "test:sdk": "vitest run apps/web/test/sdk-http-client.test.ts",
     "test:smoke": "vitest run apps/web/test/basic.test.ts",
     "generate:client-script": "node scripts/generate-client-script.mjs",
-    "check:generated": "node scripts/generate-client-script.mjs --check"
+    "check:generated": "node scripts/generate-client-script.mjs --check && node scripts/generate-assets.mjs --check"
   },
   "pnpm": {
     "onlyBuiltDependencies": ["esbuild", "workerd", "sharp"]

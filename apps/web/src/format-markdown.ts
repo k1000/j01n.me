@@ -28,7 +28,7 @@ const SHARED_STYLES = `
   .md-marker { color: var(--highlight); font-weight: 500; }
   li::marker { color: var(--highlight); }
   ul { list-style: none; padding-left: 1.35rem; }
-  ul > li { display: grid; grid-template-columns: 1.25rem minmax(0, 1fr); column-gap: 0.25rem; align-items: start; }
+  .md-list > li { display: grid; grid-template-columns: 1.25rem minmax(0, 1fr); column-gap: 0.25rem; align-items: start; }
   .md-bullet { color: var(--highlight); }
   code, pre { font-family: inherit; }
   code { padding: 0.12rem 0.3rem; background: transparent; color: var(--highlight); }

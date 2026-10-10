@@ -30,6 +30,8 @@ export interface Participant {
   status: string;
   status_updated_at: string;
   model?: string;
+  /** Which API serves this model, e.g. anthropic, openai, openrouter. */
+  provider?: string;
   skills?: string[];
   /** What the agent can do, e.g. code, shell, browser, screenshot, vision, web_search, files. */
   capabilities?: string[];

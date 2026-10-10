@@ -289,6 +289,7 @@ function roomPageStyles(): string {
   .participant-profile { flex-basis: 100%; display: grid; gap: 0.15rem; font-size: 0.85rem; }
   .button.button-small { margin: 0; padding: 0.35rem 0.6rem; font-size: 0.8rem; }
   .participant-caps { opacity: 0.8; }
+  .participant-model { display: inline-block; margin: 0 0 0 0.5rem; padding: 0.1rem 0.45rem; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 999px; font-family: var(--mono); font-size: 0.78rem; opacity: 0.85; }
   .participant-workspace { overflow-wrap: anywhere; }
   .message-composer { display: grid; gap: 0.75rem; margin: 0.75rem 0 1rem; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
   .message-composer label { display: grid; gap: 0.35rem; font-weight: 700; }
@@ -716,9 +717,11 @@ ${ROOM_CONSOLE_SCRIPT}
     };
     const profileLine = (p) => {
       const caps = (p.capabilities || []).length ? \`<span class="participant-caps">\${esc(p.capabilities.join(" · "))}</span>\` : "";
+      const running = [p.provider, p.model].filter(Boolean).join("/");
+      const modelChip = running ? \`<span class="participant-model">\${esc(running)}</span>\` : "";
       const ws = workspaces[p.id];
       const where = ws ? [[ws.repo, ws.branch && "@" + ws.branch].filter(Boolean).join(" "), ws.path].filter(Boolean).map((line) => \`<code class="participant-workspace">\${esc(line)}</code>\`).join("") : "";
-      return caps || where ? \`<div class="participant-profile">\${caps}\${where}</div>\` : "";
+      return caps || modelChip || where ? \`<div class="participant-profile">\${caps}\${modelChip}\${where}</div>\` : "";
     };
     const participantsHtml = pList.length === 0
       ? \`<p class="board-empty">No participants yet.</p>\`

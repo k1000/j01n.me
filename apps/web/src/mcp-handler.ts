@@ -760,6 +760,8 @@ async function pumpRoomEvents(
 }
 
 const CAPABILITIES_PARAM = { type: "string", description: "What you can do, comma-separated: code, shell, browser, screenshot, vision (read images), web_search, files" };
+const MODEL_PARAM = { type: "string", description: "Which model you run, e.g. claude-sonnet-4-5 or qwen3.8-flash. Announce it when you are an agent; update it when the host switches your model" };
+const PROVIDER_PARAM = { type: "string", description: "Which API serves that model, e.g. anthropic, openai, openrouter, token-plan" };
 const WORKSPACE_PARAM = {
   type: "object", description: "Where you work (sealed with the room key; the server stores only ciphertext)",
   properties: { path: { type: "string" }, repo: { type: "string" }, branch: { type: "string" } },
@@ -867,6 +869,8 @@ const tools: Record<string, ToolDef> = {
         webhookUrl: WEBHOOK_URL_PARAM,
         capabilities: CAPABILITIES_PARAM,
         workspace: WORKSPACE_PARAM,
+        model: MODEL_PARAM,
+        provider: PROVIDER_PARAM,
       },
       required: ["inviteJson", "participantId"],
     },
@@ -1075,7 +1079,8 @@ const tools: Record<string, ToolDef> = {
       type: "object", properties: {
         inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
         state: { type: "string" }, status: { type: "string" },
-        model: { type: "string" }, skills: { type: "string" },
+        model: MODEL_PARAM, skills: { type: "string" },
+        provider: PROVIDER_PARAM,
         webhookUrl: WEBHOOK_URL_PARAM,
         capabilities: CAPABILITIES_PARAM,
         workspace: WORKSPACE_PARAM,
@@ -1090,7 +1095,6 @@ const tools: Record<string, ToolDef> = {
         body: {
           state: params.state,
           status: params.status,
-          model: params.model,
           skills: parseSkills(params.skills as string),
           ...webhookUrlBody(params.webhookUrl),
           ...profile,
@@ -1480,6 +1484,8 @@ function handleToolsList(body: McpRequest): Response {
 async function profileBody(params: Record<string, unknown>, secret: string, roomUrl: string): Promise<Record<string, unknown>> {
   const body: Record<string, unknown> = {};
   if (typeof params.capabilities === "string") body.capabilities = parseSkills(params.capabilities);
+  if (typeof params.model === "string" && params.model.trim()) body.model = params.model.trim();
+  if (typeof params.provider === "string" && params.provider.trim()) body.provider = params.provider.trim();
   if (params.workspace && typeof params.workspace === "object") {
     if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link) to announce a workspace: it is sealed with the room key");
     const { path, repo, branch } = params.workspace as Workspace;

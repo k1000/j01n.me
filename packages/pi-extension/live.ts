@@ -48,6 +48,17 @@ export function activityOf(toolName: string, input: Record<string, unknown>, roo
   return undefined;
 }
 
+/** The profile patch announcing our current model, or undefined when the room row already matches
+ * (dedupe prevents a write per presence tick). Empty model => nothing to announce. */
+export function modelPatchFor(
+  current: { model?: string; provider?: string },
+  mine: { model?: string; provider?: string } | undefined,
+): { model: string; provider?: string } | undefined {
+  if (!current.model) return undefined;
+  if (mine?.model === current.model && (mine?.provider ?? "") === (current.provider ?? "")) return undefined;
+  return { model: current.model, ...(current.provider ? { provider: current.provider } : {}) };
+}
+
 export function registerLive(pi: ExtensionAPI): { refresh(): Promise<void>; setEnabled(on: boolean): string } {
   let enabled = true;
   const loops = new Set<string>();
@@ -122,9 +133,30 @@ export function registerLive(pi: ExtensionAPI): { refresh(): Promise<void>; setE
     }
   }
 
+  let currentModel: { model?: string; provider?: string } = {};
+  function readModel(ctx: { model?: { id?: string; name?: string; provider?: string } | undefined }): void {
+    currentModel = ctx.model ? { model: ctx.model.id || ctx.model.name, provider: ctx.model.provider } : {};
+  }
+  async function announceModel(): Promise<void> {
+    if (!enabled) return;
+    await Promise.all(clients.map(async (c) => {
+      try {
+        const mine = (await c.team().catch(() => [])).find((t) => t.id === c.participantId);
+        const patch = modelPatchFor(currentModel, mine);
+        if (patch) await c.setProfile(patch);
+      } catch { /* a room that refuses the update keeps its last profile */ }
+    }));
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     notify = ctx.ui.notify.bind(ctx.ui);
+    readModel(ctx);
     await refresh().catch(() => undefined);
+    await announceModel().catch(() => undefined);
+  });
+  pi.on("model_select", async (_event, ctx) => {
+    readModel(ctx);
+    await announceModel().catch(() => undefined);
   });
   pi.on("session_shutdown", async () => {
     enabled = false;
@@ -163,7 +195,10 @@ export function registerLive(pi: ExtensionAPI): { refresh(): Promise<void>; setE
 
   // Commands such as join/leave change which rooms are active.
   pi.on("tool_result", async (event) => {
-    if (event.toolName === "j01n") await refresh().catch(() => undefined);
+    if (event.toolName === "j01n") {
+      await refresh().catch(() => undefined);
+      await announceModel().catch(() => undefined);
+    }
   });
 
   return {

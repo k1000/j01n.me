@@ -29,10 +29,13 @@ function profileChangeMessage(before: InviteState, after: InviteState, participa
   const now = after.participants[participantId];
   const capabilitiesChanged = (old.capabilities ?? []).join() !== (now.capabilities ?? []).join();
   const workspaceChanged = old.workspace !== now.workspace;
-  if (!capabilitiesChanged && !workspaceChanged) return undefined;
+  const modelChanged = old.model !== now.model || (old.provider ?? "") !== (now.provider ?? "");
+  if (!capabilitiesChanged && !workspaceChanged && !modelChanged) return undefined;
+  const running = [now.provider, now.model].filter(Boolean).join("/");
   const text = [
     capabilitiesChanged ? `${participantId} can now: ${(now.capabilities ?? []).join(", ") || "(no capabilities announced)"}` : "",
     workspaceChanged ? (now.workspace ? `${participantId} changed workspace` : `${participantId} stopped announcing its workspace`) : "",
+    modelChanged ? (running ? `${participantId} now runs ${running}` : `${participantId} stopped announcing its model`) : "",
   ].filter(Boolean).join("; ");
   return createRoomMessage({
     intent: "profile.changed",
@@ -42,6 +45,7 @@ function profileChangeMessage(before: InviteState, after: InviteState, participa
       updated_by: actorId,
       ...(capabilitiesChanged ? { capabilities: now.capabilities ?? [] } : {}),
       ...(workspaceChanged ? { workspace: now.workspace ?? null } : {}),
+      ...(modelChanged ? { model: now.model ?? null, provider: now.provider ?? null } : {}),
     },
   }, "system", "all", before.nextSeq + 1);
 }

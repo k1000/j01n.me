@@ -244,14 +244,25 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
   const invite = resolveInvite(parsed);
   const client = await openSession(invite, parsed.me);
   rememberRoom(invite, parsed.me);
-  // Flags: --capabilities code,shell,... and --no-workspace (do not announce where you work).
+  // Flags: --capabilities code,shell,..., --model gpt-5 --provider openai, and --no-workspace (do not announce where you work).
   const capabilitiesFlag = parsed.rest.indexOf("--capabilities");
   const capabilities = capabilitiesFlag >= 0 ? (parsed.rest[capabilitiesFlag + 1] ?? "").split(",").map((c) => c.trim()).filter(Boolean) : undefined;
+  // An agent says which model it runs: explicit flag, then J01N_MODEL/J01N_PROVIDER, then the harness env.
+  const flag = (name: string) => {
+    const i = parsed.rest.indexOf(name);
+    return i >= 0 && parsed.rest[i + 1] && !parsed.rest[i + 1].startsWith("--") ? parsed.rest[i + 1] : undefined;
+  };
+  const model = flag("--model") || process.env.J01N_MODEL || process.env.PI_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL;
+  const provider = flag("--provider") || process.env.J01N_PROVIDER || process.env.PI_PROVIDER;
   let workspace = parsed.rest.includes("--no-workspace") ? undefined : detectWorkspace();
   // Re-joining from the same place announces nothing new (every seal differs, so compare the opened values).
-  const mine = workspace && (await client.team().catch(() => [])).find((p) => p.id === parsed.me);
+  const teamList = workspace || model || provider ? await client.team().catch(() => []) : [];
+  const mine = teamList.find((p) => p.id === parsed.me);
   if (mine && JSON.stringify(mine.workspace) === JSON.stringify(workspace)) workspace = undefined;
-  if (capabilities || workspace) await client.setProfile({ capabilities, workspace });
+  const profile: { capabilities?: string[]; workspace?: Workspace; model?: string; provider?: string } = { capabilities, workspace };
+  if (model && mine?.model !== model) profile.model = model;
+  if (provider && mine?.provider !== provider) profile.provider = provider;
+  if (capabilities || workspace || profile.model || profile.provider) await client.setProfile(profile);
   let kickoff: unknown = null;
   let kickoffError: string | undefined;
   let board: Record<string, unknown> | null = null;
@@ -496,15 +507,22 @@ async function handleTransition(parsed: ParsedArgs): Promise<string> {
 }
 
 /**
- * Change what you announce during the session: --capabilities a,b ("" clears), --workspace (re-detect, e.g. after
- * switching branch; needs the room link because it is sealed with the room key), --no-workspace (stop announcing).
+ * Change what you announce during the session: --capabilities a,b ("" clears), --model X --provider Y (agents announce
+ * what they run), --workspace (re-detect, e.g. after switching branch; needs the room link because it is sealed with
+ * the room key), --no-workspace (stop announcing).
  */
 async function handleProfile(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
   const args = parsed.rest;
-  const profile: { capabilities?: string[]; workspace?: Workspace | null } = {};
+  const profile: { capabilities?: string[]; workspace?: Workspace | null; model?: string; provider?: string } = {};
   const i = args.indexOf("--capabilities");
   if (i >= 0) profile.capabilities = (args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : "").split(",").map((c) => c.trim()).filter(Boolean);
+  for (const field of ["model", "provider"] as const) {
+    const fi = args.indexOf(`--${field}`);
+    const v = fi >= 0 && args[fi + 1] && !args[fi + 1].startsWith("--") ? args[fi + 1]
+      : field === "model" ? (process.env.J01N_MODEL || process.env.PI_MODEL) : process.env.J01N_PROVIDER;
+    if (v) profile[field] = v;
+  }
   if (args.includes("--no-workspace")) profile.workspace = null;
   else if (args.includes("--workspace")) {
     if (client.invite.join_secret === "resume-only") throw new Error("re-announcing the workspace needs the room link (it is sealed with the room key): /j01n profile <room link> <me> --workspace");

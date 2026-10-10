@@ -5,11 +5,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentIdentity, RoomClient } from "@j01n/sdk";
 
-vi.mock("../herdr", () => ({ listHerdrRepoAgents: vi.fn(), promptHerdrAgent: vi.fn() }));
+vi.mock("../herdr", () => ({ labelHerdrPane: vi.fn(), listHerdrRepoAgents: vi.fn(), promptHerdrAgent: vi.fn() }));
 vi.mock("@j01n/sdk", () => ({ inviteAgent: vi.fn() }));
 vi.mock("../commands", () => ({ activeRoomClients: vi.fn(), prepareRoomPeerSpawn: vi.fn(), FRIENDLY_NAMES: ["Asha", "Maya", "Ravi"] }));
 import { inviteAgent } from "@j01n/sdk";
-import { listHerdrRepoAgents, promptHerdrAgent } from "../herdr";
+import { labelHerdrPane, listHerdrRepoAgents, promptHerdrAgent } from "../herdr";
 import { activeRoomClients } from "../commands";
 import { inviteRepoAgents, repoInviteCandidates, registerRepoInviteTool } from "../repo-invite";
 
@@ -86,6 +86,7 @@ describe("repo agent invitations", () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({}, { status: registered ? 200 : 404 })));
     expect(await inviteRepoAgents(client, sender, link, false, root)).toMatchObject({ results: [{ status: "invited" }] });
     expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("listen claude-12345678 --as maya --display-name Maya --role builder");
+    expect(labelHerdrPane).toHaveBeenCalledWith("w2:p1", "Maya");
   });
 
   it("does not ask a peer to claim an already registered address", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { listHerdrPeers, splitHerdrPane, startHerdrAgent, promptHerdrAgent } from "../herdr";
+import { labelHerdrPane, listHerdrPeers, splitHerdrPane, startHerdrAgent, promptHerdrAgent } from "../herdr";
 
 const agents = [
   { agent: "pi", agent_status: "working", pane_id: "wV:p4", workspace_id: "wV" },
@@ -38,6 +38,13 @@ describe("Herdr peer discovery", () => {
     expect(calls[0]).toEqual(["agent", "start", "reviewer", "--kind", "pi", "--pane", "wV:p5"]);
     expect(calls[1]).toEqual(["agent", "prompt", "wV:p5", "Register reviewer"]);
     expect(() => startHerdrAgent("wV:p5", "bad name", run)).toThrow("agent name");
+  });
+
+  it("labels a pane with the friendly name and ignores label failures", () => {
+    const run = vi.fn(() => "{}");
+    labelHerdrPane("wV:p5", "Maya", run);
+    expect(run).toHaveBeenCalledWith("herdr", ["pane", "rename", "wV:p5", "Maya"], expect.anything());
+    expect(() => labelHerdrPane("wV:p5", "Maya", vi.fn(() => { throw new Error("no herdr"); }))).not.toThrow();
   });
 
   it("does not inspect Herdr outside its own managed pane", () => {

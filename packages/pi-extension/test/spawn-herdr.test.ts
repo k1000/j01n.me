@@ -7,8 +7,8 @@ import type { AgentIdentity } from "@j01n/sdk";
 import type { RoomClient } from "@j01n/sdk";
 import type { Participant, RoomStatusResponse } from "@j01n/sdk/types";
 
-vi.mock("../herdr", () => ({ listHerdrPeers: vi.fn(), splitHerdrPane: vi.fn(), startHerdrAgent: vi.fn(), promptHerdrAgent: vi.fn() }));
-import { listHerdrPeers, splitHerdrPane, startHerdrAgent, promptHerdrAgent } from "../herdr";
+vi.mock("../herdr", () => ({ labelHerdrPane: vi.fn(), listHerdrPeers: vi.fn(), splitHerdrPane: vi.fn(), startHerdrAgent: vi.fn(), promptHerdrAgent: vi.fn() }));
+import { labelHerdrPane, listHerdrPeers, splitHerdrPane, startHerdrAgent, promptHerdrAgent } from "../herdr";
 import { spawnAndInviteHerdr } from "../spawn-herdr";
 
 const link = "https://j01n.me/room/demo#secret-kept-out-of-herdr";
@@ -104,6 +104,7 @@ describe("spawn Herdr Pi and invite", () => {
     expect(result.joined).toBe(true);
     expect(vi.mocked(promptHerdrAgent).mock.calls[0][1]).toContain("register reviewer host");
     expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("listen reviewer --capabilities code,shell,files --as maya --display-name Maya --role \"builder\"");
+    expect(labelHerdrPane).toHaveBeenCalledWith("wV:p5", "Maya");
     expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("Task: Implement T4");
   });
 

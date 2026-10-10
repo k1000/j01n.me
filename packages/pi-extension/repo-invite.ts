@@ -5,7 +5,7 @@ import type { AgentIdentity, RoomClient } from "@j01n/sdk";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { activeRoomClients, FRIENDLY_NAMES, prepareRoomPeerSpawn } from "./commands";
-import { listHerdrRepoAgents, promptHerdrAgent, type HerdrRepoAgent } from "./herdr";
+import { labelHerdrPane, listHerdrRepoAgents, promptHerdrAgent, type HerdrRepoAgent } from "./herdr";
 
 function gitCommonDir(cwd: string): string | undefined {
   try {
@@ -103,6 +103,7 @@ export async function inviteRepoAgents(client: Client, sender: AgentIdentity, li
       if (!await waitFor(() => listHerdrRepoAgents().find((p) => p.pane_id === peer.pane_id)?.agent_status !== "working", 60_000)) return { ...item, status: "busy" };
       const listen = `${pi ? "/j01n" : "node .j01n/j01n.js"} listen ${address} --as ${friendly} --display-name ${human ?? friendly} --role builder`;
       promptHerdrAgent(peer.pane_id, `A sealed invitation from ${sender.name} is waiting for ${address}. Run ${listen} to join. Do not paste room credentials into Herdr.`);
+      labelHerdrPane(peer.pane_id, human ?? friendly);
       return { ...item, status: "invited" };
     } catch {
       // Errors from network, Herdr, and the SDK may contain the private link. Never echo them.

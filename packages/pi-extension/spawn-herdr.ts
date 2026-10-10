@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { exportPublicKey } from "@j01n/sdk/crypto";
 import { inviteAgent, parseInviteLink } from "@j01n/sdk";
 import type { AgentIdentity, RoomClient } from "@j01n/sdk";
-import { listHerdrPeers, promptHerdrAgent, splitHerdrPane, startHerdrAgent } from "./herdr";
+import { labelHerdrPane, listHerdrPeers, promptHerdrAgent, splitHerdrPane, startHerdrAgent } from "./herdr";
 
 const OUTCOME_TIMEOUT_MS = 180_000;
 
@@ -143,6 +143,7 @@ export async function spawnAndInviteHerdr(
   try {
     paneId = peerDirectory ? splitHerdrPane(identityDir, sender.base, undefined, undefined, peerDirectory) : splitHerdrPane(identityDir, sender.base);
     startHerdrAgent(paneId, agentName);
+    if (displayName) labelHerdrPane(paneId, displayName);
     step = "registration";
     promptHerdrAgent(paneId, `Register yourself with j01n.me as ${agentName}, accepting invitations only from ${sender.name}. Use /j01n register ${agentName} ${sender.name}. Do not share your key or token. Reply when registered.`);
     if (!await waitFor(() => existsSync(targetFile))) throw new Error("new agent did not register its identity");

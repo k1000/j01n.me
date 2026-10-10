@@ -6,7 +6,7 @@ import { registerLive } from "./live";
 import { registerPeerSpawnTool } from "./peer-spawn-tool";
 import { getExtensionDiagnostics } from "./version";
 
-const USAGE = "Usage: /j01n <create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|herdr_agents|invite_herdr|leave|close|participants|room_status|transition|host|profile|reserve|release|reservations|live> ...";
+const USAGE = "Usage: /j01n <create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|herdr_agents|invite_herdr|leave|close|participants|room_status|transition|host|profile|reserve|release|reservations|worktrees|live> ...";
 
 type Notify = (message: string, level: "info" | "error") => void;
 
@@ -19,7 +19,7 @@ export default function (pi: ExtensionAPI) {
   const live = registerLive(pi);
   registerPeerSpawnTool(pi);
   pi.registerCommand("j01n", {
-    description: "j01n.me encrypted room helper: create, join, doctor, send, read, board, board_set, board_patch, board_delete, status, webhook, wait, register, allow, invite, listen, herdr_agents, invite_herdr, leave, close, participants, room_status, transition, host, profile, reserve, release, reservations, live",
+    description: "j01n.me encrypted room helper: create, join, doctor, send, read, board, board_set, board_patch, board_delete, status, webhook, wait, register, allow, invite, listen, herdr_agents, invite_herdr, leave, close, participants, room_status, transition, host, profile, reserve, release, reservations, worktrees, live",
     handler: async (args, ctx) => {
       const notify: Notify = ctx.ui.notify.bind(ctx.ui);
       const argv = splitArgs(args || "");
@@ -34,7 +34,7 @@ export default function (pi: ExtensionAPI) {
     label: "j01n.me",
     description: "Use the j01n.me encrypted room helper. Args match the j01n client, e.g. ['read','docs-review.json','agent-b'] or ['board','docs-review.json','agent-b'] or ['status','docs-review.json','agent-b','free','working on docs'].",
     parameters: Type.Object({
-      args: Type.Array(Type.String(), { description: "Arguments: create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|herdr_agents|invite_herdr|leave|close|participants|room_status|transition|host|profile|reserve|release|reservations|live ..." }),
+      args: Type.Array(Type.String(), { description: "Arguments: create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|herdr_agents|invite_herdr|leave|close|participants|room_status|transition|host|profile|reserve|release|reservations|worktrees|live ..." }),
     }),
     async execute(_toolCallId, params) {
       if (params.args[0] === "live") return toolResult(live.setEnabled(params.args[1] !== "off"), params.args);

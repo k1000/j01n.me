@@ -10,7 +10,7 @@ import { roomReplyHint, roomReplyHints, runProfileCommand, runReservationCommand
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
 import { listHerdrPeers, notifyHerdrPeer } from "./herdr";
-import { requirePrivateIdentityDir } from "./spawn-herdr";
+import { removeMergedPeerWorktrees, requirePrivateIdentityDir } from "./spawn-herdr";
 import { getExtensionDiagnostics } from "./version";
 
 const sessions = new Map<string, RoomClient>();
@@ -104,7 +104,7 @@ const ACTIVE_COMMANDS = new Set([
   "status", "webhook", "participants", "room_status", "transition", "host", "profile", "reserve", "release", "reservations", "tasks", "claim", "done", "block", "unblock", "leave", "close",
 ]);
 
-const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen", "herdr_agents", "invite_herdr"]);
+const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen", "herdr_agents", "invite_herdr", "worktrees"]);
 
 function parseCommand(args: string[]): ParsedArgs {
   const cmd = args[0];
@@ -254,10 +254,12 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
   const teamList = workspace || model || provider ? await client.team().catch(() => []) : [];
   const mine = teamList.find((p) => p.id === parsed.me);
   if (mine && JSON.stringify(mine.workspace) === JSON.stringify(workspace)) workspace = undefined;
-  const profile: { capabilities?: string[]; workspace?: Workspace; model?: string; provider?: string } = { capabilities, workspace };
+  const display_name = flag("--display-name");
+  const role = flag("--role");
+  const profile: { capabilities?: string[]; workspace?: Workspace; model?: string; provider?: string; display_name?: string; role?: string } = { capabilities, workspace, display_name, role };
   if (model && mine?.model !== model) profile.model = model;
   if (provider && mine?.provider !== provider) profile.provider = provider;
-  if (capabilities || workspace || profile.model || profile.provider) await client.setProfile(profile);
+  if (capabilities || workspace || profile.model || profile.provider || display_name || role) await client.setProfile(profile);
   let kickoff: unknown = null;
   let kickoffError: string | undefined;
   let board: Record<string, unknown> | null = null;
@@ -461,6 +463,8 @@ async function handleInviteHerdr(parsed: ParsedArgs): Promise<string> {
   return JSON.stringify({ ok: invited.every((item) => item.queued), invited }, null, 2);
 }
 
+const FRIENDLY_NAMES = ["Maya", "Ravi", "Lena", "Omar", "Ines", "Kenji", "Nora", "Amira", "Sofia", "Tariq", "Asha", "Leo", "Zara", "Yuki", "Nia", "Arjun"];
+
 export async function prepareRoomPeerSpawn(options: { task: string; role?: string; name?: string; roomId?: string }) {
   const task = options.task.trim();
   if (!task) throw new Error("provide a bounded peer task");
@@ -498,7 +502,18 @@ export async function prepareRoomPeerSpawn(options: { task: string; role?: strin
     writeFileSync(join(identityDir, `.j01n-agent-${sender.name}.json`), JSON.stringify(sender, null, 2), { flag: "wx", mode: 0o600 });
     if (sender.name !== preferredName) writeFileSync(aliasFile, JSON.stringify({ name: sender.name }), { flag: "wx", mode: 0o600 });
   }
-  return { client, sender, link: inviteLink(client.invite.room_url, client.invite.join_secret), name: options.name || "peer-" + crypto.randomUUID().replaceAll("-", "").slice(0, 12), role: `${options.role?.trim() || "collaborator"}: ${task}`, identityDir };
+  const namesInRoom = new Set((await client.status()).participants
+    .flatMap((p) => [p.id, (p as typeof p & { display_name?: string }).display_name])
+    .filter((name): name is string => !!name)
+    .map((name) => name.toLowerCase()));
+  const preferred = options.name?.trim();
+  if (preferred && !/^[a-z][a-z0-9_-]{0,31}$/i.test(preferred)) throw new Error("friendly name must be a short alphanumeric name");
+  const available = FRIENDLY_NAMES.filter((name) => !namesInRoom.has(name.toLowerCase()));
+  const displayName = preferred || available[Math.floor(Math.random() * available.length)];
+  if (!displayName || namesInRoom.has(displayName.toLowerCase())) throw new Error("friendly name is already in the room; choose another");
+  const name = `${displayName.toLowerCase()}-${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+  if (name.length > 32) throw new Error("friendly name is too long for a unique agent address");
+  return { client, sender, link: inviteLink(client.invite.room_url, client.invite.join_secret), name, displayName, role: options.role?.trim() || "builder", task, identityDir };
 }
 
 /** Wait for an invitation from an allowlisted agent, then join that room (kickoff, board and questions included). */
@@ -507,15 +522,23 @@ async function handleListen(parsed: ParsedArgs): Promise<string> {
   const [me, ...args] = parsed.rest;
   const timeout = args.find((arg) => /^\d+$/.test(arg));
   const joinFlags = args.filter((arg) => arg !== timeout);
+  const as = joinFlags.indexOf("--as");
+  const participantId = as >= 0 ? joinFlags[as + 1] : me;
+  if (!participantId || !/^[a-z][a-z0-9_-]{0,31}$/.test(participantId)) throw new Error("--as needs a valid room participant id");
+  if (as >= 0) joinFlags.splice(as, 2);
   const identity = loadAgent(me);
   const [invite] = await waitForInvites(identity, timeout ? Number(timeout) : undefined);
   if (!invite) return JSON.stringify({ timeout: true }, null, 2);
   await deleteInvite(identity, invite.id);
-  const joined = JSON.parse(await handleJoin({ cmd: "join", roomUrlOrInvite: invite.room_link, me: identity.name, rest: joinFlags }));
+  const joined = JSON.parse(await handleJoin({ cmd: "join", roomUrlOrInvite: invite.room_link, me: participantId, rest: joinFlags }));
   return JSON.stringify({ invited_by: invite.from, ...joined }, null, 2);
 }
 
 const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
+  worktrees: async (parsed) => {
+    if (parsed.rest.length !== 1 || parsed.rest[0] !== "--remove-merged") throw new Error("usage: /j01n worktrees --remove-merged");
+    return JSON.stringify(removeMergedPeerWorktrees(), null, 2);
+  },
   reserve: handleReservation,
   release: handleReservation,
   reservations: handleReservation,

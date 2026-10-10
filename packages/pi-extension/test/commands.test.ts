@@ -92,6 +92,15 @@ describe("pi-extension sessions", () => {
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
   });
 
+  it("passes friendly display name and role to the SDK profile boundary on join", async () => {
+    const { runj01n, activeRoomClients } = await import("../commands");
+    await runj01n(["join", ROOM, "secret", "maya", "--no-workspace"]);
+    const [client] = await activeRoomClients();
+    const profile = vi.spyOn(client, "setProfile").mockResolvedValue({ ok: true, participant: {} as never });
+    await runj01n(["join", ROOM, "secret", "maya", "--no-workspace", "--display-name", "Maya", "--role", "builder"]);
+    expect(profile).toHaveBeenCalledWith(expect.objectContaining({ display_name: "Maya", role: "builder" }));
+  });
+
   it("profile changes capabilities and workspace during the session, also after a restart (secret saved at join)", async () => {
     const { runj01n } = await import("../commands");
     await runj01n(["join", ROOM, "secret", "pi-agent", "--no-workspace"]);
@@ -322,6 +331,7 @@ describe("pi-extension agent inbox", () => {
     const keys = new Map<string, string>();
     let invites: Array<{ id: string; from: string; created_at: string; sealed: unknown }> = [];
     const seen: string[] = [];
+    const profiles: Array<Record<string, unknown>> = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const path = new URL(url).pathname;
@@ -333,6 +343,7 @@ describe("pi-extension agent inbox", () => {
       if (method === "GET" && path.endsWith("/wait") && path.startsWith("/a/")) return Response.json({ invites });
       if (method === "DELETE") { invites = []; return Response.json({ ok: true }); }
       if (method === "PUT") return Response.json({ ok: true, cursor: 0, participant_token: "tok-1" });
+      if (method === "PATCH") profiles.push(body);
       if (method === "GET" && path.endsWith("/board")) return Response.json({ board: {}, board_schema: null });
       return Response.json({ ok: true, seq: 1, cursor: 0, messages: [], participant: {} });
     });
@@ -343,11 +354,13 @@ describe("pi-extension agent inbox", () => {
 
     await runj01n(["invite", "claude-code", "pi-agent", "https://j01n.me/room/room-1#very-secret-join-secret"]);
     expect(JSON.stringify(invites)).not.toContain("very-secret-join-secret");
-    const result = JSON.parse(await runj01n(["listen", "pi-agent", "1", "--capabilities", "code,shell", "--no-workspace"]));
-    expect(result).toMatchObject({ invited_by: "claude-code", ok: true, participant_id: "pi-agent" });
+    const result = JSON.parse(await runj01n(["listen", "pi-agent", "1", "--capabilities", "code,shell", "--no-workspace", "--as", "maya", "--display-name", "Maya", "--role", "builder"]));
+    expect(result).toMatchObject({ invited_by: "claude-code", ok: true, participant_id: "maya" });
     expect(seen).toContain("DELETE /a/pi-agent/invites/inv-1");
-    expect(seen).toContain("PUT /r/room-1/participants/pi-agent");
-    // Join flags pass through listen: capabilities announced, no workspace.
-    expect(seen).toContain("PATCH /r/room-1/participants/pi-agent");
+    expect(seen).toContain("PUT /r/room-1/participants/maya");
+    // The global inbox remains pi-agent; the room identity and profile use its friendly name.
+    expect(seen).toContain("PATCH /r/room-1/participants/maya");
+    // SDK serialization of display_name/role belongs to T6; T4 verifies the join flags above.
+    expect(profiles).toContainEqual(expect.objectContaining({ capabilities: ["code", "shell"] }));
   });
 });

@@ -69,6 +69,12 @@ describe("spawn Herdr Pi and invite", () => {
     expect(splitHerdrPane).not.toHaveBeenCalled();
   });
 
+  it("refuses a friendly name that joined after preparation", async () => {
+    client.status = vi.fn(async () => ({ ...hostStatus, participants: [...hostStatus.participants, participant("maya")] }));
+    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "builder", dir, undefined, undefined, "Maya")).rejects.toThrow("friendly name is already in the room");
+    expect(splitHerdrPane).not.toHaveBeenCalled();
+  });
+
   it("refuses a duplicate Herdr agent name before creating a pane", async () => {
     vi.mocked(listHerdrPeers).mockReturnValue([{ pane_id: "wV:p4", agent: "reviewer", agent_status: "idle" }]);
     await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir)).rejects.toThrow("Herdr workspace");
@@ -90,6 +96,15 @@ describe("spawn Herdr Pi and invite", () => {
     expect(JSON.stringify(sent)).not.toContain("secret-kept-out-of-herdr");
     expect(JSON.stringify(vi.mocked(promptHerdrAgent).mock.calls)).not.toContain("secret-kept-out-of-herdr");
     expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("Review docs");
+  });
+
+  it("joins as a friendly room id while preserving a unique global agent inbox", async () => {
+    client.status = vi.fn(async () => ({ ...hostStatus, participants: joined ? [...hostStatus.participants, participant("maya")] : hostStatus.participants }));
+    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "builder", dir, undefined, undefined, "Maya", "Implement T4");
+    expect(result.joined).toBe(true);
+    expect(vi.mocked(promptHerdrAgent).mock.calls[0][1]).toContain("register reviewer host");
+    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("listen reviewer --capabilities code,shell,files --as maya --display-name Maya --role \"builder\"");
+    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("Task: Implement T4");
   });
 
   it("starts the peer in a given directory (its own worktree) and rejects one that does not exist", async () => {

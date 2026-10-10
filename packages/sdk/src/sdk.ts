@@ -3,6 +3,8 @@ export { buildMinimalInvite, inviteLink, normalizeInvite, parseInviteLink } from
 export { getClientUpdateNotice, SDK_CLIENT_PROTOCOL } from "./transport";
 export { deleteInvite, inviteAgent, registerAgent, setAcceptFrom, waitForInvites } from "./agents";
 export { openWorkspace, sealWorkspace } from "./crypto";
+export { listReservations, pathsOverlap, releasePaths, reservationFor, reservePaths, RESERVATIONS_KEY } from "./reservations";
+export type { Reservation } from "./reservations";
 export type { Workspace } from "./crypto";
 export type { AgentIdentity, ReceivedInvite } from "./agents";
 export { buildRoomClient } from "./room-client";

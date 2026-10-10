@@ -7,6 +7,8 @@ import {
   getBoard,
   getBoardKey,
   patchBoardData,
+  RESERVATIONS_KEY,
+  reservationChangeText,
   setBoardKeyData,
 } from "./board";
 import type { RoomEventBus } from "./events";
@@ -26,7 +28,7 @@ export class RoomBoardController {
    */
   private async announce(invite: InviteState, board: InviteState["board"], updatedBy: string, changes: Record<string, BoardChange>): Promise<void> {
     const seq = invite.nextSeq + 1;
-    const message = createRoomMessage({ intent: "board.changed", body: { text: boardChangeText(updatedBy, changes), updated_by: updatedBy, changes } }, "system", "all", seq);
+    const message = createRoomMessage({ intent: "board.changed", body: { text: boardChangeText(updatedBy, changes, invite.board), updated_by: updatedBy, changes } }, "system", "all", seq);
     const messages = [...invite.messages, message].slice(-MAX_MESSAGES);
     await this.storage.patchAndSave(invite, { board, nextSeq: seq, messages });
     this.events.notifyBoard(Object.keys(changes), updatedBy, changes);
@@ -115,9 +117,10 @@ function parseIfVersions(request: Request): Record<string, number> | Response {
 }
 
 /** One line per write, e.g. `pi-agent set status_T3 (v2): {"state":"review"}`; values shortened. */
-function boardChangeText(updatedBy: string, changes: Record<string, BoardChange>): string {
+function boardChangeText(updatedBy: string, changes: Record<string, BoardChange>, before: InviteState["board"]): string {
   return Object.entries(changes).map(([key, change]) => {
     if (!change) return `${updatedBy} deleted ${key}`;
+    if (key === RESERVATIONS_KEY) return reservationChangeText(updatedBy, before[key], change.value);
     const value = JSON.stringify(change.value) ?? "null";
     return `${updatedBy} set ${key} (v${change.version}): ${value.length > 300 ? `${value.slice(0, 300)}…` : value}`;
   }).join("; ");

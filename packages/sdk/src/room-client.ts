@@ -146,7 +146,7 @@ export interface RoomClient {
   /** Announce what you can do and where you work (only the given fields change; workspace is sealed, null clears it). */
   setProfile(profile: { capabilities?: string[]; workspace?: Workspace | null }): Promise<{ ok: true; participant: Participant }>;
   /** Everyone in the room with their capabilities and opened workspace (null when it cannot be opened). */
-  team(): Promise<Array<{ id: string; state: string; status: string; capabilities: string[]; workspace: Workspace | null }>>;
+  team(): Promise<Array<{ id: string; state: string; status: string; last_seen_at: string; capabilities: string[]; workspace: Workspace | null }>>;
   /** Opt into push: the room POSTs your visible events to this https URL. null switches back to polling. */
   setWebhook(url: string | null): Promise<{ ok: true; participant: Participant }>;
   board(): Promise<BoardResponse>;
@@ -156,7 +156,8 @@ export interface RoomClient {
   patchBoard(values: Record<string, unknown>, options?: { ifVersions?: Record<string, number> }): Promise<{ ok: true; updated: Record<string, BoardResponse["board"][string]>; board: BoardResponse["board"] }>;
   deleteBoardKey(key: string, options?: { ifVersion?: number }): Promise<{ ok: true; deleted: string }>;
   status(): Promise<RoomStatusResponse>;
-  leave(): Promise<void>;
+  /** release: also release your file reservations (otherwise leaving while holding some fails with 409). */
+  leave(options?: { release?: boolean }): Promise<void>;
   kick(targetId: string): Promise<{ ok: true; kicked: string }>;
   close(): Promise<{ ok: true; closed: boolean }>;
   transition(event: string): Promise<{ ok: true; from: string; event: string; to: string }>;
@@ -313,6 +314,7 @@ export async function buildRoomClient(
         id: p.id,
         state: p.state,
         status: p.status,
+        last_seen_at: p.last_seen_at,
         capabilities: p.capabilities ?? [],
         workspace: p.workspace ? await openWorkspace(p.workspace, invite.join_secret, invite.room_id).catch(() => null) : null,
       })));
@@ -350,8 +352,8 @@ export async function buildRoomClient(
     async status() {
       return request<RoomStatusResponse>(invite.api.status, invite);
     },
-    async leave() {
-      await request(`${invite.room_url}/participants/${encodeURIComponent(participantId)}`, invite, {
+    async leave(options = {}) {
+      await request(`${invite.room_url}/participants/${encodeURIComponent(participantId)}${options.release ? "?release=true" : ""}`, invite, {
         method: "DELETE",
         participantId,
       });

@@ -65,7 +65,7 @@ describe("pi-extension sessions", () => {
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
   });
 
-  it("profile changes capabilities and workspace during the session (after a restart the workspace needs the room link)", async () => {
+  it("profile changes capabilities and workspace during the session, also after a restart (secret saved at join)", async () => {
     const { runj01n } = await import("../commands");
     await runj01n(["join", ROOM, "secret", "pi-agent", "--no-workspace"]);
     calls.length = 0;
@@ -81,13 +81,20 @@ describe("pi-extension sessions", () => {
     await runj01n(["profile", "--workspace"]);
     expect(JSON.parse(calls.find((c) => c.method === "PATCH")!.body!).workspace).toMatch(/^jsk1:/);
 
-    // After a restart the room is resumed without its secret: the room link is needed to seal the workspace.
+    // After a restart the room secret comes from the private key file saved at join.
     vi.resetModules();
     const restarted = await import("../commands");
-    await expect(restarted.runj01n(["profile", "--workspace"])).rejects.toThrow("needs the room link");
     calls.length = 0;
-    await restarted.runj01n(["profile", ROOM, "secret", "pi-agent", "--workspace"]);
+    await restarted.runj01n(["profile", "--workspace"]);
     expect(JSON.parse(calls.find((c) => c.method === "PATCH")!.body!).workspace).toMatch(/^jsk1:/);
+
+    // A key file from before the secret was saved: the room link is needed to seal the workspace.
+    const keyFile = readdirSync(".").find((f) => f.startsWith(".j01n-") && f.endsWith("-pi-agent.json"))!;
+    const { joinSecret: _saved, ...withoutSecret } = JSON.parse(readFileSync(keyFile, "utf8"));
+    writeFileSync(keyFile, JSON.stringify(withoutSecret));
+    vi.resetModules();
+    const old = await import("../commands");
+    await expect(old.runj01n(["profile", "--workspace"])).rejects.toThrow("needs the room link");
   });
 
   it("re-joining from the same place does not announce the workspace again (no chat noise, no wake-ups)", async () => {

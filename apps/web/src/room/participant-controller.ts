@@ -2,6 +2,7 @@ import { json } from "../format";
 import type { InviteState } from "../types";
 import { parseRequest, authenticate, joinedThen, participantTokenAuthThen } from "./auth-context";
 import { MAX_MESSAGES } from "../constants";
+import { holdsReservations, withoutReservations } from "./board";
 import { dispatchWebhooks } from "./hooks";
 import { joinResponse, roomInfo } from "./info";
 import { createRoomMessage } from "./messages";
@@ -131,7 +132,7 @@ export class RoomParticipantController {
       const actorId = auth.participantId;
       const targetId = normalizeParticipantId(targetIdFromPath);
       if (targetId instanceof Response) return targetId;
-      if (actorId === targetId) return this.leave(invite, targetId);
+      if (actorId === targetId) return this.leave(invite, targetId, new URL(request.url).searchParams.get("release") === "true");
       return this.kick(invite, actorId, targetId);
     });
   }
@@ -158,11 +159,16 @@ export class RoomParticipantController {
     });
   }
 
-  private async leave(invite: InviteState, participantId: string): Promise<Response> {
+  private async leave(invite: InviteState, participantId: string, release: boolean): Promise<Response> {
     // The room must keep a host who can close, extend and kick: hand the role over before leaving others behind.
     const others = Object.keys(invite.participants).filter((id) => id !== participantId && isParticipantJoined(invite.participants, id));
     if (participantId === invite.hostId && others.length > 0) {
       return json({ error: "the host cannot leave while others are in the room: transfer the host role first (POST /r/:id/host {\"to\": \"<participant>\"})" }, 409);
+    }
+    // Reserved files must not stay locked by someone who left: release them explicitly, or leave with ?release=true.
+    if (holdsReservations(invite, participantId)) {
+      if (!release) return json({ error: "you still hold file reservations: release them first, or leave with ?release=true (CLI/Pi: leave --release)" }, 409);
+      invite = await this.releaseReservations(invite, participantId, participantId, `${participantId} released its reservations and left`);
     }
     const updated = withLeftParticipant(invite, participantId);
     await this.storage.putInvite(updated);
@@ -172,8 +178,23 @@ export class RoomParticipantController {
     return json({ ok: true });
   }
 
+  /** Drop a participant's file reservations from the board and announce it like any board change. */
+  private async releaseReservations(invite: InviteState, participantId: string, actorId: string, text: string): Promise<InviteState> {
+    const { board, changes } = withoutReservations(invite, participantId, actorId);
+    const seq = invite.nextSeq + 1;
+    const message = createRoomMessage({ intent: "board.changed", body: { text, updated_by: actorId, changes } }, "system", "all", seq);
+    const messages = [...invite.messages, message].slice(-MAX_MESSAGES);
+    await this.storage.patchAndSave(invite, { board, nextSeq: seq, messages });
+    this.events.notifyBoard(Object.keys(changes), actorId, changes);
+    this.events.notifyMessage(message, seq);
+    return { ...invite, board, nextSeq: seq, messages };
+  }
+
   private async kick(invite: InviteState, actorId: string, targetId: string): Promise<Response> {
     if (actorId !== invite.hostId) return json({ error: "only host can kick participants" }, 403);
+    if (holdsReservations(invite, targetId) && invite.participants[targetId] && !invite.participants[targetId].left_at) {
+      invite = await this.releaseReservations(invite, targetId, actorId, `${targetId}'s reservations were released (removed by ${actorId})`);
+    }
     const updated = withKickedParticipant(invite, targetId);
     if (updated instanceof Response) return updated;
     await this.storage.putInvite(updated);

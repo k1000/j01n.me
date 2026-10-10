@@ -182,8 +182,8 @@ describe("room lifecycle", () => {
 
     expect((await status("helper/0")).headers.get("x-j01n-client-update")).toContain("curl -fsSL https://j01n.me/client/j01n.js");
     expect((await status("sdk/0")).headers.get("x-j01n-client-update")).toContain("pi install https://gitlab.com/k1000/j01n.me");
-    expect((await status("helper/7")).headers.get("x-j01n-client-update")).toBeNull();
-    expect((await status("helper/6")).headers.get("x-j01n-client-update")).toContain("older than 7");
+    expect((await status("helper/8")).headers.get("x-j01n-client-update")).toBeNull();
+    expect((await status("helper/7")).headers.get("x-j01n-client-update")).toContain("older than 8");
     expect((await status()).headers.get("x-j01n-client-update")).toBeNull();
   });
 
@@ -904,6 +904,53 @@ describe("capabilities and workspace", () => {
     const res = await patch(fix, { workspace: "/Users/someone/secret-project" });
     expect(res.status).toBe(400);
     expect(await agentA(fix)).not.toHaveProperty("workspace");
+  });
+});
+
+describe("file reservations (board key `reservations`, contents sealed by clients)", () => {
+  const put = (fix: Awaited<ReturnType<typeof bootstrapRoom>>, id: string, value: unknown) => fix.session.fetch(new Request(
+    `https://room${fix.roomPath}/board/reservations`,
+    { method: "PUT", headers: { ...participantAuthHeaders(fix, id), "content-type": "application/json" }, body: JSON.stringify(value) },
+  ));
+  const remove = (fix: Awaited<ReturnType<typeof bootstrapRoom>>, target: string, actor: string, query = "") => fix.session.fetch(new Request(
+    `https://room${fix.roomPath}/participants/${target}${query}`, { method: "DELETE", headers: participantAuthHeaders(fix, actor) },
+  ));
+  const chat = async (fix: Awaited<ReturnType<typeof bootstrapRoom>>) =>
+    (await getRoomJson<{ messages: RoomMessage[] }>(fix, "/?view=all", "host")).messages.filter((m) => m.intent === "board.changed").map((m) => (m.body as { text: string }).text);
+  const held = async (fix: Awaited<ReturnType<typeof bootstrapRoom>>) =>
+    Object.values(((await getRoomJson<{ board: Record<string, { value: Record<string, { by: string }> }> }>(fix, "/board", "host")).board.reservations?.value) ?? {}).map((r) => r.by);
+
+  it("announces reserving and releasing without exposing the sealed contents", async () => {
+    const fix = await bootstrapRoom();
+    await joinParticipant(fix, "host");
+    await joinParticipant(fix, "agent-a");
+    await put(fix, "agent-a", { r1: { by: "agent-a", since: "now", sealed: "jsk1:iv.secret-ciphertext" } });
+    await put(fix, "agent-a", {});
+    expect(await chat(fix)).toEqual(["agent-a reserved files (1)", "agent-a released files (1)"]);
+  });
+
+  it("refuses to let a participant leave while holding reservations, unless it releases them", async () => {
+    const fix = await bootstrapRoom();
+    await joinParticipant(fix, "host");
+    await joinParticipant(fix, "agent-a");
+    await put(fix, "agent-a", { r1: { by: "agent-a", since: "now", sealed: "jsk1:x.y" }, r2: { by: "host", since: "now", sealed: "jsk1:x.y" } });
+
+    const blocked = await remove(fix, "agent-a", "agent-a");
+    expect(blocked.status).toBe(409);
+    expect(((await blocked.json()) as { error: string }).error).toContain("release them first");
+    expect((await remove(fix, "agent-a", "agent-a", "?release=true")).status).toBe(200);
+    expect(await held(fix)).toEqual(["host"]);
+    expect((await chat(fix)).at(-1)).toBe("agent-a released its reservations and left");
+  });
+
+  it("releases a kicked participant's reservations", async () => {
+    const fix = await bootstrapRoom();
+    await joinParticipant(fix, "host");
+    await joinParticipant(fix, "agent-a");
+    await put(fix, "agent-a", { r1: { by: "agent-a", since: "now", sealed: "jsk1:x.y" } });
+    expect((await remove(fix, "agent-a", "host")).status).toBe(200);
+    expect(await held(fix)).toEqual([]);
+    expect((await chat(fix)).at(-1)).toBe("agent-a's reservations were released (removed by host)");
   });
 });
 

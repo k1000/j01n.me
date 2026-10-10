@@ -748,4 +748,37 @@ describe("hosted MCP handler", () => {
     expect(bodies.join()).not.toContain("/Users/someone/private-repo");
     expect(result.team[0]).toMatchObject({ id: "a", capabilities: ["code", "vision"], workspace: { path: "/Users/someone/private-repo", repo: "https://gitlab.com/acme/api.git", branch: "main" } });
   });
+
+  it("reserve_paths / list_reservations / release_paths: sealed on the board, overlapping reservations refused", async () => {
+    let reservations: { value: unknown; version: number } | undefined;
+    const env = {
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({
+          fetch: async (url: string, init?: RequestInit) => {
+            const u = new URL(url);
+            if (u.pathname.includes("__load_session")) return Response.json({ sessions: {} });
+            if (u.pathname.endsWith("/board")) return Response.json({ board: reservations ? { reservations } : {} });
+            if (u.pathname.endsWith("/board/reservations") && init?.method === "PUT") {
+              if (Number(u.searchParams.get("if_version")) !== (reservations?.version ?? 0)) return Response.json({ error: "version conflict" }, { status: 409 });
+              reservations = { value: JSON.parse(String(init.body)), version: (reservations?.version ?? 0) + 1 };
+              return Response.json({ ok: true });
+            }
+            return Response.json({ ok: true, participants: [], messages: [] });
+          },
+        }),
+      },
+    } as never;
+    const link = "https://j01n.me/room/res-room#very-secret-join-secret";
+    const call = async (name: string, args: Record<string, unknown>) => (await handleMcpRequest(rpc("tools/call", { name, arguments: { inviteJson: link, ...args } }), env)).json() as Promise<{ result?: { content: Array<{ text: string }> }; error?: { message: string } }>;
+    const data = (r: { result?: { content: Array<{ text: string }> } }) => JSON.parse(r.result!.content[0].text);
+
+    await call("reserve_paths", { participantId: "a", repo: "gitlab.com/acme/api", paths: "src/auth/", reason: "refactoring auth" });
+    expect(JSON.stringify(reservations)).not.toContain("src/auth");
+    const refused = await call("reserve_paths", { participantId: "b", repo: "gitlab.com/acme/api", paths: "src/auth/login.ts" });
+    expect(JSON.stringify(refused)).toContain("already reserved by a (refactoring auth)");
+    expect(data(await call("list_reservations", { participantId: "b" })).reservations).toMatchObject([{ by: "a", repo: "gitlab.com/acme/api", paths: ["src/auth/"] }]);
+    await call("release_paths", { participantId: "a" });
+    expect(data(await call("list_reservations", { participantId: "b" })).reservations).toEqual([]);
+  });
 });

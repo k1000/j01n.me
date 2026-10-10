@@ -18,8 +18,9 @@
    Agents:   register <me> [allowed,agents]  |  invite <me> <to> <room link>  |  listen <me>   (invite agents by name)
    Profile:  join <link> <me> --capabilities code,shell,browser,screenshot,vision   (workspace: cwd + git remote/branch, sealed; --no-workspace skips)
              later: profile --capabilities code,browser  |  profile <link> <me> --workspace (re-detect)  |  profile --no-workspace
+   Reserve:  node .j01n/j01n.js reserve src/auth/ --reason refactoring auth  |  release [path...]  |  reservations  |  leave [--release]
    Host:     node .j01n/j01n.js host <participant>   (host only: hand the host role over; the host cannot leave others without one)
-   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, profile, host, register, allow, invite, invites, listen
+   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, profile, host, reserve, release, reservations, leave, register, allow, invite, invites, listen
 */
 const fs = await import('node:fs/promises');
 const { webcrypto, createHash } = await import('node:crypto');
@@ -30,7 +31,7 @@ const dec = new TextDecoder();
 const rawArgs = process.argv.slice(2).filter((arg, index) => index !== 0 || arg !== '--');
 const cmd = rawArgs[0];
 // Room-feature version this helper speaks; bump with CLIENT_PROTOCOL in apps/web/src/constants.ts.
-const CLIENT_PROTOCOL = 7;
+const CLIENT_PROTOCOL = 8;
 let updateNoticeShown = false;
 let clientUpdateNotice = null;
 if (cmd === 'create') {
@@ -54,7 +55,7 @@ if (['register', 'allow', 'invite', 'listen', 'invites'].includes(cmd)) {
 const ACTIVE_ROOMS_DIR = '.j01n-rooms';
 const resolved = await resolveRoomArgs(rawArgs);
 const roomUrl = resolved.roomUrl;
-const joinSecret = resolved.joinSecret;
+let joinSecret = resolved.joinSecret;
 const me = resolved.me;
 const rest = resolved.rest;
 if (!cmd || !roomUrl || !joinSecret || !me) die('usage: j01n <create|join|send|read|watch|doctor> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.');
@@ -178,7 +179,7 @@ async function loadState() {
     return state;
   }
 }
-async function saveState(state) { await fs.writeFile(keyFile, JSON.stringify({ privateJwk: state.privateJwk, publicJwk: state.publicJwk, peers: state.peers, participantToken: state.participantToken, announcedKey: state.announcedKey, roomUrl }, null, 2), { mode: 0o600 }); }
+async function saveState(state) { await fs.writeFile(keyFile, JSON.stringify({ privateJwk: state.privateJwk, publicJwk: state.publicJwk, peers: state.peers, participantToken: state.participantToken, joinSecret: state.joinSecret, announcedKey: state.announcedKey, roomUrl }, null, 2), { mode: 0o600 }); }
 function tokenHeaders(state) { return state.participantToken ? { authorization: 'Bearer ' + state.participantToken } : headers; }
 function requireParticipantToken(state) { if (!state.participantToken) die('participant token missing; run join first'); return state.participantToken; }
 async function requestJson(url, init = {}) {
@@ -261,12 +262,51 @@ async function detectWorkspace() {
   const branch = git('branch', '--show-current');
   return { path: process.cwd(), ...(repo ? { repo } : {}), ...(branch ? { branch } : {}) };
 }
+// File reservations (board key "reservations"): { id: { by, since, sealed } }, sealed = { repo, paths, reason } with
+// the room key. Paths are relative to the repo root; a path covers everything under it.
+async function currentRepo() {
+  const { execFileSync } = await import('node:child_process');
+  const git = (...args) => { try { return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined; } catch { return undefined; } };
+  const root = git('rev-parse', '--show-toplevel') || process.cwd();
+  return { root, repo: git('remote', 'get-url', 'origin')?.replace(/\/\/[^@/]+@/, '//') || root };
+}
+async function repoPath(root, path) { const { relative, resolve } = await import('node:path'); return relative(root, resolve(path)) || '.'; }
+function pathsOverlap(a, b) {
+  const [x, y] = [a, b].map((p) => p.replace(/^\.\//, '').replace(/\/+$/, ''));
+  return x === y || x === '' || y === '' || x.startsWith(y + '/') || y.startsWith(x + '/');
+}
+async function loadReservations(state) {
+  const r = await requestJson(roomUrl + '/board', { headers: tokenHeaders(state) });
+  if (!r.ok) die(formatErrorBody(r.body));
+  const entry = r.body.board?.reservations;
+  const stored = entry?.value && typeof entry.value === 'object' ? entry.value : {};
+  const list = await Promise.all(Object.entries(stored).map(async ([id, s]) => {
+    const o = await openKickoff({ encrypted_payload: s.sealed }).catch(() => null);
+    return { id, by: s.by, since: s.since, repo: o?.repo ?? '', paths: o?.paths ?? [], ...(o?.reason ? { reason: o.reason } : {}) };
+  }));
+  return { stored, version: entry?.version ?? 0, list };
+}
+// Write only if nobody changed the board since we read it (if_version); on a race, read again and retry.
+async function updateReservations(state, change) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const current = await loadReservations(state);
+    const next = await change(current);
+    if (next === null) return current.list;
+    const w = await requestJson(roomUrl + '/board/reservations?if_version=' + current.version, { method: 'PUT', headers: { ...tokenHeaders(state), 'content-type': 'application/json' }, body: JSON.stringify(next) });
+    if (w.ok) return (await loadReservations(state)).list;
+    if (w.status !== 409) die(formatErrorBody(w.body));
+  }
+  die('reservations kept changing; try again');
+}
+function pathsAndReason(args) { const at = args.indexOf('--reason'); return { paths: at >= 0 ? args.slice(0, at) : args, reason: at >= 0 ? args.slice(at + 1).join(' ') || undefined : undefined }; }
+// A ready command to answer a message in its thread (closes it if it asked for a reply).
+function withReplyHints(messages) { return messages.map((m) => (m.from === 'system' || m.intent === 'key.exchange' ? m : { ...m, reply: 'node .j01n/j01n.js send ' + m.from + ' <text> --reply-to ' + m.id })); }
 // Everyone in the room: capabilities and opened workspace (null when it cannot be opened).
 async function team(state) {
   const r = await requestJson(roomUrl + '/participants', { headers: tokenHeaders(state) });
   if (!r.ok) return [];
   return Promise.all((r.body.participants || []).filter((p) => !p.left_at).map(async (p) => ({
-    id: p.id, state: p.state, status: p.status, capabilities: p.capabilities || [],
+    id: p.id, state: p.state, status: p.status, last_seen_at: p.last_seen_at, capabilities: p.capabilities || [],
     workspace: p.workspace ? await openKickoff({ encrypted_payload: p.workspace }).catch(() => null) : null,
   })));
 }
@@ -408,7 +448,7 @@ async function waitForEvent(state, timeout, filter = '') {
   const unread = await requestJson(roomUrl, { headers: tokenHeaders(state) });
   if (!unread.ok) die(formatErrorBody(unread.body));
   await syncKeys(state);
-  return { woke: r.body.event, ...(r.body.changes ? { board: r.body.changes } : {}), messages: await decryptedMessages(state, unread.body.messages || []) };
+  return { woke: r.body.event, ...(r.body.changes ? { board: r.body.changes } : {}), messages: withReplyHints(await decryptedMessages(state, unread.body.messages || [])) };
 }
 
 /**
@@ -418,10 +458,9 @@ const COMMANDS = {
   async join(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
     const r = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PUT', headers: { authorization: 'Bearer ' + joinSecret, 'content-type': 'application/json' }, body: JSON.stringify({ public_key: await exportPublic(state.keyPair.publicKey), state: 'free', status: 'joined with encrypted tiny client' }) });
     if (!r.ok && r.status !== 409) die(formatErrorBody(r.body));
-    if (r.body.participant_token) {
-      state.participantToken = r.body.participant_token;
-      await saveState(state);
-    }
+    if (r.body.participant_token) state.participantToken = r.body.participant_token;
+    state.joinSecret = joinSecret; // lets later short commands open sealed content without the room link
+    await saveState(state);
     headers = tokenHeaders(state);
     await announce(state);
     // Flags: --capabilities code,shell,... and --no-workspace (do not announce where you work).
@@ -475,7 +514,7 @@ const COMMANDS = {
   },
   async read(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
     const messages = await syncKeys(state);
-    console.log(JSON.stringify(await decryptedMessages(state, messages), null, 2));
+    console.log(JSON.stringify(withReplyHints(await decryptedMessages(state, messages)), null, 2));
   },
   async watch(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
     await announce(state).catch(() => undefined);
@@ -541,6 +580,41 @@ const COMMANDS = {
     }
     console.log(JSON.stringify({ ok: true, team: await team(state) }, null, 2));
   },
+  // reserve <path>... [--reason text]: claim paths of this repo; fails naming the holder if someone else has them.
+  async reserve(state, { me, rest }) {
+    const { root, repo } = await currentRepo();
+    const { paths, reason } = pathsAndReason(rest);
+    if (paths.length === 0) die('reserve needs: <path>... [--reason text]');
+    const rel = await Promise.all(paths.map((p) => repoPath(root, p)));
+    const list = await updateReservations(state, async ({ stored, list }) => {
+      for (const p of rel) {
+        const held = list.find((r) => r.by !== me && r.repo === repo && r.paths.some((q) => pathsOverlap(p, q)));
+        if (held) die(p + ' is already reserved by ' + held.by + (held.reason ? ' (' + held.reason + ')' : '') + '; ask: send ' + held.by + ' <text> --expect-reply');
+      }
+      return { ...stored, [crypto.randomUUID()]: { by: me, since: new Date().toISOString(), sealed: await sealJson({ repo, paths: rel, ...(reason ? { reason } : {}) }) } };
+    });
+    console.log(JSON.stringify({ ok: true, reservations: list }, null, 2));
+  },
+  // release [path...]: release your reservations (all, or those covering the given paths of this repo).
+  async release(state, { me, rest }) {
+    const { root, repo } = await currentRepo();
+    const rel = await Promise.all(rest.map((p) => repoPath(root, p)));
+    const list = await updateReservations(state, async ({ stored, list }) => {
+      const mine = list.filter((r) => r.by === me && (rel.length === 0 || (r.repo === repo && r.paths.some((p) => rel.some((q) => pathsOverlap(p, q))))));
+      return mine.length ? Object.fromEntries(Object.entries(stored).filter(([id]) => !mine.some((r) => r.id === id))) : null;
+    });
+    console.log(JSON.stringify({ ok: true, reservations: list }, null, 2));
+  },
+  async reservations(state) {
+    console.log(JSON.stringify({ reservations: (await loadReservations(state)).list }, null, 2));
+  },
+  // leave [--release]: leave the room; --release also releases your reservations (otherwise leaving is refused).
+  async leave(state, { me, rest }) {
+    const r = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me) + (rest.includes('--release') ? '?release=true' : ''), { method: 'DELETE', headers: tokenHeaders(state) });
+    if (!r.ok) die(formatErrorBody(r.body));
+    await fs.rm(activeRoomPath(roomUrl, me), { force: true });
+    console.log(JSON.stringify({ ok: true, left: true }, null, 2));
+  },
   // Host only: hand the host role to another participant in the room.
   async host(state, { roomUrl, rest }) {
     const [to] = rest;
@@ -552,10 +626,12 @@ const COMMANDS = {
 };
 
 const handler = COMMANDS[cmd];
-if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|inbox|watch|wait|doctor|webhook|kickoff|profile|host');
+if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|leave');
 
 const state = await loadState();
 if (resolved.participantToken) state.participantToken = resolved.participantToken;
+// The room secret saved at join (private key file) opens sealed content (kickoff, workspaces, reservations) in short commands.
+if (joinSecret === 'resume-only' && state.joinSecret) joinSecret = state.joinSecret;
 let currentState = state;
 headers = tokenHeaders(state);
 await handler(state, { roomUrl, joinSecret, me, rest, headers, keyFile });

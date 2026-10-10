@@ -28,6 +28,8 @@ import type { RoomMessage } from "./types";
 import { deleteInvite, inviteAgent, registerAgent, waitForInvites } from "@j01n/sdk/agents";
 import type { AgentFetch, AgentIdentity } from "@j01n/sdk/agents";
 import { agentRoutes } from "./agents/routes";
+import { pathsOverlap, RESERVATIONS_KEY } from "@j01n/sdk/reservations";
+import type { Reservation } from "@j01n/sdk/reservations";
 
 // ── Unified session store (per-worker-isolate, in-memory) ───────
 // Key: roomId:participantId. Stores ECDH session + per-participant token.
@@ -308,7 +310,9 @@ async function readRoomMessages(env: Env, params: Record<string, unknown>) {
 
   // Use SDK's proven decryption
   const decrypted = await decryptRoomMessages(crypto, messages, secret, roomUrl);
-  return { cursor: result.cursor ?? 0, count: decrypted.length, messages: decrypted };
+  // A ready reply for participants' messages: answering with replyTo closes a question.
+  const withReplies = decrypted.map((m) => (m.from === "system" || m.intent === "key.exchange" ? m : { ...m, reply: { tool: "send_message", to: m.from, replyTo: m.id } }));
+  return { cursor: result.cursor ?? 0, count: withReplies.length, messages: withReplies };
 }
 
 /** Decrypt room messages for a participant; sealed kickoffs need the real join secret. */
@@ -1122,15 +1126,61 @@ const tools: Record<string, ToolDef> = {
   },
 
   leave_room: {
-    description: "Leave the room (stays active for others).",
-    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
+    description: "Leave the room (stays active for others). Leaving while holding file reservations is refused unless release is true.",
+    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" }, release: { type: "boolean", description: "Also release your file reservations" } }, required: ["inviteJson", "participantId"] },
     handler: async (env, params, ctx) => {
       const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
-      await doFetch(env, roomUrl, `/participants/${params.participantId}`, secret, { method: "DELETE", participantId: params.participantId as string });
+      await doFetch(env, roomUrl, `/participants/${params.participantId}${params.release ? "?release=true" : ""}`, secret, { method: "DELETE", participantId: params.participantId as string });
       await rememberSessionRoom(env, ctx.sessionId, roomUrl, params.participantId as string, true);
       sessions.delete(sessionKey(roomId, params.participantId as string));
       return { ok: true, left: true };
     },
+  },
+
+  reserve_paths: {
+    description: "Reserve files you are about to change so others do not edit them at the same time. paths are relative to the repo root (a directory covers everything under it); repo is your git remote (or repo root). Fails naming the holder if someone else reserved an overlapping path. Sealed with the room key: the server never sees paths.",
+    inputSchema: {
+      type: "object", properties: {
+        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
+        repo: { type: "string" }, paths: { type: "string", description: "Comma-separated paths relative to the repo root" }, reason: { type: "string" },
+      }, required: ["inviteJson", "participantId", "repo", "paths"],
+    },
+    handler: async (env, params) => {
+      const me = params.participantId as string;
+      const paths = parseSkills(params.paths as string) ?? [];
+      if (paths.length === 0) throw new Error("paths is required");
+      return { reservations: await updateReservations(env, params, async (stored, list, seal) => {
+        for (const path of paths) {
+          const held = list.find((r) => r.by !== me && r.repo === params.repo && r.paths.some((p) => pathsOverlap(p, path)));
+          if (held) throw new Error(`${path} is already reserved by ${held.by}${held.reason ? ` (${held.reason})` : ""}; ask them with send_message (expectsReply)`);
+        }
+        const sealed = await seal({ repo: params.repo, paths, ...(params.reason ? { reason: params.reason } : {}) });
+        return { ...stored, [crypto.randomUUID()]: { by: me, since: new Date().toISOString(), sealed } };
+      }) };
+    },
+  },
+
+  release_paths: {
+    description: "Release your file reservations: all, or those covering the given paths of repo.",
+    inputSchema: {
+      type: "object", properties: {
+        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
+        repo: { type: "string" }, paths: { type: "string", description: "Comma-separated paths (omit to release all)" },
+      }, required: ["inviteJson", "participantId"],
+    },
+    handler: async (env, params) => {
+      const paths = parseSkills(params.paths as string) ?? [];
+      return { reservations: await updateReservations(env, params, async (stored, list) => {
+        const mine = list.filter((r) => r.by === params.participantId && (paths.length === 0 || (r.repo === params.repo && r.paths.some((p) => paths.some((q) => pathsOverlap(p, q))))));
+        return mine.length ? Object.fromEntries(Object.entries(stored).filter(([id]) => !mine.some((r) => r.id === id))) : null;
+      }) };
+    },
+  },
+
+  list_reservations: {
+    description: "List file reservations in the room: who reserved which paths of which repo, and why.",
+    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
+    handler: async (env, params) => ({ reservations: (await loadReservations(env, params)).list }),
   },
 
   get_room_info: {
@@ -1365,6 +1415,40 @@ async function teamOf(env: Env, roomUrl: string, secret: string, participantId: 
       ? { workspace: await openWorkspace(p.workspace, secret, roomUrl.split("/").pop()!).catch(() => null) }
       : {}),
   })));
+}
+
+// ── File reservations: board key "reservations" = { id: { by, since, sealed } }, sealed = { repo, paths, reason } ──
+type StoredReservations = Record<string, { by: string; since: string; sealed: string }>;
+
+async function loadReservations(env: Env, params: Record<string, unknown>) {
+  const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+  if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): reservations are sealed with the room key");
+  const roomId = roomUrl.split("/").pop()!;
+  const { board = {} } = await doFetch(env, roomUrl, "/board", secret, { participantId: params.participantId as string }) as { board?: Record<string, { value?: unknown; version?: number }> };
+  const entry = board[RESERVATIONS_KEY];
+  const stored = (entry?.value && typeof entry.value === "object" ? entry.value : {}) as StoredReservations;
+  const list: Reservation[] = await Promise.all(Object.entries(stored).map(async ([id, r]) => {
+    const opened = await openKickoff({ encrypted_payload: r.sealed }, secret, roomId).catch(() => null) as { repo?: string; paths?: string[]; reason?: string } | null;
+    return { id, by: r.by, since: r.since, repo: opened?.repo ?? "", paths: opened?.paths ?? [], ...(opened?.reason ? { reason: opened.reason } : {}) };
+  }));
+  return { stored, version: entry?.version ?? 0, list, seal: async (value: unknown) => (await sealKickoff(value, secret, roomId)).encrypted_payload };
+}
+
+/** Write the reservations only if nobody changed them since we read them; on a race, read again and retry. */
+async function updateReservations(
+  env: Env, params: Record<string, unknown>,
+  change: (stored: StoredReservations, list: Reservation[], seal: (value: unknown) => Promise<string>) => Promise<StoredReservations | null>,
+): Promise<Reservation[]> {
+  const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const current = await loadReservations(env, params);
+    const next = await change(current.stored, current.list, current.seal);
+    if (next === null) return current.list;
+    const res = await doFetchRaw(env, roomUrl, `/board/${RESERVATIONS_KEY}?if_version=${current.version}`, secret, { method: "PUT", participantId: params.participantId as string, body: next });
+    if (res.ok) return (await loadReservations(env, params)).list;
+    if (res.status !== 409) throw new Error(`reservations: ${res.status} ${await res.text()}`);
+  }
+  throw new Error("reservations kept changing; try again");
 }
 
 // ── Agent inboxes: served by the same Worker, so they are called in-process ──

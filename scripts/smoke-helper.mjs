@@ -7,7 +7,8 @@
 //
 // Creates a short-lived room, joins two agents in separate directories, and checks: join output (kickoff, questions),
 // commands without room arguments (active room), plain-text send, wait waking on a message, send --wait, the open
-// question flow (--expect-reply / --reply-to), wait filters (--from), host handover, team capabilities/workspace, inviting an agent by name (register / invite /
+// question flow (--expect-reply / --reply-to), wait filters (--from), host handover, team capabilities/workspace,
+// file reservations (reserve / release / leave guard), inviting an agent by name (register / invite /
 // listen), and that the active-room entry holds no secrets. Closes the room.
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
@@ -32,6 +33,10 @@ function runAsync(dir, args) {
     child.on("close", (code) => (code === 0 ? done(JSON.parse(out)) : fail(new Error(`exit ${code}`))));
   });
 }
+// A command that must fail: returns its error output.
+function fails(dir, args) {
+  try { run(dir, args); return ""; } catch (error) { return String(error.stderr || error.message); }
+}
 function check(label, ok, detail = "") {
   if (!ok) failures++;
   console.log(`${ok ? "ok  " : "FAIL"} ${label}${detail ? ` (${detail})` : ""}`);
@@ -40,6 +45,11 @@ function check(label, ok, detail = "") {
 const room = JSON.parse(execFileSync("node", [helper, "create", base, JSON.stringify({ host_id: "smoke-a", room_name: "helper-smoke", invite_ttl_ms: 300000 })], { cwd: root, env, encoding: "utf8" }));
 const a = mkdtempSync(join(root, "a-"));
 const b = mkdtempSync(join(root, "b-"));
+// Two clones of the same repo (same remote), so file reservations apply across them.
+for (const dir of [a, b]) {
+  execFileSync("git", ["init", "-q"], { cwd: dir });
+  execFileSync("git", ["remote", "add", "origin", "https://example.com/acme/smoke.git"], { cwd: dir });
+}
 try {
   const joinA = run(a, ["join", room.invite_link, "smoke-a"]);
   check("join prints kickoff and questions fields", "kickoff" in joinA && Array.isArray(joinA.questions));
@@ -88,6 +98,17 @@ try {
   run(b, ["invite", host, guest, room.invite_link]);
   const joinedByName = await listening;
   check("listen joins the room an allowed agent invited it to", joinedByName.invited_by === host && joinedByName.participant_id === guest && "board" in joinedByName);
+
+  // Directory a now also holds the guest's room entry, so name the room and participant explicitly there.
+  const asA = (...args) => [args[0], room.invite_link, "smoke-a", ...args.slice(1)];
+  run(a, asA("reserve", "src/auth", "--reason", "smoke", "refactor"));
+  check("reserving a path someone else holds fails, naming the holder", fails(b, ["reserve", "src/auth/login.ts"]).includes("already reserved by smoke-a (smoke refactor)"));
+  check("reservations are announced in the chat", run(b, ["read"]).some((m) => m.body?.text === "smoke-a reserved files (1)"));
+  run(b, ["reserve", "docs/"]);
+  check("leaving while holding reservations is refused", fails(b, ["leave"]).includes("release them first"));
+  check("leave --release releases them and leaves", run(b, ["leave", "--release"]).left === true && run(a, asA("reservations")).reservations.every((r) => r.by === "smoke-a"));
+  run(a, asA("release"));
+  check("release frees your reservations", run(a, asA("reservations")).reservations.length === 0);
 } catch (error) {
   failures++;
   console.log(`FAIL ${error instanceof Error ? error.message : error}`);

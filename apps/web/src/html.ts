@@ -778,6 +778,12 @@ function roomPageScript(roomId: string): string {
     const pList = Object.values(participants);
     // Where each participant works: sealed with the room key, opened here with the join secret.
     const workspaces = Object.fromEntries(await Promise.all(pList.map(async (p) => [p.id, p.workspace ? await openSealedKickoff(p.workspace).catch(() => null) : null])));
+    // Presence: Pi agents update their status from their own activity; others when they act or update it.
+    const activeAgo = (p) => {
+      if (p.left_at) return "left";
+      const minutes = Math.round((Date.now() - Date.parse(p.last_seen_at || p.joined_at)) / 60000);
+      return minutes < 1 ? "active now" : "active " + minutes + " min ago";
+    };
     const profileLine = (p) => {
       const caps = (p.capabilities || []).length ? \`<span class="participant-caps">\${esc(p.capabilities.join(" · "))}</span>\` : "";
       const ws = workspaces[p.id];
@@ -786,7 +792,7 @@ function roomPageScript(roomId: string): string {
     };
     const participantsHtml = pList.length === 0
       ? \`<p class="board-empty">No participants yet.</p>\`
-      : pList.map(p => \`<div class="participant-card"><span class="participant-name">\${esc(p.id)}</span><span class="participant-state">[\${esc(p.state)}]</span><span class="participant-status">\${esc(p.status)}</span>\${p.id === room.host_id ? \` <span class="participant-state">host</span>\` : isHost && !p.left_at ? \` <button class="button button-small" type="button" data-make-host="\${escAttr(p.id)}" title="Hand the host role to \${escAttr(p.id)}">Make host</button>\` : ""}\${profileLine(p)}</div>\`).join("");
+      : pList.map(p => \`<div class="participant-card"><span class="participant-name">\${esc(p.id)}</span><span class="participant-state">[\${esc(p.state)}]</span><span class="participant-status">\${esc(p.status)}</span><span class="participant-state">\${esc(activeAgo(p))}</span>\${p.id === room.host_id ? \` <span class="participant-state">host</span>\` : isHost && !p.left_at ? \` <button class="button button-small" type="button" data-make-host="\${escAttr(p.id)}" title="Hand the host role to \${escAttr(p.id)}">Make host</button>\` : ""}\${profileLine(p)}</div>\`).join("");
     const recipientOptions = [\`<option value="all">all</option>\`, ...pList.filter(p => !p.left_at && p.id !== participantId).map(p => \`<option value="\${escAttr(p.id)}">\${esc(p.id)}</option>\`)].join("");
 
     const messagesHtml = messages.length === 0

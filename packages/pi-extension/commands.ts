@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
-import { buildMinimalInvite, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, joinRoom, normalizeInvite, parseInviteLink, registerAgent, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, setAcceptFrom, waitForInvites } from "@j01n/sdk";
+import { join, relative, resolve } from "node:path";
+import { buildMinimalInvite, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, joinRoom, listReservations, normalizeInvite, parseInviteLink, registerAgent, releasePaths, reservePaths, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, setAcceptFrom, waitForInvites } from "@j01n/sdk";
 import type { AgentIdentity, Workspace } from "@j01n/sdk";
 import { execFileSync } from "node:child_process";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
@@ -27,6 +27,8 @@ interface SavedSession {
   publicJwk?: JsonWebKey;
   peers?: Record<string, string>;
   participantToken?: string;
+  /** Saved at join (private key file) so short commands can open sealed content (kickoff, workspaces, reservations). */
+  joinSecret?: string;
   roomUrl?: string;
 }
 
@@ -85,7 +87,7 @@ function hasExplicitInvite(ref: string): boolean {
 
 const ACTIVE_COMMANDS = new Set([
   "send", "wait", "read", "inbox", "doctor", "board", "board_set", "board_patch", "board_delete",
-  "status", "webhook", "participants", "room_status", "transition", "host", "profile", "leave", "close",
+  "status", "webhook", "participants", "room_status", "transition", "host", "profile", "reserve", "release", "reservations", "leave", "close",
 ]);
 
 const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen", "herdr_agents", "invite_herdr"]);
@@ -115,6 +117,7 @@ async function openSession(invite: Invite, me: string): Promise<RoomClient> {
   const file = keyFilePath(invite.room_url, me);
   const saved: SavedSession = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   if (saved.roomUrl && saved.roomUrl !== invite.room_url) throw new Error("saved key belongs to another room URL");
+  if (invite.join_secret === "resume-only" && saved.joinSecret) invite = { ...invite, join_secret: saved.joinSecret };
   const crypto = await createSdkCryptoSession(me, saved.privateJwk, saved.publicJwk);
   const token = invite.participant_token ?? saved.participantToken;
 
@@ -131,7 +134,8 @@ async function openSession(invite: Invite, me: string): Promise<RoomClient> {
       throw err;
     }
   }
-  writeFileSync(file, JSON.stringify({ ...saved, ...(await crypto.exportKeyPair()), participantToken: client.invite.participant_token, roomUrl: invite.room_url }, null, 2), { mode: 0o600 });
+  const joinSecret = invite.join_secret !== "resume-only" ? invite.join_secret : saved.joinSecret;
+  writeFileSync(file, JSON.stringify({ ...saved, ...(await crypto.exportKeyPair()), participantToken: client.invite.participant_token, ...(joinSecret ? { joinSecret } : {}), roomUrl: invite.room_url }, null, 2), { mode: 0o600 });
   sessions.set(cacheKey, client);
   return client;
 }
@@ -187,13 +191,49 @@ function createBaseUrl(parsed: ParsedArgs): string {
 }
 
 /** Where this agent works: the current directory, its git remote (without credentials) and branch. */
+function git(...args: string[]): string | undefined {
+  try { return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined; } catch { return undefined; }
+}
+
 function detectWorkspace(): Workspace {
-  const git = (...args: string[]) => {
-    try { return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined; } catch { return undefined; }
-  };
   const repo = git("remote", "get-url", "origin")?.replace(/\/\/[^@/]+@/, "//");
   const branch = git("branch", "--show-current");
   return { path: process.cwd(), ...(repo ? { repo } : {}), ...(branch ? { branch } : {}) };
+}
+
+/** The repo this directory belongs to: its root, and its identity (remote without credentials, else the root). */
+export function currentRepo(): { root: string; repo: string } {
+  const root = git("rev-parse", "--show-toplevel") ?? process.cwd();
+  return { root, repo: git("remote", "get-url", "origin")?.replace(/\/\/[^@/]+@/, "//") ?? root };
+}
+
+/** A path as stored in reservations: relative to the repo root. */
+export function repoPath(root: string, path: string): string {
+  return relative(root, resolve(path)) || ".";
+}
+
+// ── File reservations: reserve <path>... [--reason text], release [path...], reservations ──
+function pathsAndReason(args: string[]): { paths: string[]; reason?: string } {
+  const at = args.indexOf("--reason");
+  const reason = at >= 0 ? args.slice(at + 1).join(" ") || undefined : undefined;
+  return { paths: at >= 0 ? args.slice(0, at) : args, reason };
+}
+
+async function handleReserve(parsed: ParsedArgs): Promise<string> {
+  const client = await getClient(parsed);
+  const { root, repo } = currentRepo();
+  const { paths, reason } = pathsAndReason(parsed.rest);
+  return JSON.stringify({ ok: true, reservations: await reservePaths(client, repo, paths.map((p) => repoPath(root, p)), reason) }, null, 2);
+}
+
+async function handleRelease(parsed: ParsedArgs): Promise<string> {
+  const client = await getClient(parsed);
+  const { root, repo } = currentRepo();
+  return JSON.stringify({ ok: true, reservations: await releasePaths(client, repo, parsed.rest.map((p) => repoPath(root, p))) }, null, 2);
+}
+
+async function handleReservations(parsed: ParsedArgs): Promise<string> {
+  return JSON.stringify({ reservations: await listReservations(await getClient(parsed)) }, null, 2);
 }
 
 async function handleJoin(parsed: ParsedArgs): Promise<string> {
@@ -265,7 +305,28 @@ async function handleSend(parsed: ParsedArgs): Promise<string> {
 async function waitAndRead(client: RoomClient, timeoutSeconds?: number, filter: Parameters<RoomClient["wait"]>[0] = {}): Promise<Record<string, unknown>> {
   const woke = await client.wait({ ...filter, timeoutSeconds });
   if (woke.timeout) return { timeout: true };
-  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), messages: await client.read() };
+  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), messages: withReplyHints(await client.read()) };
+}
+
+/** A ready command to answer a message in its thread (closes it if it asked for a reply). */
+export function replyHint(message: { id: string; from: string }): string {
+  return `/j01n send ${message.from} <text> --reply-to ${message.id}`;
+}
+
+/** Participants' messages get a `reply` command; system notices and key announcements do not. */
+export function withReplyHints<T extends { id: string; from: string; intent?: string }>(messages: T[]): Array<T & { reply?: string }> {
+  return messages.map((m) => (m.from === "system" || m.intent === "key.exchange" ? m : { ...m, reply: replyHint(m) }));
+}
+
+/** Clients for every room joined from this directory (live delivery, presence and reservation checks use them). */
+export async function activeRoomClients(): Promise<RoomClient[]> {
+  const clients: RoomClient[] = [];
+  for (const room of activeRooms()) {
+    try {
+      clients.push(await openSession(buildMinimalInvite(room.room_url, "resume-only"), room.participant_id));
+    } catch { /* a room that cannot be resumed (left, expired) is skipped */ }
+  }
+  return clients;
 }
 
 /** A JSON object is sent as is; anything else is sent as { text }. */
@@ -342,7 +403,7 @@ async function handleRead(parsed: ParsedArgs, all: boolean): Promise<string> {
   const invite = resolveInvite(parsed);
   const client = await openSession(invite, parsed.me);
   const messages = await client.read({ all, includeSelf: true });
-  return JSON.stringify(messages, null, 2);
+  return JSON.stringify(withReplyHints(messages), null, 2);
 }
 
 async function handleBoard(parsed: ParsedArgs): Promise<string> {
@@ -393,7 +454,8 @@ async function handleWebhook(parsed: ParsedArgs): Promise<string> {
 
 async function handleLeave(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
-  await client.leave();
+  // --release: also release your file reservations (leaving while holding some is refused).
+  await client.leave({ release: parsed.rest.includes("--release") });
   sessions.delete(`${client.invite.room_url}:${client.participantId}`);
   forgetRoom(client.invite, client.participantId);
   return JSON.stringify({ ok: true, left: true });
@@ -540,6 +602,9 @@ async function handleListen(parsed: ParsedArgs): Promise<string> {
 }
 
 const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
+  reserve: handleReserve,
+  release: handleRelease,
+  reservations: handleReservations,
   register: handleRegister,
   allow: handleAllow,
   invite: handleInviteAgent,

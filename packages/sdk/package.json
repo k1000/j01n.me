@@ -12,6 +12,7 @@
     "./session": "./src/session.ts",
     "./invite": "./src/invite.ts",
     "./errors": "./src/errors.ts",
-    "./agents": "./src/agents.ts"
+    "./agents": "./src/agents.ts",
+    "./reservations": "./src/reservations.ts"
   }
 }

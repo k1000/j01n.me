@@ -59,6 +59,40 @@ function checkIfVersion(invite: InviteState, key: string, ifVersion: number | un
   }, 409);
 }
 
+/**
+ * Board key holding file reservations: { "<id>": { by, since, sealed } }. `sealed` ({ repo, paths, reason }) is sealed
+ * with the room key by clients; only `by` is readable here, which is enough to release a participant's reservations.
+ */
+export const RESERVATIONS_KEY = "reservations";
+
+type Reservations = Record<string, { by?: string }>;
+
+function reservationsOf(entry: BoardEntry | undefined): Reservations {
+  return entry && entry.value && typeof entry.value === "object" && !Array.isArray(entry.value) ? entry.value as Reservations : {};
+}
+
+export function holdsReservations(invite: InviteState, participantId: string): boolean {
+  return Object.values(reservationsOf(invite.board[RESERVATIONS_KEY])).some((r) => r?.by === participantId);
+}
+
+/** The board without `participantId`'s reservations (written by `actorId`), and the change to announce. */
+export function withoutReservations(invite: InviteState, participantId: string, actorId: string) {
+  const entry = invite.board[RESERVATIONS_KEY];
+  const value = Object.fromEntries(Object.entries(reservationsOf(entry)).filter(([, r]) => r?.by !== participantId));
+  const next: BoardEntry = { value, updated_by: actorId, updated_at: new Date().toISOString(), version: entryVersion(entry) + 1 };
+  return { board: { ...invite.board, [RESERVATIONS_KEY]: next }, changes: { [RESERVATIONS_KEY]: { value, version: next.version! } } };
+}
+
+/** Chat text for a reservations change: who reserved or released how many, never the sealed contents. */
+export function reservationChangeText(updatedBy: string, before: BoardEntry | undefined, after: unknown): string {
+  const beforeIds = Object.keys(reservationsOf(before));
+  const afterIds = Object.keys(after && typeof after === "object" && !Array.isArray(after) ? after : {});
+  const added = afterIds.filter((id) => !beforeIds.includes(id)).length;
+  const removed = beforeIds.filter((id) => !afterIds.includes(id)).length;
+  const parts = [added ? `reserved files (${added})` : "", removed ? `released files (${removed})` : ""].filter(Boolean);
+  return `${updatedBy} ${parts.join(" and ") || "updated reservations"}`;
+}
+
 export function getBoard(invite: InviteState): Response {
   return json({
     board: invite.board,

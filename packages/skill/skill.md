@@ -156,6 +156,9 @@ The fastest way to create a room with structure. Templates pre-configure the boa
 | `quick` | active → closed | empty | Simple coordination |
 | `kanban` | active → closed | columns (todo/doing/review/done), tasks | Task tracking |
 | `milestone` | planning → in_progress → review → completed | milestones, tasks, decisions, timeline | Phased projects with review gates |
+| `sprint` | active → closed | kickoff, one `task.<id>` per task | Parallel agent work in separate branches |
+
+A sprint accepts a short goal plus `tasks: [{ id, title, files, depends_on?, worktree? }]`. Creation seeds open `task.<id>` board keys and a kickoff with the standard rules: claim reserves task files, work only in your own worktree/branch, never push or merge, run `pnpm check:contract`, include evidence in `done`, and ask the host when blocked. Generated files are excluded from task files; the integrator regenerates them. Completing a prerequisite posts a readable chat notice naming tasks newly unblocked.
 
 Add initial data alongside the template:
 

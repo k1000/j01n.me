@@ -58,6 +58,20 @@ describe("RoomEvents", () => {
     expect(changed).toContain('"to":"agent-b"');
   });
 
+  it("does not expose someone else's direct messages to a normal room viewer", async () => {
+    const events = new RoomEvents();
+    const response = events.subscribe("viewer", true, 0);
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("missing response body");
+    await reader.read(); // ready
+    events.notifyMessage(message({ id: "private", to: "agent-b" }), 1);
+    events.notifyMessage(message({ id: "public", to: "all" }), 2);
+    const visible = decoder.decode((await reader.read()).value);
+    await reader.cancel();
+    expect(visible).toContain('"id":"public"');
+    expect(visible).not.toContain('"id":"private"');
+  });
+
   it("does not echo self messages unless includeSelf is enabled", async () => {
     const events = new RoomEvents();
     const response = events.subscribe("agent-a", false, 0);

@@ -1,4 +1,5 @@
 import { escapeHtml } from "./format";
+import { LIVE_ROOM_SCRIPT, LIVE_ROOM_STYLES } from "./live-room-view";
 import { renderMarkdownPage, renderPage } from "./format-markdown";
 import { HOME_BODY, HOME_SCRIPT, HOME_STYLES } from "./home-page";
 import { homeBodyMarkdown, homeHeroMarkdown, inviteTemplate } from "./markdown-assets";
@@ -385,7 +386,7 @@ export function roomPageHtml(roomId: string): string {
   return renderPage(
     "j01n.me — room",
     `<main>
-<p class="room-nav"><a href="/">← j01n.me</a>${roomArcadeToggleHtml()}</p>
+<nav class="room-navigation" aria-label="Room navigation"><a href="/">← j01n.me</a><a class="button" data-room-view-link href="?view=live">Live view</a>${roomArcadeToggleHtml()}</nav>
 ${roomArcadeHtml()}
 <section data-room-root>
 <p class="fineprint">Loading room…</p>
@@ -489,6 +490,7 @@ function roomPageStyles(): string {
   .message-details summary::-webkit-details-marker { display: none; }
   .message-technical { margin: 0.35rem 0 0; font-size: 0.85rem; opacity: 0.72; white-space: pre-wrap; word-break: break-word; }
   [data-room-error] { color: var(--highlight); }
+  ${LIVE_ROOM_STYLES}
   `;
 }
 
@@ -497,6 +499,16 @@ function roomPageScript(roomId: string): string {
 (() => {
   const root = document.querySelector("[data-room-root]");
   const rid = ${JSON.stringify(roomId)};
+  const liveView = new URLSearchParams(window.location.search).get("view") === "live";
+  document.body.classList.toggle("live-room-page", liveView);
+  const viewLink = document.querySelector("[data-room-view-link]");
+  if (viewLink) {
+    const url = new URL(window.location.href);
+    if (liveView) url.searchParams.delete("view");
+    else url.searchParams.set("view", "live");
+    viewLink.href = url.pathname + url.search + url.hash;
+    viewLink.textContent = liveView ? "Standard view" : "Live view";
+  }
 
   let rawInvite = loadInvite(rid);
   // Support hash-fragment join URLs: https://j01n.me/room/<roomId>#<join_secret>
@@ -508,7 +520,8 @@ function roomPageScript(roomId: string): string {
         persistInvite(rid, JSON.parse(inviteFromHash));
         rawInvite = inviteFromHash;
         // Clear hash so it doesn't linger
-        history.replaceState(null, "", window.location.pathname);
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+        if (viewLink) viewLink.hash = "";
       } catch {}
     }
   }
@@ -625,7 +638,30 @@ function roomPageScript(roomId: string): string {
     if (response.ok) sessionStorage.setItem(flagKey, "1");
   }
 
-  async function refreshRoom() {
+  let refreshInFlight;
+  let refreshAgain = false;
+  function refreshRoom() {
+    if (refreshInFlight) {
+      refreshAgain = true;
+      return refreshInFlight;
+    }
+    refreshInFlight = (async () => {
+      let lastError;
+      do {
+        refreshAgain = false;
+        try {
+          await fetchRoomSnapshot();
+          lastError = undefined;
+        } catch (error) {
+          lastError = error;
+        }
+      } while (refreshAgain);
+      if (lastError) throw lastError;
+    })().finally(() => { refreshInFlight = undefined; });
+    return refreshInFlight;
+  }
+
+  async function fetchRoomSnapshot() {
     const headers = authHeaders();
     const [status, board, read] = await Promise.all([
       fetch(\`/r/\${encodeURIComponent(rid)}/status\`, { headers }),
@@ -659,6 +695,7 @@ function roomPageScript(roomId: string): string {
       next_seq: readBody.cursor,
       expires_at: statusBody.expires_at,
     }, invite);
+    if (roomEvents && roomEvents.readyState === EventSource.OPEN) updateConnectionStatus("connected");
   }
 
   function showBrowserNotification(body) {
@@ -683,11 +720,11 @@ function roomPageScript(roomId: string): string {
     const el = document.querySelector("[data-connection-status]");
     if (!el) return;
     el.className = "connection-status " + state;
-    const labels = { connected: "Connected", connecting: "Connecting", disconnected: "Disconnected" };
+    const labels = { connected: "Connected", connecting: "Connecting", disconnected: "Disconnected", stale: "Update failed" };
     el.innerHTML = '<span class="connection-dot"></span> ' + (labels[state] || state);
   }
 
-  function renderKanbanBoard(board, columnsVal) {
+  function renderKanbanBoard(board, columnsVal, headingTag = "h4") {
     const tasks = extractValue(board["tasks"]?.value) || {};
     const cols = ["todo", "doing", "review", "done"];
     return '<div class="kanban-board">' + cols.map(c => {
@@ -702,7 +739,7 @@ function roomPageScript(roomId: string): string {
           (owner ? '<span class="kanban-card-owner">' + owner + '</span>' : '') +
         '</div>';
       }).join("");
-      return '<div class="kanban-column"><h4 class="kanban-column-title">' + columnTitle + '</h4><div class="kanban-cards">' + cards + '</div></div>';
+      return '<div class="kanban-column"><' + headingTag + ' class="kanban-column-title">' + columnTitle + '</' + headingTag + '><div class="kanban-cards">' + cards + '</div></div>';
     }).join("") + '</div>';
   }
 
@@ -717,33 +754,63 @@ function roomPageScript(roomId: string): string {
     return v;
   }
 
+${LIVE_ROOM_SCRIPT}
+
   function subscribeRoomEvents() {
-    if (roomEvents || typeof EventSource === "undefined") return;
+    if (roomEvents) return;
+    if (typeof EventSource === "undefined") {
+      updateConnectionStatus("disconnected");
+      return;
+    }
     const eventUrl = \`/r/\${encodeURIComponent(rid)}/events?s=\${encodeURIComponent(authToken())}&participant_id=\${encodeURIComponent(participantId)}&include_self=true\`;
     updateConnectionStatus("connecting");
     roomEvents = new EventSource(eventUrl);
     roomEvents.addEventListener("open", () => {
       updateConnectionStatus("connected");
+      // SSE hints are not replayed; reload the retained snapshot after every reconnect.
       refreshRoom().catch(showRoomEventError);
     });
-    roomEvents.addEventListener("changed", () => {
+    roomEvents.addEventListener("message", (event) => {
+      recordRoomActivity(event, "message");
       unreadCount++;
       updateTitle();
       showBrowserNotification("New messages arrived.");
       refreshRoom().catch(showRoomEventError);
     });
-    roomEvents.addEventListener("board", () => refreshRoom().catch(showRoomEventError));
-    roomEvents.addEventListener("participant", () => refreshRoom().catch(showRoomEventError));
+    roomEvents.addEventListener("board", (event) => {
+      recordRoomActivity(event, "board");
+      refreshRoom().catch(showRoomEventError);
+    });
+    roomEvents.addEventListener("participant", (event) => {
+      recordRoomActivity(event, "participant");
+      refreshRoom().catch(showRoomEventError);
+    });
     roomEvents.addEventListener("error", () => {
+      updateConnectionStatus("connecting");
       if (roomEvents?.readyState === EventSource.CLOSED) {
-        updateConnectionStatus("disconnected");
         showRoomEventError(new Error("Room event stream closed"));
+        updateConnectionStatus("disconnected");
       }
     });
   }
 
   function showRoomEventError(error) {
-    if (root) root.insertAdjacentHTML("afterbegin", \`<p data-room-error>\${esc(error instanceof Error ? error.message : String(error))}</p>\`);
+    updateConnectionStatus("stale");
+    if (!root) return;
+    let notice = root.querySelector("[data-room-error]");
+    if (!notice) {
+      notice = document.createElement("p");
+      notice.setAttribute("data-room-error", "");
+      notice.setAttribute("role", "alert");
+      root.prepend(notice);
+    }
+    notice.textContent = "Could not refresh room: " + (error instanceof Error ? error.message : String(error)) + " ";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "button";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", () => refreshRoom().catch(showRoomEventError));
+    notice.append(retry);
   }
 
   async function renderReservations(board) {
@@ -782,6 +849,11 @@ function roomPageScript(roomId: string): string {
     if (isExpiredTimestamp(expiresAt)) {
       removeInvite(rid);
       root.innerHTML = \`<p data-room-error>Room expired. <a href="/">← back</a></p>\`;
+      return;
+    }
+
+    if (liveView) {
+      await renderLiveRoom(data);
       return;
     }
 
@@ -1125,7 +1197,8 @@ function roomPageScript(roomId: string): string {
   async function renderMessage(message, allMessages) {
     const clean = await cleanMessageBody(message, allMessages);
     const raw = typeof message.body === "object" ? JSON.stringify(message.body, null, 2) : String(message.body ?? "");
-    return \`<details class="message-entry message-details"><summary><div><span class="message-from">\${esc(message.from)}</span> <span class="message-time">\${esc(new Date(message.created_at).toLocaleString())}</span></div><div class="message-body">\${esc(clean)}</div></summary><pre class="message-technical">\${esc(raw)}</pre></details>\`;
+    const recipient = Array.isArray(message.to) ? message.to.join(", ") : message.to || "all";
+    return \`<details class="message-entry message-details" data-message-id="\${escAttr(message.id || "")}"><summary><div><span class="message-from">\${esc(message.from)}</span> <span class="message-time">\${esc(new Date(message.created_at).toLocaleString())}</span></div><span class="message-route">to \${esc(recipient)} · \${esc(message.intent || "message")} · #\${esc(message.seq ?? "—")}</span><div class="message-body">\${esc(clean)}</div></summary><pre class="message-technical">\${esc(raw)}</pre></details>\`;
   }
 
   async function cleanMessageBody(message, allMessages) {

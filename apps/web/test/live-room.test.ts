@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { roomPageHtml } from "../src/html";
+import { LIVE_ROOM_STYLES } from "../src/live-room-view";
 
 function browserFunctions(start: string, end: string, context: Record<string, unknown>, returned: string) {
   const html = roomPageHtml("room-1");
@@ -13,6 +14,15 @@ function browserFunctions(start: string, end: string, context: Record<string, un
 const escape = (value: unknown) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;");
 
 describe("optional live room view", () => {
+  it("follows the charcoal-and-cream monospace reference without rounded surfaces or shadows", () => {
+    expect(LIVE_ROOM_STYLES).toContain('--live-bg: #121212');
+    expect(LIVE_ROOM_STYLES).toContain('--live-accent: #ffebc4');
+    expect(LIVE_ROOM_STYLES).toContain('font-family: var(--live-mono)');
+    expect([...LIVE_ROOM_STYLES.matchAll(/border-radius:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['0']);
+    expect([...LIVE_ROOM_STYLES.matchAll(/box-shadow:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['none']);
+    expect(LIVE_ROOM_STYLES).not.toContain('prefers-color-scheme');
+  });
+
   it("offers a query-selected live view without replacing the standard page or exposing all private traffic", () => {
     const html = roomPageHtml("room-1");
     expect(html).toContain('data-room-view-link');

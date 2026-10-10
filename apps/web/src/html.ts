@@ -1019,6 +1019,10 @@ function roomPageScript(roomId: string): string {
   async function cleanMessageBody(message, allMessages) {
     if (message.intent === "participant.joined") return String(message.body?.participant_id || message.from) + " joined the room.";
     if (message.intent === "key.exchange") return String(message.from) + " announced an encryption key.";
+    if (message.intent === "kickoff" && typeof message.body?.encrypted_payload === "string" && message.body.encrypted_payload.startsWith("jsk1:")) {
+      try { return formatMessageValue(await openSealedKickoff(message.body.encrypted_payload)); }
+      catch { return "Encrypted message."; }
+    }
     if (message.body?.encrypted === true) {
       const decrypted = await decryptMessageBody(message, allMessages);
       if (decrypted.ok) return formatMessageValue(decrypted.value);
@@ -1036,6 +1040,16 @@ function roomPageScript(roomId: string): string {
     return typeof value === "object" ? JSON.stringify(value, null, 2) : String(value ?? "");
   }
 
+  async function openSealedKickoff(payload) {
+    const [iv, ciphertext] = payload.slice(5).split(".");
+    const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(joinSecret), "HKDF", false, ["deriveKey"]);
+    const key = await crypto.subtle.deriveKey(
+      { name: "HKDF", hash: "SHA-256", salt: new TextEncoder().encode(rid), info: new TextEncoder().encode("j01n.me kickoff v1") },
+      material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"],
+    );
+    return JSON.parse(await decryptWithKey(key, ciphertext, iv));
+  }
+
   async function decryptMessageBody(message, allMessages) {
     if (!hostKeyPair || !message.body?.encrypted) return { ok: false };
     try {
@@ -1046,9 +1060,10 @@ function roomPageScript(roomId: string): string {
         const shared = await deriveSharedKey(hostKeyPair.privateKey, await importRawPublicKey(senderPublic));
         bodyKey = await unwrapMessageKey(message.body.keys[participantId], shared);
       } else if (!message.body.keys) {
-        const senderPublic = publicKeyFor(message.from, allMessages);
-        if (!senderPublic) return { ok: false };
-        bodyKey = await deriveSharedKey(hostKeyPair.privateKey, await importRawPublicKey(senderPublic));
+        const peerId = message.from === participantId ? (Array.isArray(message.to) ? message.to[0] : message.to) : message.from;
+        const peerPublic = publicKeyFor(peerId, allMessages);
+        if (!peerPublic) return { ok: false };
+        bodyKey = await deriveSharedKey(hostKeyPair.privateKey, await importRawPublicKey(peerPublic));
       } else {
         return { ok: false };
       }

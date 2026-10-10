@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { sealKickoff } from "@j01n/sdk/crypto";
+import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { cliMarkdown, orchestrationMarkdown, piMarkdown, sdkMarkdown, securityMarkdown } from "../src/markdown-assets";
 import app from "../src/index";
 import { prefersMarkdown } from "../src/format";
@@ -123,7 +125,50 @@ describe("homePage", () => {
   });
 });
 
+async function roomPageDecryptors(joinSecret: string) {
+  const session = await createSdkCryptoSession("viewer");
+  const ownPublic = (await session.announceKeyBody()).public_key;
+  const { privateJwk, publicJwk } = await session.exportKeyPair();
+  const keyPair = {
+    privateKey: await crypto.subtle.importKey("jwk", privateJwk, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]),
+    publicKey: await crypto.subtle.importKey("jwk", publicJwk, { name: "ECDH", namedCurve: "P-256" }, true, []),
+  };
+  const html = roomPageHtml("room-1");
+  const start = html.indexOf("  async function renderMessage(");
+  const end = html.indexOf("  function isExpiredTimestamp(", start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const api = new Function("hostKeyPair", "hostPublicKey", "participantId", "joinSecret", "rid", "crypto",
+    html.slice(start, end) + "return { cleanMessageBody, decryptMessageBody };") as (
+    keyPair: CryptoKeyPair, ownPublic: string, participantId: string, joinSecret: string, roomId: string, crypto: Crypto,
+  ) => {
+    cleanMessageBody(message: unknown, messages: unknown[]): Promise<string>;
+    decryptMessageBody(message: unknown, messages: unknown[]): Promise<{ ok: boolean; value?: unknown }>;
+  };
+  return { session, ...api(keyPair, ownPublic, "viewer", joinSecret, "room-1", crypto) };
+}
+
 describe("room page", () => {
+  it("opens a sealed kickoff with the invite secret, but not with a wrong secret", async () => {
+    const body = await sealKickoff({ text: "Review the tasks" }, "correct-secret", "room-1");
+    const message = { from: "host", intent: "kickoff", body };
+    const valid = await roomPageDecryptors("correct-secret");
+    const invalid = await roomPageDecryptors("wrong-secret");
+    expect(await valid.cleanMessageBody(message, [])).toBe("Review the tasks");
+    expect(await invalid.cleanMessageBody(message, [])).toBe("Encrypted message.");
+  });
+
+  it("decrypts an outgoing direct message with the recipient's public key", async () => {
+    const viewer = await roomPageDecryptors("secret");
+    const recipient = await createSdkCryptoSession("peer");
+    const peerPublic = (await recipient.announceKeyBody()).public_key;
+    await viewer.session.processPeerKeys([{ id: "peer", public_key: peerPublic }]);
+    const body = await viewer.session.encryptForSend({ text: "My direct message" }, "peer");
+    const message = { from: "viewer", to: "peer", body };
+    const keys = [{ from: "peer", intent: "key.exchange", body: { public_key: peerPublic } }];
+    expect(await viewer.decryptMessageBody(message, keys)).toEqual({ ok: true, value: { text: "My direct message" } });
+  });
+
   it("joins/read rooms without using host-only export", () => {
     const html = roomPageHtml("room-1");
 

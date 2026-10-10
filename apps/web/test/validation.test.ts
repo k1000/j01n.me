@@ -5,6 +5,7 @@ import {
   normalizeMaxParticipants,
   normalizeModel,
   normalizeParticipantId,
+  normalizeProvider,
   normalizeRoomId,
   normalizeRoomName,
   normalizeSkills,
@@ -149,6 +150,15 @@ describe("normalizeStatus / normalizeModel", () => {
 
   it("returns 400 for non-string model", () => {
     expect(normalizeModel(true)).toBeInstanceOf(Response);
+  });
+
+  it("returns trimmed provider or undefined for empty", () => {
+    expect(normalizeProvider("  anthropic ")).toBe("anthropic");
+    expect(normalizeProvider("   ")).toBeUndefined();
+  });
+
+  it("returns 400 for non-string provider", () => {
+    expect(normalizeProvider(42)).toBeInstanceOf(Response);
   });
 });
 

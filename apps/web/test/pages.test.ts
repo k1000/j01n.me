@@ -246,6 +246,12 @@ describe("room page", () => {
     expect(await render({ reservations: { value: { one: { by: "alice", since: "now", sealed: "broken" } } } })).not.toContain("alice");
   });
 
+  it("renders each participant's announced model as provider/model", () => {
+    const html = roomPageHtml("room-1");
+    expect(html).toContain('const running = [p.provider, p.model].filter(Boolean).join("/")');
+    expect(html).toContain('<span class="participant-model">');
+  });
+
   it("keeps the recipient list current and excludes the sender", () => {
     const html = roomPageHtml("room-1");
 

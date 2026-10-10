@@ -139,7 +139,7 @@ export const LIVE_ROOM_SCRIPT = `
     const peopleHtml = people.map(p => {
       const state = p.left_at ? "left" : p.state || "free";
       const label = state === "left" ? "Left" : state === "busy" ? "Busy" : state === "free" ? "Available" : state;
-      return '<article class="live-person"><div><header><strong>' + esc(p.id) + '</strong><span class="live-state" data-state="' + escAttr(state) + '">' + esc(label) + '</span></header><p>' + esc(p.status || "No status shared") + '</p><small>' + esc(p.model || (p.id === participantId ? "This browser · you" : "Agent")) + '</small></div></article>';
+      return '<article class="live-person"><div><header><strong>' + esc(p.id) + '</strong><span class="live-state" data-state="' + escAttr(state) + '">' + esc(label) + '</span></header><p>' + esc(p.status || "No status shared") + '</p><small>' + esc([p.provider, p.model].filter(Boolean).join("/") || (p.id === participantId ? "This browser · you" : "Agent")) + '</small></div></article>';
     }).join("");
     const messagesHtml = (await Promise.all(messages.map(m => renderMessage(m, messages)))).join("");
     const activityHtml = liveActivity.map(item => '<li><span>' + esc(item.text) + '</span><time>' + esc(item.time) + '</time></li>').join("");

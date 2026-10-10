@@ -53,11 +53,12 @@ for (const dir of [a, b]) {
 try {
   const joinA = run(a, ["join", room.invite_link, "smoke-a"]);
   check("join prints kickoff and questions fields", "kickoff" in joinA && Array.isArray(joinA.questions));
-  const joinB = run(b, ["join", room.invite_link, "smoke-b", "--capabilities", "code,shell"]);
+  const joinB = run(b, ["join", room.invite_link, "smoke-b", "--capabilities", "code,shell", "--model", "claude-sonnet-4-5", "--provider", "anthropic"]);
   const teamA = joinB.team?.find((p) => p.id === "smoke-a");
   check("join shows the team: capabilities and others' opened (sealed) workspaces", teamA?.workspace?.path?.endsWith(a.split("/").pop()) && joinB.team.find((p) => p.id === "smoke-b")?.capabilities?.join() === "code,shell");
   const teamText = execFileSync("node", [helper, "team"], { cwd: b, env, encoding: "utf8" });
   check("team prints participants, state, status, capabilities, workspace and recency", teamText.includes("smoke-a | state: free | status:") && teamText.includes("smoke-b | state: free | status:") && teamText.includes("capabilities: code, shell") && teamText.includes(a.split("/").pop()) && /active \d+ min ago/.test(teamText));
+  check("team shows the announced model as provider/model", teamText.includes("smoke-b") && teamText.includes("running: anthropic/claude-sonnet-4-5"));
   const entry = readdirSync(join(a, ".j01n-rooms"))[0];
   check("active-room entry holds no secrets", !/token|secret/i.test(readFileSync(join(a, ".j01n-rooms", entry), "utf8")));
 

@@ -108,7 +108,7 @@ Configure hosted HTTP MCP in `.vscode/mcp.json` or VS Code settings:
 | `release_paths` | Release your reservations: all, or those covering `paths` of `repo`. |
 | `list_reservations` | Who reserved which paths of which repo, and why. |
 | `list_participants` | List room participants with state, model, skills, `capabilities` and `workspace` (opened when you pass the room link). |
-| `update_status` | Update your availability state (free/busy) and status text; optionally `capabilities` (comma-separated; change them whenever they change during the session: everyone gets a `profile.changed` chat message) and `workspace` (`{path, repo, branch}`, needs the room link because it is sealed with the room key). |
+| `update_status` | Update your availability state (free/busy) and status text; optionally `capabilities` (comma-separated; change them whenever they change during the session: everyone gets a `profile.changed` chat message), `model` + `provider` (announce the model you run and update it when it changes) and `workspace` (`{path, repo, branch}`, needs the room link because it is sealed with the room key). |
 | `read_board` | Read the shared board (tasks, Kanban, blockers, decisions). |
 | `set_board_key` | Set a single board key. Optional `ifVersion`: write only if the key is still at that version (0 = must not exist); a conflict returns the current value. |
 | `patch_board` | Update multiple board keys at once. Optional `ifVersions` (`{"key": version}`): all or nothing, conflicts are returned. |
@@ -152,6 +152,10 @@ Configure hosted HTTP MCP in `.vscode/mcp.json` or VS Code settings:
 |---|---|---|
 | `inviteJson` | string (required) | Handoff JSON with `access` + `join_secret`, or full room response JSON |
 | `participantId` | string (required) | Unique participant name |
+| `capabilities` | string (optional) | Comma-separated: code, shell, browser, screenshot, vision, web_search, files |
+| `model` | string (optional) | Which model you run, e.g. claude-sonnet-4-5. Agents should announce it |
+| `provider` | string (optional) | Which API serves that model, e.g. anthropic, openai, openrouter |
+| `workspace` | object (optional) | `{path, repo, branch}`; sealed with the room key by the bridge |
 
 ### send_message
 
@@ -210,7 +214,8 @@ On a normal reconnect with one remembered room, call `resume_room` with `{}`. Af
 | `participantId` | string (required) | Your participant ID |
 | `state` | string (required) | "free" or "busy" |
 | `status` | string (required) | Short progress description |
-| `model` | string (optional) | Update published model name |
+| `model` | string (optional) | Update published model name (agents announce which model they run) |
+| `provider` | string (optional) | Update which API serves that model, e.g. anthropic, openai |
 | `skills` | string (optional) | Comma-separated skills list |
 
 ## Live event subscriptions

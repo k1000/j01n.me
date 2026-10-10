@@ -1,6 +1,6 @@
 import { json, type GuardResult } from "../format";
 import type { InviteState, Participant } from "../types";
-import { normalizeState, normalizeStatus, normalizeModel, normalizeSkills, normalizeCapabilities } from "../validation";
+import { normalizeState, normalizeStatus, normalizeModel, normalizeProvider, normalizeSkills, normalizeCapabilities } from "../validation";
 import { hashJoinSecret, randomBase64Url } from "@j01n/sdk/crypto";
 
 /** Participant as shown to others: drops the token verifier hash and the private webhook URL. */
@@ -16,6 +16,7 @@ interface ParticipantProfile {
   state?: "free" | "busy";
   status?: string;
   model?: string;
+  provider?: string;
   skills?: string[];
   capabilities?: string[];
   /** Sealed workspace; null clears it. */
@@ -58,6 +59,8 @@ export function parseParticipantProfile(body: Record<string, unknown>): Particip
   if (status instanceof Response) return status;
   const model = normalizeModel(body.model);
   if (model instanceof Response) return model;
+  const provider = normalizeProvider(body.provider);
+  if (provider instanceof Response) return provider;
   const skills = normalizeSkills(body.skills);
   if (skills instanceof Response) return skills;
   const capabilities = normalizeCapabilities(body.capabilities);
@@ -67,7 +70,7 @@ export function parseParticipantProfile(body: Record<string, unknown>): Particip
   const public_key = typeof body.public_key === "string" ? body.public_key.slice(0, 256) : undefined;
   const webhook_url = normalizeWebhookUrl(body.webhook_url);
   if (webhook_url instanceof Response) return webhook_url;
-  return { state, status, model, skills, capabilities, workspace, public_key, webhook_url };
+  return { state, status, model, provider, skills, capabilities, workspace, public_key, webhook_url };
 }
 
 /** The workspace must arrive sealed with the room key, so the server never stores a plaintext path or repo. */
@@ -101,6 +104,7 @@ export function createJoinedParticipant(participantId: string, profile: Particip
     status: "joined",
     status_updated_at: now,
     ...(profile.model ? { model: profile.model } : {}),
+    ...(profile.provider ? { provider: profile.provider } : {}),
     ...(profile.skills ? { skills: profile.skills } : {}),
     ...(profile.capabilities ? { capabilities: profile.capabilities } : {}),
     ...(profile.workspace ? { workspace: profile.workspace } : {}),
@@ -138,6 +142,7 @@ function updateParticipantProfile(participant: Participant, profile: Participant
     status_updated_at: now,
     last_seen_at: now,
     ...(profile.model !== undefined ? { model: profile.model } : {}),
+    ...(profile.provider !== undefined ? { provider: profile.provider } : {}),
     ...(profile.skills !== undefined ? { skills: profile.skills } : {}),
     ...(profile.capabilities !== undefined ? { capabilities: profile.capabilities } : {}),
     ...(profile.public_key !== undefined ? { public_key: profile.public_key } : {}),

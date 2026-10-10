@@ -18,7 +18,7 @@
    Asks:     node .j01n/j01n.js send <to> Can you review? --expect-reply   /   send <from> done --reply-to <message id>
    Agents:   register <me> [allowed,agents]  |  invite <me> <to> <room link>  |  listen <me>   (invite agents by name)
    Profile:  join <link> <me> --capabilities code,shell,browser,screenshot,vision   (workspace: cwd + git remote/branch, sealed; --no-workspace skips)
-             later: profile --capabilities code,browser  |  profile <link> <me> --workspace (re-detect)  |  profile --no-workspace
+             later: profile --capabilities code,browser --model gpt-5  |  profile <link> <me> --workspace (re-detect)  |  profile --no-workspace
    Reserve:  node .j01n/j01n.js reserve src/auth/ --reason refactoring auth  |  release [path...]  |  reservations  |  leave [--release]
    Host:     node .j01n/j01n.js host <participant>   (host only: hand the host role over; the host cannot leave others without one)
    Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, profile, host, reserve, release, reservations, leave, register, allow, invite, invites, listen, team
@@ -256,6 +256,19 @@ function isSealedKickoff(body) { return typeof body?.encrypted_payload === 'stri
 async function openKickoff(body) { const [iv, ciphertext] = body.encrypted_payload.slice(5).split('.'); return JSON.parse(await aesDecrypt(await kickoffKey(), ciphertext, iv)); }
 // Workspaces (where each agent works) are sealed with the same room key, so the server only stores ciphertext.
 async function sealJson(value) { const { iv, ciphertext } = await aesEncrypt(await kickoffKey(), JSON.stringify(value)); return 'jsk1:' + iv + '.' + ciphertext; }
+// Which model this agent runs, and under which provider. Zero-config announcement:
+// explicit --model/--provider flags, then J01N_MODEL/J01N_PROVIDER, then the harness's own env conventions.
+function announceModel(rest) {
+  const ev = process.env;
+  const harnessModel = ev.ANTHROPIC_MODEL || ev.OPENAI_MODEL || ev.PI_MODEL || ev.OPENCLAW_MODEL;
+  const mi = rest.indexOf('--model');
+  const pi = rest.indexOf('--provider');
+  const fromFlag = (name) => { const i = rest.indexOf(name); return i >= 0 && rest[i + 1] && !rest[i + 1].startsWith('--') ? rest[i + 1] : undefined; };
+  const model = fromFlag('--model') || ev.J01N_MODEL || harnessModel;
+  const provider = fromFlag('--provider') || ev.J01N_PROVIDER;
+  return { ...(model ? { model } : {}), ...(provider ? { provider } : {}) };
+}
+
 async function detectWorkspace() {
   const { execFileSync } = await import('node:child_process');
   const git = (...args) => { try { return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined; } catch { return undefined; } };
@@ -468,11 +481,18 @@ const COMMANDS = {
     const capIndex = rest.indexOf('--capabilities');
     const announced = {};
     if (capIndex >= 0) announced.capabilities = String(rest[capIndex + 1] || '').split(',').map((c) => c.trim()).filter(Boolean);
-    if (!rest.includes('--no-workspace')) {
-      const workspace = await detectWorkspace();
-      // Re-joining from the same place announces nothing new (every seal differs, so compare the opened values).
+    // An agent says which model it runs; compare with our own row first so re-joins stay quiet.
+    const wantModel = announceModel(rest);
+    if (Object.keys(wantModel).length || !rest.includes('--no-workspace')) {
       const mine = (await team(state)).find((p) => p.id === me);
-      if (JSON.stringify(mine?.workspace) !== JSON.stringify(workspace)) announced.workspace = await sealJson(workspace);
+      for (const field of ['model', 'provider']) {
+        if (wantModel[field] && mine?.[field] !== wantModel[field]) announced[field] = wantModel[field];
+      }
+      if (!rest.includes('--no-workspace')) {
+        const workspace = await detectWorkspace();
+        // Re-joining from the same place announces nothing new (every seal differs, so compare the opened values).
+        if (JSON.stringify(mine?.workspace) !== JSON.stringify(workspace)) announced.workspace = await sealJson(workspace);
+      }
     }
     if (Object.keys(announced).length) {
       const p = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PATCH', headers: { ...tokenHeaders(state), 'content-type': 'application/json' }, body: JSON.stringify(announced) });
@@ -525,6 +545,7 @@ const COMMANDS = {
         'state: ' + p.state,
         'status: ' + (p.status || '—'),
         'capabilities: ' + (p.capabilities.length ? p.capabilities.join(', ') : 'none'),
+        ...(p.model ? ['running: ' + [p.provider, p.model].filter(Boolean).join('/')] : []),
         'workspace: ' + (p.workspace ? JSON.stringify(p.workspace) : 'not shared'),
         'active ' + (minutes === null || !Number.isFinite(minutes) ? 'unknown' : minutes + ' min ago'),
       ].join(' | '));
@@ -583,6 +604,7 @@ const COMMANDS = {
     const body = {};
     const i = rest.indexOf('--capabilities');
     if (i >= 0) body.capabilities = (rest[i + 1] && !rest[i + 1].startsWith('--') ? rest[i + 1] : '').split(',').map((c) => c.trim()).filter(Boolean);
+    Object.assign(body, announceModel(rest));
     if (rest.includes('--no-workspace')) body.workspace = null;
     else if (rest.includes('--workspace')) {
       if (joinSecret === 'resume-only') die('re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace');

@@ -350,6 +350,25 @@ describe("room lifecycle", () => {
       expect(((await waiting).message as RoomMessage).from).toBe("agent-b");
     });
 
+    it("kind= wakes only for matching message kinds, both pending and live", async () => {
+      await joinParticipant(fix, "agent-a");
+      await joinParticipant(fix, "agent-b");
+      const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-a");
+      const send = (kind: string) => roomRequest(fix, "/", {
+        method: "POST", headers: { ...participantAuthHeaders(fix, "agent-b"), "content-type": "application/json" },
+        body: JSON.stringify({ to: "agent-a", kind, body: encryptedPayload({ text: kind }) }),
+      });
+      await send("finding");
+      expect(await wait("agent-a", `after=${cursor}&timeout=1&kind=question,blocker`)).toMatchObject({ timeout: true });
+      const waiting = wait("agent-a", `after=${cursor}&timeout=5&kind=question,blocker`);
+      await new Promise((r) => setTimeout(r, 50));
+      await send("decision");
+      await send("question");
+      expect((await waiting).message).toMatchObject({ kind: "question", expects_reply: { due_at: expect.any(String) } });
+      expect((await wait("agent-a", `after=${cursor}&timeout=5&kind=question`))).toMatchObject({ event: "message", pending: true });
+      expect((await wait("agent-a", `after=${cursor}&timeout=1&kind=handoff`))).toMatchObject({ timeout: true });
+    });
+
     it("board= wakes only on board changes to matching keys, live and pending", async () => {
       await joinParticipant(fix, "agent-a");
       await joinParticipant(fix, "agent-b");

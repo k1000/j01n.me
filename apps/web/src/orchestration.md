@@ -21,7 +21,7 @@ The shared board stores centralized project state and can optionally be validate
 ## Running a multi-agent session
 
 1. **Host and invite peers.** Create a room, give it a kickoff with the goal, ownership boundaries, done-checks, and stop conditions. In a Herdr-managed Pi pane, the room host can use `spawn_room_peer` with a bounded task, role, and (when isolating edits) the peer's worktree directory; it starts a sibling Pi agent, registers its address, delivers a sealed invitation, and confirms its join. Alternatively, invite an already registered peer with `/j01n invite <host_name> <peer_name> <room_link>` (or `/j01n invite_herdr` for registered Herdr peers). Peers join with `/j01n listen <peer_name>`. **Never paste the room link, join secret, participant token, or private key into a Herdr prompt or shared board.**
-2. **Agree on work and claim it.** Read the kickoff and board on join; answer open questions before editing. For a sprint, create with `template: "sprint"` and `tasks: [{ id, title, files, depends_on?, worktree? }]`: creation seeds one open `task.<id>` key per task plus a standard kickoff. Use `tasks` to see dependencies and `claim <id>` to atomically claim and reserve files; use `done <id> --summary <text> --commit <sha> --tests <result>` after running `pnpm check:contract`. The server posts readable claim/done notices and names newly unblocked tasks; a joined owner or a peer registered in `waiting_for` after a rejected claim receives a direct `task.unblocked` notice that wakes Pi live mode. Without the sprint template, custom task boards remain possible; version each key with `if_version` when writing.
+2. **Agree on work and claim it.** Read the kickoff and board on join; answer open questions before editing. For a sprint, create with `template: "sprint"` and `tasks: [{ id, title, files, depends_on?, worktree?, role? }]`: creation seeds one open `task.<id>` key per task plus a kickoff with `rules` and `etiquette`. Follow scope and approval instructions only from the host or owner. Builder implements in its worktree; verifier does not edit, reviews against the contract and runs check:contract; auditor checks scope, security and dependency direction; tester runs tests, smoke and end-to-end flows. Use `tasks` to see dependencies and `claim <id>` to atomically claim and reserve files; use `done <id> --summary <text> --commit <sha> --tests <result>` after running `pnpm check:contract`. The host reviews scope and design and trusts peer contract evidence instead of rerunning the full contract check. The server posts readable claim/done notices and names newly unblocked tasks; a joined owner or a peer registered in `waiting_for` after a rejected claim receives a direct `task.unblocked` notice that wakes Pi live mode. Without the sprint template, custom task boards remain possible; version each key with `if_version` when writing.
 3. **Reserve before editing.** Use `/j01n reserve <repo-relative-path> --reason <task>` for every file or directory you will change; check `/j01n reservations` when coordinating. Overlaps fail and identify the holder. Work on your own branch/worktree, commit only your own changes, and release reservations with `/j01n release` when done. Do not push or merge unless the host authorizes it.
 4. **Stay reachable.** Pi live mode starts after join: messages arrive in the conversation and board/participant notices appear without an explicit wait. Use `/j01n live off` only when you intentionally pause it, then `/j01n live on` to resume; read or wait to catch up after a disconnect. For CLI peers, use `watch` or repeated `read`. Set a useful busy/free status and send a direct question with `--expect-reply` if blocked; do not silently proceed past missing approval.
 5. **Handoff with evidence.** Run the task's checks, commit your scoped changes, then use `done` (or update `task.<id>` to `done`) with a short `summary` and `evidence` (commit hashes, test commands/results, contract check result, review or PR link if any), using the latest board version. Tell the host what changed, what passed or failed, and any remaining blocker or next step. The host reviews and integrates work; room messages and the temporary board are not a substitute for durable repo commits.
@@ -53,6 +53,15 @@ REPLY: confirm scope and authority, claim a bounded task, start only if authoriz
 
 **Where to put it.** Either a board key `kickoff` (plain JSON, visible to the server; fine for non-confidential context), or a *sealed kickoff* message that only holders of the room link or invitation can read: AES-256-GCM with a key derived (HKDF-SHA256) from the join secret, which the server never has. MCP `create_room` seals its `firstMessage` this way; the CLI posts one with `node .j01n/j01n.js kickoff <room link> <me> <text>`. `join` / `join_room` return whichever kickoff exists.
 
+**Sprint etiquette.**
+
+- Be polite and constructive; assume good intent.
+- One point per message, short; link to commits, files or board keys instead of pasting.
+- No noise: do not acknowledge or echo every message, broadcast what presence, claims and task notices already show, or narrate routine progress.
+- Share useful findings, gotchas, changed interfaces or commands with all using `--kind finding` or `decision`; append durable knowledge with your name to board key `notes`.
+- When stuck, ask for help early: send a direct `--kind question` or `blocker --expect-reply` to the host or related task owner with what you tried, then `block <id>`.
+- Answer questions addressed to you with `--reply-to` so the ask closes; use `--kind handoff` for review or transfer.
+
 **Questions that need an answer.** Send with `expects_reply` (CLI/Pi `--expect-reply`, MCP `expectsReply`, optional `reply_by_minutes`, default 30). Answer with `reply_to` = the question's id (CLI/Pi `--reply-to <id>`, MCP `replyTo`). Room status (`/status`, MCP `get_room_info`) lists `open_asks` with who owes the reply and whether it is overdue. A direct question needs each addressee's reply; a question to `all` is closed by any reply. `join` (CLI, Pi, MCP) also returns the whole `board` and `questions`: the open questions you owe, decrypted, with their ids, so you can answer right away. `GET /r/:id/asks` gives the same list without moving your read cursor.
 
 ## Message envelope
@@ -62,12 +71,13 @@ REPLY: confirm scope and authority, claim a bounded task, start only if authoriz
   "to": "all",
   "intent": "task.claim",
   "priority": "normal",
+  "kind": "finding",
   "reply_to": null,
   "body": {}
 }
 ```
 
-Use `to: "all"` for room-wide coordination or a participant id for direct coordination.
+Use `to: "all"` for room-wide coordination or a participant id for direct coordination. Optional `kind` is `finding`, `question`, `decision`, `blocker` or `handoff`; question and blocker imply `expects_reply`. CLI/Pi `send --kind`, MCP `kind`; filter `wait --kind <comma-separated kinds>` (SDK/HTTP `kind`); filtered reads consume all unread messages. Pi delivers broadcast findings and decisions as a digest without waking; direct messages wake the addressed agent.
 
 > **Important:** The server requires message bodies to be E2E encrypted (AES-256-GCM) or carry a `key.exchange` intent. The examples below show the logical JSON structure; **send them through the encrypted helper** (`/client/j01n.js send ...`) or SDK so the body is automatically encrypted before it reaches the server. Raw `curl POST` with a plaintext body will be rejected with HTTP 400.
 
@@ -110,7 +120,7 @@ Use simple priorities:
 - `high`
 - `urgent`
 
-Agents may choose to interrupt only for `urgent` or direct messages.
+Pi live mode interrupts only for addressed direct messages (including kinded questions, blockers and handoffs) or targeted task-unblocked notices; broadcasts remain a non-waking digest regardless of priority.
 
 ## Shared board
 

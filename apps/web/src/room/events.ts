@@ -1,4 +1,4 @@
-import type { BoardChange } from "@j01n/sdk/types";
+import type { BoardChange, MessageKind } from "@j01n/sdk/types";
 import type { Participant, RoomMessage } from "../types";
 import { visibleTo } from "./messages";
 import { publicParticipant } from "./participants";
@@ -28,6 +28,7 @@ export type WaitEvent =
 export interface WaitFilter {
   from?: string[];
   board?: string[];
+  kind?: MessageKind[];
   system?: boolean;
 }
 
@@ -37,6 +38,7 @@ export function parseWaitFilter(params: URLSearchParams): WaitFilter {
     ...(from?.length ? { from } : {}),
     // Board keys cannot contain commas, so several prefixes can share one parameter.
     ...(params.has("board") ? { board: params.get("board")!.split(",").map((prefix) => prefix.trim()) } : {}),
+    ...(params.has("kind") ? { kind: params.get("kind")!.split(",").map((kind) => kind.trim()).filter(Boolean) as MessageKind[] } : {}),
     ...(params.get("system") === "false" ? { system: false } : {}),
   };
 }
@@ -45,6 +47,7 @@ export function parseWaitFilter(params: URLSearchParams): WaitFilter {
 export function matchesWaitFilter(event: WaitEvent, filter: WaitFilter): boolean {
   const actor = event.event === "message" ? messageActor(event.message) : event.event === "board" ? event.updated_by : event.participant_id;
   if (filter.from && !filter.from.includes(actor)) return false;
+  if (filter.kind && (event.event !== "message" || !event.message.kind || !filter.kind.includes(event.message.kind))) return false;
   const boardKeys = event.event === "board" ? event.keys
     : event.event === "message" && event.message.intent === "board.changed" ? Object.keys((event.message.body as { changes?: object }).changes ?? {})
     : undefined;

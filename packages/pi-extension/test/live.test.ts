@@ -31,7 +31,7 @@ describe("pi live mode", () => {
     process.chdir(originalCwd);
   });
 
-  it("injects one batch: participants wake the agent with a reply command, system notices do not, own and key messages are skipped", async () => {
+  it("digests broadcasts without waking, wakes direct messages, and skips own/key messages", async () => {
     const { formatBatch } = await import("../live");
     const batch = formatBatch(me, [
       message("claude-code", "Can you review?", { expects_reply: { due_at: "x" } } as never),
@@ -39,8 +39,14 @@ describe("pi live mode", () => {
       message("pi-agent", "my own"),
       message("claude-code", "", { intent: "key.exchange" }),
     ])!;
-    expect(batch.wake).toBe(true);
+    expect(batch.wake).toBe(false);
     expect(batch.text).toBe("j01n room room-1 · 2 new:\n**claude-code** (asks for a reply): Can you review?\n  reply: /j01n send claude-code <text> --reply-to id-claude-code\n· claude-code reserved files (1)");
+    for (const kind of ["finding", "decision", "question", "blocker", "handoff"] as const) {
+      expect(formatBatch(me, [message("claude-code", "Update", { kind })])!.wake).toBe(false);
+      expect(formatBatch(me, [message("claude-code", "Update", { kind, to: "pi-agent" })])!.wake).toBe(true);
+    }
+    expect(formatBatch(me, [message("claude-code", "review", { kind: "handoff", to: ["other", "pi-agent"] })])!.wake).toBe(true);
+    expect(formatBatch(me, [message("claude-code", "Found it", { kind: "finding" })])!.text).toContain("[finding]");
     expect(formatBatch(me, [message("system", "agent-b joined")])!.wake).toBe(false);
     expect(formatBatch(me, [message("system", "T2 is now unblocked", { intent: "task.unblocked", to: "pi-agent", body: { text: "T2 is now unblocked", task_id: "T2" } })])!.wake).toBe(true);
     expect(formatBatch(me, [message("system", "T2 is now unblocked", { intent: "task.unblocked", to: "other", body: { text: "T2 is now unblocked", task_id: "T2" } })])!.wake).toBe(false);

@@ -1,10 +1,12 @@
 import { MAX_BODY_BYTES, MAX_MESSAGES } from "../constants";
 import { json } from "../format";
 import type { InitPayload, InviteState, Recipient, RoomMessage } from "../types";
+import type { MessageKind } from "@j01n/sdk/types";
 import { validateEncryptedProtocol } from "./message-encryption";
 import { isParticipantJoined } from "./participants";
 
 const ENCODER = new TextEncoder();
+const MESSAGE_KINDS = new Set<MessageKind>(["finding", "question", "decision", "blocker", "handoff"]);
 
 interface ReadOptions {
   after: number;
@@ -38,6 +40,7 @@ export function buildReadResponse(invite: InviteState, participantId: string, me
 export function createSentMessage(body: Record<string, unknown>, participantId: string, invite: InviteState): { message: RoomMessage; messages: RoomMessage[]; seq: number } | Response {
   if (ENCODER.encode(JSON.stringify(body.body ?? {})).length > MAX_BODY_BYTES) return json({ error: "message body too large" }, 413);
   const to: Recipient = (body.to as Recipient) ?? "all";
+  if (body.kind !== undefined && !MESSAGE_KINDS.has(body.kind as MessageKind)) return json({ error: "invalid message kind" }, 400);
   if (!validRecipient(invite, to)) return json({ error: "recipient not joined" }, 404);
   const encryptionValidation = validateEncryptedProtocol(body, participantId, to, invite);
   if (encryptionValidation) return encryptionValidation;
@@ -56,9 +59,10 @@ export function createRoomMessage(body: Record<string, unknown>, participantId: 
     reply_to: (body.reply_to as string) ?? null,
     intent: (body.intent as string) ?? "notify",
     priority: (body.priority as string) ?? "normal",
+    ...(body.kind ? { kind: body.kind as MessageKind } : {}),
     body: (body.body as unknown) ?? {},
     created_at: new Date().toISOString(),
-    ...(body.expects_reply === true ? { expects_reply: { due_at: new Date(Date.now() + replyByMinutes(body.reply_by_minutes) * 60_000).toISOString() } } : {}),
+    ...(body.expects_reply === true || body.kind === "question" || body.kind === "blocker" ? { expects_reply: { due_at: new Date(Date.now() + replyByMinutes(body.reply_by_minutes) * 60_000).toISOString() } } : {}),
   };
 }
 

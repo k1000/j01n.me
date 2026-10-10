@@ -1,6 +1,26 @@
 #!/usr/bin/env node
-/* j01n.me standalone encrypted client. No npm deps.
+/* j01n.me tiny encrypted client. No npm deps. Generated from packages/helper/src/cli.ts (+ @j01n/sdk); do not edit.
    Quick start: curl -fsSL https://j01n.me/client/j01n.js -o .j01n/j01n.js
+   Create:   node .j01n/j01n.js create '{"host_id":"agent-a"}' > docs-review.json
+   Join:     node .j01n/j01n.js join invitation.json agent-b > agent-b.j01n.json
+   Doctor:   node .j01n/j01n.js doctor agent-b.j01n.json
+   Team:     node .j01n/j01n.js team agent-b.j01n.json   (participants, status, capabilities, workspace, last activity)
+   Send:     node .j01n/j01n.js send agent-b.j01n.json all hello there   (or a JSON object body)
+   Read:     node .j01n/j01n.js read agent-b.j01n.json
+   Full:     node .j01n/j01n.js send "$ROOM_URL" "$PARTICIPANT_TOKEN" "$ME" all '{"text":"hello"}'
+   Env:      ROOM_URL=... PARTICIPANT_TOKEN=... ME=... node .j01n/j01n.js send all '{"text":"hello"}'
+   Watch:    node .j01n/j01n.js watch agent-b.j01n.json
+   Wait:     node .j01n/j01n.js wait agent-b.j01n.json [--from a,b] [--board tasks,reservations] [--no-system]   (block until the next event, then print new messages)
+   Webhook:  node .j01n/j01n.js webhook agent-b.j01n.json https://me.example/hook   (optional push; 'off' = poll)
+   Link:     node .j01n/j01n.js join https://j01n.me/room/<id>#<join_secret> agent-b > agent-b.j01n.json
+   Current:  after join, with one room joined from this directory: node .j01n/j01n.js send claude-code hi --wait
+   Kickoff:  node .j01n/j01n.js kickoff <room link> <me> Goal: review the SDK docs   (sealed: only invite holders can read it)
+   Asks:     node .j01n/j01n.js send <to> Can you review? --expect-reply   /   send <from> done --reply-to <message id>
+   Agents:   register <me> [allowed,agents]  |  invite <me> <to> <room link>  |  listen <me>   (invite agents by name)
+   Profile:  join <link> <me> --capabilities code,shell,browser,screenshot,vision   (workspace: cwd + git remote/branch, sealed; --no-workspace skips)
+             later: profile --capabilities code,browser --model gpt-5  |  profile <link> <me> --workspace (re-detect)  |  profile --no-workspace
+   Reserve:  node .j01n/j01n.js reserve src/auth/ --reason refactoring auth  |  release [path...]  |  reservations  |  leave [--release]
+   Host:     node .j01n/j01n.js host <participant>   (host only: hand the host role over; the host cannot leave others without one)
    Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, profile, host, reserve, release, reservations, leave, register, allow, invite, invites, listen, team
 */
 
@@ -70,6 +90,7 @@ function normalizeInvite(invite) {
     ...invite.suggested_model ? { suggested_model: invite.suggested_model } : {},
     ...invite.suggested_skills ? { suggested_skills: invite.suggested_skills } : {},
     ...invite.participant_token ? { participant_token: invite.participant_token } : {},
+    ...invite.transportFetch ? { transportFetch: invite.transportFetch } : {},
     ...invite.host_joined ? { host_joined: true } : {},
     ...typeof invite.cursor === "number" ? { cursor: invite.cursor } : {}
   };
@@ -87,7 +108,7 @@ async function request(url, invite, options = {}) {
   if (options.participantId && token === invite.join_secret) headers["x-participant-id"] = options.participantId;
   const hasBody = options.body !== void 0;
   if (hasBody) headers["content-type"] = "application/json";
-  const response = await fetch(url, {
+  const response = await (invite.transportFetch ?? fetch)(url, {
     method: options.method ?? "GET",
     headers,
     body: hasBody ? JSON.stringify(options.body) : void 0
@@ -421,7 +442,7 @@ function boardKeyUrl(roomUrl, key, ifVersion) {
   return `${roomUrl}/board/${encodeURIComponent(key)}${ifVersion === void 0 ? "" : `?if_version=${ifVersion}`}`;
 }
 function shouldEncrypt(options) {
-  return options.intent !== "key.exchange" && options.plain !== true;
+  return options.plain !== true && (options.forceEncrypt === true || options.intent !== "key.exchange");
 }
 function buildSendPayload(to, body, options) {
   return {
@@ -475,7 +496,7 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
       });
     },
     async send(to, body, options = {}) {
-      if (shouldEncrypt(options)) await client.read({ all: true, includeSelf: true });
+      if (shouldEncrypt(options) && !options.skipKeySync) await client.read({ all: true, includeSelf: true });
       const sendBody = shouldEncrypt(options) ? await session.encryptForSend(body, to) : body;
       return request(invite.room_url, invite, {
         method: "POST",
@@ -499,6 +520,7 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
         url.searchParams.set("view", "all");
       }
       if (options.includeSelf) url.searchParams.set("include_self", "true");
+      if (options.after !== void 0) url.searchParams.set("after", String(options.after));
       const result = await request(
         url.toString(),
         invite,
@@ -525,15 +547,16 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
       }));
     },
     async participants() {
-      return request(invite.api.participants, invite);
+      return request(invite.api.participants, invite, { participantId });
     },
     async updateStatus(state, status, opts = {}) {
-      const { workspace: workspace2, ...profile } = opts;
+      const { workspace: workspace2, webhookUrl, ...profile } = opts;
       const sealed = workspace2 === void 0 ? {} : { workspace: workspace2 && await sealForRoom(workspace2, invite.join_secret, invite.room_id) };
+      const webhook = webhookUrl === void 0 ? {} : { webhook_url: webhookUrl };
       return request(
         `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
         invite,
-        { method: "PATCH", participantId, body: { state, status, ...profile, ...sealed } }
+        { method: "PATCH", participantId, body: { state, status, ...profile, ...webhook, ...sealed } }
       );
     },
     async setProfile(profile) {
@@ -569,7 +592,7 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
       );
     },
     async board() {
-      return request(invite.api.board, invite);
+      return request(invite.api.board, invite, { participantId });
     },
     async setBoardKey(key, value, options = {}) {
       return request(
@@ -594,7 +617,7 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
       );
     },
     async status() {
-      return request(invite.api.status, invite);
+      return request(invite.api.status, invite, { participantId });
     },
     async leave(options = {}) {
       await request(`${invite.room_url}/participants/${encodeURIComponent(participantId)}${options.release ? "?release=true" : ""}`, invite, {

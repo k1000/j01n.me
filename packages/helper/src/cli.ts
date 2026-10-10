@@ -10,9 +10,9 @@ import {
   sealForRoom, listReservations, reservePaths, releasePaths, SDK_CLIENT_PROTOCOL,
   type AgentIdentity, type RoomAccess,
 } from "@j01n/sdk";
-import { createSdkCryptoSession } from "../../sdk/src/sdk-crypto-session";
-import { RoomApiError } from "../../sdk/src/errors";
-import { request } from "../../sdk/src/transport";
+import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
+import { RoomApiError } from "@j01n/sdk/errors";
+import { request } from "@j01n/sdk/transport";
 import type { RoomClient } from "@j01n/sdk";
 
 if (!(globalThis as typeof globalThis & { crypto?: Crypto }).crypto) (globalThis as typeof globalThis & { crypto?: Crypto }).crypto = webcrypto as unknown as Crypto;

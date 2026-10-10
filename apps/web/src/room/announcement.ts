@@ -1,6 +1,6 @@
 import type { BoardChange } from "@j01n/sdk/types";
 import { MAX_MESSAGES } from "../constants";
-import type { InviteState } from "../types";
+import type { InviteState, Recipient } from "../types";
 import type { RoomEventBus } from "./events";
 import { dispatchWebhooks } from "./hooks";
 import { createRoomMessage } from "./messages";
@@ -15,9 +15,10 @@ export async function announceSystemMessage(
   body: Record<string, unknown>,
   patch: Partial<InviteState> = {},
   boardChange?: { changes: Record<string, BoardChange>; updatedBy: string },
+  to: Recipient = "all",
 ): Promise<InviteState> {
   const seq = invite.nextSeq + 1;
-  const message = createRoomMessage({ intent, body }, "system", "all", seq);
+  const message = createRoomMessage({ intent, body }, "system", to, seq);
   const updated = { ...invite, ...patch, nextSeq: seq, messages: [...invite.messages, message].slice(-MAX_MESSAGES) };
   await storage.putInvite(updated);
   if (boardChange) events.notifyBoard(Object.keys(boardChange.changes), boardChange.updatedBy, boardChange.changes);

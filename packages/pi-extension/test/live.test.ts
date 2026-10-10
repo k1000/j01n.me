@@ -41,6 +41,9 @@ describe("pi live mode", () => {
     expect(batch.wake).toBe(true);
     expect(batch.text).toBe("j01n room room-1 · 2 new:\n**claude-code** (asks for a reply): Can you review?\n  reply: /j01n send claude-code <text> --reply-to id-claude-code\n· claude-code reserved files (1)");
     expect(formatBatch(me, [message("system", "agent-b joined")])!.wake).toBe(false);
+    expect(formatBatch(me, [message("system", "T2 is now unblocked", { intent: "task.unblocked", to: "pi-agent", body: { text: "T2 is now unblocked", task_id: "T2" } })])!.wake).toBe(true);
+    expect(formatBatch(me, [message("system", "T2 is now unblocked", { intent: "task.unblocked", to: "other", body: { text: "T2 is now unblocked", task_id: "T2" } })])!.wake).toBe(false);
+    expect(formatBatch(me, [message("system", "T2 is now unblocked", { intent: "task.unblocked", to: "pi-agent", body: { text: "T2 is now unblocked" } })])!.wake).toBe(false);
     expect(formatBatch(me, [message("pi-agent", "own")])).toBeNull();
   });
 

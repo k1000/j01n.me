@@ -5,11 +5,12 @@ import { INVITE_TTL_MS, MIN_INVITE_TTL_MS, MAX_INVITE_TTL_MS } from "./constants
 import { normalizeRoomId, normalizeHostId, normalizeRoomName, normalizeMaxParticipants } from "./validation";
 import { isEncryptedEnvelope } from "./room/encryption-shape";
 import { registerRoom } from "./room/registry";
-import { applyTemplate } from "./room/templates";
+import { applyTemplate, type SprintTask } from "./room/templates";
 import type { Env, InitPayload } from "./types";
 
 export interface CreateRoomBody {
   template?: string;
+  tasks?: SprintTask[];
   room_id?: string;
   host_id?: string;
   host_public_key?: string;
@@ -135,7 +136,7 @@ export async function handleCreateRoom(c: Context<{ Bindings: Env }>): Promise<R
     const message = err instanceof Error ? err.message : String(err);
     // Try to extract status code from error message (e.g. "failed to create room: 409 ...")
     const statusMatch = message.match(/failed to create room: (\d+)/);
-    const validationStatus = message === "first_message must be encrypted" ? 400 : undefined;
+    const validationStatus = message === "first_message must be encrypted" || (body.template === "sprint" && /sprint task|generated files/.test(message)) ? 400 : undefined;
     const status = validationStatus ?? (statusMatch ? parseInt(statusMatch[1], 10) : 500);
     return new Response(JSON.stringify({ error: message }), {
       status,
@@ -148,6 +149,7 @@ function normalizeCreateRoomBody(body: CreateRoomBody): NormalizedCreateRoomRequ
   // Apply template defaults, overlay explicit body fields.
   const tpl = applyTemplate(body.template, {
     room_name: body.room_name,
+    tasks: body.tasks,
     board: recordOrUndefined(body.board),
     board_acls: recordOrUndefined(body.board_acls),
     states: recordOrUndefined(body.states),

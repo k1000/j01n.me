@@ -1,6 +1,6 @@
 // Live mode for joined rooms (on by default, `/j01n live off` stops it):
 // - delivery: a background wait per room; new messages are injected into the conversation in one batch per wake.
-//   Messages from participants wake the agent; system notices (board/host/profile changes, joins) do not.
+//   Messages from participants and direct task.unblocked notices wake the agent; other system notices do not.
 // - presence: the agent's tool activity becomes its room status ("editing src/a.ts", "running tests"), sent at most
 //   every 15 s and only when it changed. Status updates never wake anyone.
 // - reservations: edits/writes to a path another participant reserved (same repo) are blocked, naming the holder.
@@ -32,7 +32,7 @@ export function formatBatch(client: RoomClient, messages: RoomMessage[]): { text
     : `**${m.from}**${m.expects_reply ? " (asks for a reply)" : ""}: ${bodyText(m)}\n  reply: ${replyHint(m)}`);
   return {
     text: `j01n room ${client.invite.room_id} · ${shown.length} new:\n${lines.join("\n")}`,
-    wake: shown.some((m) => m.from !== "system"),
+    wake: shown.some((m) => m.from !== "system" || (m.intent === "task.unblocked" && m.to === client.participantId && typeof (m.body as { task_id?: unknown })?.task_id === "string")),
   };
 }
 

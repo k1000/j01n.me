@@ -120,11 +120,30 @@ function renderSavedRooms() {
     const link = document.createElement("a");
     link.href = "/room/" + encodeURIComponent(id);
     link.textContent = (invite && invite.room_name) || id;
-    item.append(link);
+    const status = document.createElement("span");
+    status.className = "saved-room-status";
+    status.hidden = true;
+    item.append(link, status);
     if (invite && invite.expires_at) item.append(" · expires " + new Date(invite.expires_at).toLocaleString());
     list.append(item);
+    savedRoomStatus(id, invite).then((text) => { status.textContent = text; status.hidden = !text; });
   }
   section.append(list);
+}
+// The room's current phase; a room the host closed shows as completed, an expired or deleted one as ended.
+async function savedRoomStatus(id, invite) {
+  const token = invite && (invite.participant_token || invite.join_secret);
+  if (!token) return "";
+  const headers = { authorization: "Bearer " + token };
+  if (!invite.participant_token) headers["x-participant-id"] = String(invite.participant_id || invite.host_id || "human");
+  try {
+    const response = await fetch("/r/" + encodeURIComponent(id) + "/status", { headers });
+    const body = await response.json().catch(() => ({}));
+    if (response.ok) return String(body.phase || "");
+    if (body.closed) return "completed";
+    if (body.deleted) return "ended";
+  } catch {}
+  return "";
 }
 </script>`;
 }

@@ -111,6 +111,7 @@ export const HOME_STYLES: string = String.raw`
   .saved-rooms ul { margin: 0; padding: 0; display: grid; gap: 6px; }
   .saved-rooms li { display: block; color: var(--dim); }
   .saved-rooms li a { margin-right: 4px; }
+  .saved-room-status { margin-right: 4px; padding: 0 6px; border: 1px solid var(--rule); color: var(--text); font-size: 0.85em; }
   body > footer { max-width: 64rem; margin: 0 auto; padding: 1.25rem 16px 48px; color: var(--dim); font-size: var(--s-0); }
 
   .scramble { transition: color 0.3s; }

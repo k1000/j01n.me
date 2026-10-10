@@ -682,11 +682,15 @@
     const extendControls = isHost ? ` <button class="button button-small" type="button" data-extend-room title="Extend invite by 30 minutes">Extend 30 min</button><p class="room-ttl-status" data-room-ttl-status aria-live="polite"></p>` : "";
 
     const drafts = captureConsoleDrafts();
+    // Keep the reader's place in the message list across re-renders; stay pinned to the newest when at the bottom.
+    const oldList = root.querySelector("[data-message-list]");
+    const stickToBottom = !oldList || oldList.scrollHeight - oldList.scrollTop - oldList.clientHeight < 24;
+    const oldScrollTop = oldList ? oldList.scrollTop : 0;
     root.innerHTML = `
 <h1>${esc(room.name || "Room")} <span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></h1>
 <dl class="room-meta">
 <dt>room URL</dt><dd><code>${esc("https://j01n.me/r/" + rid)}</code> <button class="button button-small" type="button" data-copy-room-url title="Copy room URL">Copy URL</button></dd>
-<dt>invite</dt><dd><label for="room-invitation">Private invitation link</label><input id="room-invitation" readonly value="${escAttr(location.origin + '/room/' + encodeURIComponent(rid) + '#' + joinSecret)}" /><button class="button button-small" type="button" data-copy-invitation>Copy invitation</button><p class="fineprint" data-invitation-status role="status">This link grants room access. Share privately with people or agents.</p></dd>
+<dt>invite</dt><dd><label for="room-invitation">Private invitation link</label><div class="invite-copy"><input id="room-invitation" readonly value="${escAttr(location.origin + '/room/' + encodeURIComponent(rid) + '#' + joinSecret)}" /><button class="button button-small" type="button" data-copy-invitation>Copy invitation</button></div><p class="fineprint" data-invitation-status role="status">This link grants room access. Share privately with people or agents.</p></dd>
 <dt>purpose</dt><dd>${esc(room.purpose || "—")}</dd>
 ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(room.first_message) + '</dd>' : ''}
 <dt>host</dt><dd>${esc(room.host_id || "—")}</dd>
@@ -696,7 +700,7 @@ ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(
 <section class="room-board"><h2>Board</h2><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>
 <section class="room-reservations" aria-label="File reservations"><h2>File reservations</h2>${reservationsHtml}</section>
 <section class="room-participants"><h2>Participants</h2>${participantsHtml}</section>
-<section class="room-messages"><h2>Messages</h2>${messagesHtml}<form class="message-composer" data-message-form><input type="hidden" name="reply_to" /><p data-reply-status role="status"></p><button class="button" type="button" data-cancel-reply hidden>Cancel reply</button><label>Recipient<select name="to" required>${recipientOptions}</select></label><label>Message<textarea name="message" required placeholder="Write a message to the room"></textarea></label><label class="reply-request"><input type="checkbox" name="expects_reply" /> Request a reply</label><p class="message-compose-actions"><button class="button" type="submit">Send</button><button class="button" type="button" data-check-delivery hidden>Check delivery</button><button class="button" type="button" data-retry-delivery hidden>Allow retry (may duplicate)</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>`;
+<section class="room-messages"><h2>Messages</h2><div class="message-list" data-message-list tabindex="0" aria-label="Messages">${messagesHtml}</div><form class="message-composer" data-message-form><input type="hidden" name="reply_to" /><p data-reply-status role="status"></p><button class="button" type="button" data-cancel-reply hidden>Cancel reply</button><label>Recipient<select name="to" required>${recipientOptions}</select></label><label>Message<textarea name="message" required placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><label class="reply-request"><input type="checkbox" name="expects_reply" /> Request a reply</label><button class="button" type="submit">Send</button><button class="button" type="button" data-check-delivery hidden>Check delivery</button><button class="button" type="button" data-retry-delivery hidden>Allow retry (may duplicate)</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>`;
     updateConnectionStatus(connectionState);
     root.querySelector("[data-copy-room-url]")?.addEventListener("click", () => {
       const url = "https://j01n.me/r/" + rid;
@@ -713,8 +717,31 @@ ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(
     wireBoardEditor(board);
     wireTaskEditor(board);
     wireMessageComposer();
+    showMessageArrivals(root.querySelector("[data-message-list]"), stickToBottom, oldScrollTop);
     restoreConsoleDrafts(drafts);
     updateReplyStatus();
+  }
+
+  // Messages that arrive after the first render start highlighted and fade out. The arrival time is kept per id,
+  // so a re-render during the fade continues it instead of restarting or cutting it short.
+  const MESSAGE_FADE_MS = 4000;
+  const messageArrivals = new Map();
+  let messagesShown = false;
+
+  function showMessageArrivals(list, stickToBottom, scrollTop) {
+    if (!list) return;
+    const now = Date.now();
+    list.querySelectorAll("[data-message-id]").forEach((el) => {
+      const id = el.dataset.messageId;
+      if (!messageArrivals.has(id)) messageArrivals.set(id, messagesShown ? now : 0);
+      const age = now - messageArrivals.get(id);
+      if (age < MESSAGE_FADE_MS) {
+        el.classList.add("message-new");
+        el.style.animationDelay = -age + "ms";
+      }
+    });
+    messagesShown = true;
+    list.scrollTop = stickToBottom ? list.scrollHeight : scrollTop;
   }
 
   function wireExtendInvite() {

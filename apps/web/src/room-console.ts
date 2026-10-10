@@ -12,6 +12,10 @@ export const ROOM_CONSOLE_STYLES = String.raw`
   .room-console-page .room-meta dd { min-width: 0; overflow-wrap: anywhere; }
   .room-console-page .room-meta code { overflow-wrap: anywhere; }
   .room-console-page .room-kickoff { white-space: pre-wrap; }
+  /* Invitation link and its Copy button share a row; the button wraps under the link on narrow screens. */
+  .room-console-page .invite-copy { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: stretch; }
+  .room-console-page .invite-copy input { flex: 1 1 16rem; min-width: 0; }
+  .room-console-page .invite-copy .button { flex: none; margin: 0 0 0 auto; }
   .room-console-page .room-board { padding: 1.25rem; background: var(--console-panel); color: var(--console-cream); border: 1px dashed var(--console-rule); }
   .room-console-page .room-board h2 { margin-top: 0; }
   .room-console-page .board-entry .board-key { color: var(--console-cream); }
@@ -29,7 +33,14 @@ export const ROOM_CONSOLE_STYLES = String.raw`
   .room-console-page [hidden] { display: none !important; }
   .room-console-page .reply-request { display: flex; align-items: center; gap: 0.5rem; min-height: 44px; }
   .room-console-page .reply-request input { width: auto; }
+  .room-console-page .message-compose-actions { align-items: center; }
+  .room-console-page .message-compose-actions .reply-request { margin-right: auto; } /* checkbox left, buttons right */
   .room-console-page .message-technical { max-height: 16rem; overflow: auto; }
+  /* Messages scroll inside their own box; new ones start highlighted and fade (4s, matching MESSAGE_FADE_MS). */
+  .room-console-page .message-list { max-height: min(60vh, 36rem); overflow-y: auto; overscroll-behavior: contain; padding: 0 0.75rem; border: 1px dashed var(--console-rule); }
+  .room-console-page .message-list:focus-visible { outline-offset: -2px; }
+  .room-console-page .message-new { animation: message-arrive 4s ease-out both; }
+  @keyframes message-arrive { from { background-color: color-mix(in srgb, var(--console-cream) 22%, transparent); } to { background-color: transparent; } }
   @media (max-width: 760px) { .room-console-page .kanban-board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 480px) { .room-console-page .kanban-board, .room-console-page .task-editor, .room-console-page .room-meta { grid-template-columns: minmax(0, 1fr); } .room-console-page .room-meta dt { margin-top: 0.5rem; } }
 `;

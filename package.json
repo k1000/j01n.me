@@ -19,6 +19,7 @@
     "deploy": "wrangler deploy --config apps/web/wrangler.jsonc",
     "typecheck": "tsc --noEmit",
     "check": "pnpm check:generated && pnpm typecheck && pnpm test",
+    "check:contract": "node scripts/check-contract.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "playwright test",

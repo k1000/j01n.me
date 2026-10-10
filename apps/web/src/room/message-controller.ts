@@ -24,6 +24,10 @@ export class RoomMessageController {
       // can manage participant metadata without needing decryption keys.
       const profile = parseParticipantProfile(auth.body);
       if (profile instanceof Response) return profile;
+      // Identity and checkout changes require the authorized join/profile endpoint.
+      delete profile.display_name;
+      delete profile.role;
+      delete profile.checkout;
       // Record keys announced via key.exchange so /participants exposes them to every client.
       const announcedKey = result.message.intent === "key.exchange" ? (result.message.body as { public_key?: unknown }).public_key : undefined;
       if (typeof announcedKey === "string") profile.public_key = announcedKey.slice(0, 256);

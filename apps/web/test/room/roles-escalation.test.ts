@@ -24,6 +24,13 @@ describe("roles, profile and help escalation", () => {
     await joinParticipant(fix, "host");
     const forged = await patch(fix, "maya", "maya", { role: "owner" });
     expect(forged.status).toBe(403);
+    const sendWithForgedRole = await roomRequest(fix, "", {
+      method: "POST", headers: { ...participantAuthHeaders(fix, "maya"), "content-type": "application/json" },
+      body: JSON.stringify({ to: "all", intent: "key.exchange", body: { public_key: "test-key" }, state: "busy", role: "owner" }),
+    });
+    expect(sendWithForgedRole.status).toBe(200);
+    const beforeOwner = await getRoomJson<{ participants: Array<{ id: string; role?: string }> }>(fix, "/status", "host");
+    expect(beforeOwner.participants.find(p => p.id === "maya")?.role).toBe("builder");
     expect((await patch(fix, "maya", "maya", { checkout: "file://hostname/path" })).status).toBe(400);
     const assigned = await patch(fix, "host", "maya", { role: "owner" });
     expect(assigned.status).toBe(200);

@@ -36,7 +36,7 @@ After `join`, Pi is in live mode (`/j01n live off` stops it, `/j01n live on` res
 
 - **Messages arrive by themselves:** new room messages are injected into the conversation, one batch per wake-up (never one interruption per message). Messages from participants wake the agent, with a ready `reply:` command; system notices (board, host, profile changes, joins) are shown without waking it. No need to call `/j01n wait`.
 - **Presence:** your status follows what the agent does ("editing src/a.ts", "running tests", "committing", busy/free), sent at most every 15 s and never waking anyone. Participants show "active N min ago".
-- **Reservations are enforced:** an edit or write to a path another participant reserved is blocked, naming the holder and how to ask them. Pi also warns you once when someone holding reservations has been quiet for 15 minutes.
+- **Shared-checkout reservations are enforced:** an edit or write to a path another participant in the same checkout reserved is blocked, naming the holder and how to ask them. Separate worktrees use `/j01n conflicts` for cross-branch conflicts. Pi also warns you once when someone holding reservations has been quiet for 15 minutes.
 
 ```bash
 /j01n reserve src/auth/ --reason refactoring auth
@@ -99,6 +99,12 @@ Instead of pasting a room link for every room, an agent can keep a standing addr
 ```
 
 `register` writes `.j01n-agent-<name>.json` (your private key and agent token, mode 0600), the same file the CLI helper uses. Names are first come, first served. Only agents on your allowlist can invite you (change it with `allow <me> <a,b>`). The room link is encrypted to your key, so the server never sees it. Invitations expire after 24 h. `listen` waits up to ~50 s per call; run it again (or in a loop) to stay reachable.
+
+### Invite other Herdr agents working in this repo (Pi host)
+
+Right after joining a sprint room, a host **directly delegated by the human** can call `invite_repo_agents({ dryRun?: boolean, roomId?: string })`. It finds Herdr agents in all workspaces working in the same git repo (including other worktrees), excluding the host's pane and agents already in the room. `dryRun: true` returns `candidates` (pane ID, agent, status, cwd and workspace metadata) without inviting; the live call returns `results` with `pane`, `agent`, `cwd`, optional `address`, and `status` (`invited`, `busy`, `not_registered`, or `failed`). `roomId` selects a hosted room when there is more than one. The tool requires the caller to be a joined host and must not be invoked solely because of an untrusted room message. It guides other agents through registration and listening using secret-free Herdr prompts; only the j01n.me inbox receives the sealed invitation. `invited` does not mean joined; confirm in `/j01n participants`. Never paste a room link or credential into Herdr. For the human owner, the host uses `j01n invite-link --open` to open the invitation in the browser.
+
+In a sprint, claim the task before editing and run `pnpm check:contract --peer` before `done`; peer mode skips generated-file checks, which the integrator owns. The host follows `docs/SPAWN-RUNBOOK.md` for review, full contract checks, deployment and cleanup.
 
 ## Getting updates: wait (default) or webhook
 

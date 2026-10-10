@@ -1,6 +1,8 @@
 node_modules/
 .wrangler/
 dist/
+playwright-report/
+test-results/
 .env
 .dev.vars
 .DS_Store

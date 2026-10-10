@@ -24,7 +24,7 @@ describe("host-agent peer tool", () => {
   afterEach(() => { vi.mocked(prepareRoomPeerSpawn).mockReset(); vi.mocked(spawnAndInviteHerdr).mockReset(); });
 
   it("infers room and identity without asking the model for credentials and spends one peer per session", async () => {
-    vi.mocked(prepareRoomPeerSpawn).mockResolvedValue({ client: {} as never, sender: {} as never, link: "https://j01n.me/room/r#secret", name: "peer-123", role: "reviewer: Review SDK", identityDir: "/private" });
+    vi.mocked(prepareRoomPeerSpawn).mockResolvedValue({ client: {} as never, sender: {} as never, link: "https://j01n.me/room/r#secret", name: "ravi-12345678", displayName: "Ravi", role: "reviewer", task: "Review SDK", identityDir: "/private" });
     vi.mocked(spawnAndInviteHerdr).mockResolvedValue({ ok: true, pane_id: "wV:p5", invited: true, joined: true });
     const h = harness();
     h.input("interactive");
@@ -46,7 +46,7 @@ describe("host-agent peer tool", () => {
   it("allows as many spawns per session as the human set in J01N_PEER_SPAWNS (still only on direct requests)", async () => {
     vi.stubEnv("J01N_PEER_SPAWNS", "3");
     try {
-      vi.mocked(prepareRoomPeerSpawn).mockResolvedValue({ client: {} as never, sender: {} as never, link: "https://j01n.me/room/r#secret", name: "peer", role: "worker", identityDir: "/private" });
+      vi.mocked(prepareRoomPeerSpawn).mockResolvedValue({ client: {} as never, sender: {} as never, link: "https://j01n.me/room/r#secret", name: "maya-12345678", displayName: "Maya", role: "worker", task: "T1", identityDir: "/private" });
       vi.mocked(spawnAndInviteHerdr).mockResolvedValue({ ok: true, pane_id: "wV:p5", invited: true, joined: true });
       const h = harness();
       h.input("interactive");
@@ -58,6 +58,16 @@ describe("host-agent peer tool", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("passes a branch for automatic worktree creation and refuses branch with directory", async () => {
+    vi.mocked(prepareRoomPeerSpawn).mockResolvedValue({ client: {} as never, sender: {} as never, link: "https://j01n.me/room/r#secret", name: "maya-12345678", displayName: "Maya", role: "builder", task: "Implement T4", identityDir: "/private" });
+    vi.mocked(spawnAndInviteHerdr).mockResolvedValue({ ok: true, pane_id: "wV:p5", invited: true, joined: true });
+    const h = harness();
+    h.input("interactive");
+    expect((await h.call({ task: "Implement T4", branch: "feature/t4" })).isError).toBeUndefined();
+    expect(spawnAndInviteHerdr).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), "maya-12345678", "builder", "/private", undefined, "feature/t4", "Maya", "Implement T4");
+    expect((await h.call({ task: "Invalid", branch: "feature/t5", directory: "/existing" })).isError).toBe(true);
   });
 
   it("does not let a room message independently authorize a spawn", async () => {

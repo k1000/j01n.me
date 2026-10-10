@@ -40,7 +40,8 @@ describe("agent-led room peer preparation", () => {
     const { runj01n, prepareRoomPeerSpawn } = await import("../commands");
     await runj01n(["join", link, "host", "--no-workspace"]);
     const prepared = await prepareRoomPeerSpawn({ task: "Review SDK", role: "reviewer", name: "reviewer" });
-    expect(prepared).toMatchObject({ link, name: "reviewer", role: "reviewer: Review SDK", identityDir });
+    expect(prepared).toMatchObject({ link, displayName: "reviewer", role: "reviewer", task: "Review SDK", identityDir });
+    expect(prepared.name).toMatch(/^reviewer-[a-f0-9]{8}$/);
     expect(prepared.sender.name).toMatch(/^host-[0-9a-f]{16}$/);
     expect(prepared.client.participantId).toBe("host");
     expect(existsSync(join(identityDir, `.j01n-agent-${prepared.sender.name}.json`))).toBe(true);
@@ -49,6 +50,15 @@ describe("agent-led room peer preparation", () => {
     const again = await prepareRoomPeerSpawn({ task: "Another review" });
     expect(again.sender.name).toBe(prepared.sender.name);
     expect(requests.filter((r) => r.endsWith("/agents"))).toHaveLength(1);
+  });
+
+  it("chooses a free friendly name and rejects a duplicate requested name", async () => {
+    const { runj01n, prepareRoomPeerSpawn } = await import("../commands");
+    await runj01n(["join", link, "host", "--no-workspace"]);
+    await expect(prepareRoomPeerSpawn({ task: "Help", name: "host" })).rejects.toThrow("already in the room");
+    const prepared = await prepareRoomPeerSpawn({ task: "Help" });
+    expect(prepared.displayName).toMatch(/^(Maya|Ravi|Lena|Omar|Ines|Kenji|Nora|Amira|Sofia|Tariq|Asha|Leo|Zara|Yuki|Nia|Arjun)$/);
+    expect(prepared.name).toMatch(new RegExp(`^${prepared.displayName.toLowerCase()}-[a-f0-9]{8}$`));
   });
 
   it("reuses a fallback sender address if the preferred host address is taken", async () => {

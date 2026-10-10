@@ -1,4 +1,4 @@
-import { openAsks } from "./messages";
+import { helpNeeded, openAsks } from "./messages";
 import type { InviteState, RoomStateConfig } from "../types";
 import { activeParticipants, publicParticipant } from "./participants";
 
@@ -24,6 +24,8 @@ export function joinResponse(
     ok: true,
     room: roomInfo(invite),
     participant_id: participantId,
+    display_name: invite.participants[participantId]?.display_name ?? participantId,
+    role: invite.participants[participantId]?.role ?? (participantId === invite.hostId ? "host" : undefined),
     is_host: participantId === invite.hostId,
     host_id: invite.hostId,
     cursor,
@@ -55,6 +57,7 @@ export function roomStatus(invite: InviteState) {
     oldest_seq: invite.messages[0]?.seq ?? 0,
     expires_at: new Date(invite.expiresAt).toISOString(),
     open_asks: openAsks(invite),
+    help_needed: helpNeeded(invite),
     ...(currentState ? roomTransitionInfo(currentState) : {}),
   };
 }

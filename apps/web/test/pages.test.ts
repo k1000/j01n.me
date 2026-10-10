@@ -258,6 +258,28 @@ describe("room page", () => {
     expect(await render({ reservations: { value: { one: { by: "alice", since: "now", sealed: "broken" } } } })).not.toContain("alice");
   });
 
+  it("shows roles, room-keyed checkout relationships and owner-only overdue help without exposing checkout hashes", () => {
+    const html = roomPageScript;
+    const start = html.indexOf("  function participantLabel(");
+    const end = html.indexOf("  function showBrowserNotification(", start);
+    expect(start).toBeGreaterThan(0);
+    const helpers = html.slice(start, end) + "return { participantLabel, checkoutLabel, helpNeededHtml };";
+    const esc = (value: unknown) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    const owner = { id: "owner", role: "owner", display_name: "Kamil", checkout: "opaque-hmac" };
+    const peer = { id: "peer", display_name: "Maya", role: "builder", checkout: "opaque-hmac" };
+    const data = { participants: { owner, peer }, help_needed: [{ ask_id: "<ask>", from: "peer", owed_by: "owner", overdue_since: "now" }] };
+    const asOwner = new Function("participantId", "esc", helpers)("owner", esc);
+    expect(asOwner.participantLabel(peer)).toBe("Maya");
+    expect(asOwner.checkoutLabel(owner, [owner, peer])).toBe("shares checkout with Maya");
+    expect(asOwner.helpNeededHtml(data)).toContain("Help needed");
+    expect(asOwner.helpNeededHtml(data)).toContain("&lt;ask&gt;");
+    expect(asOwner.helpNeededHtml(data)).not.toContain("opaque-hmac");
+    const asPeer = new Function("participantId", "esc", helpers)("peer", esc);
+    expect(asPeer.helpNeededHtml(data)).toBe("");
+    expect(asPeer.checkoutLabel({ id: "solo", checkout: "another" }, [owner, peer])).toBe("own checkout");
+    expect(html).toContain("machine: " );
+  });
+
   it("renders each participant's announced model as provider/model", () => {
     const html = roomPageScript;
     expect(html).toContain('const running = [p.provider, p.model].filter(Boolean).join("/")');

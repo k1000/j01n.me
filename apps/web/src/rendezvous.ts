@@ -8,7 +8,8 @@ import type { RoomEventBus } from "./room/events";
 import { roomExport, roomInfo, roomStatus, roomTransitionInfo } from "./room/info";
 import { RoomInitController } from "./room/init-controller";
 import { RoomMessageController } from "./room/message-controller";
-import { openAsksFor, visibleTo } from "./room/messages";
+import { nextAskEscalation, openAsksFor, visibleTo } from "./room/messages";
+import { announceSystemMessage } from "./room/announcement";
 import { activeParticipants, publicParticipant } from "./room/participants";
 import { RoomParticipantController } from "./room/participant-controller";
 import { createHook, deleteHook } from "./room/hooks";
@@ -101,7 +102,19 @@ export class RendezvousSession implements DurableObject {
   }
 
   async alarm(): Promise<void> {
-    await this.cleanupStaleRoom();
+    let invite = await this.storage.getInvite();
+    if (!invite) return;
+    if (Date.now() >= invite.expiresAt || invite.phase === "closed" || activeParticipants(invite.participants).length === 0) {
+      await this.cleanupStaleRoom();
+      return;
+    }
+    let next = nextAskEscalation(invite);
+    while (next && next.at <= Date.now()) {
+      invite = await announceSystemMessage(this.storage, this.events, invite, next.intent,
+        { text: `${next.intent === "help.needed" ? "Help needed (owner)" : "Question overdue (host)"}: ${next.from}'s question #${next.ask_id} awaits ${next.owed_by}`, ask_id: next.ask_id, owed_by: next.owed_by, from: next.from }, {}, undefined, next.to);
+      next = nextAskEscalation(invite);
+    }
+    await this.storage.scheduleCleanup(invite.expiresAt, invite);
   }
 
   private async cleanupStaleRoom(): Promise<Response> {
@@ -228,7 +241,6 @@ export class RendezvousSession implements DurableObject {
 
       const newExpiresAt = invite.expiresAt + extendMs;
       await this.storage.patchAndSave(invite, { expiresAt: newExpiresAt });
-      await this.storage.scheduleCleanup(newExpiresAt);
       return json({
         ok: true,
         extended_ms: extendMs,

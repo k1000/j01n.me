@@ -67,7 +67,10 @@ export class RoomParticipantController {
     const profile = parseParticipantProfile(parsed.body);
     if (profile instanceof Response) return profile;
     const { token, hash: tokenHash, tokenOnlyHash } = await generateParticipantToken(invite.roomId, participantId);
-    participants[participantId] = createJoinedParticipant(participantId, profile, tokenHash);
+    if ((profile.role === "owner" || profile.role === "host") && participantId !== invite.hostId) {
+      return json({ error: "only the host can assign owner or host roles" }, 403);
+    }
+    participants[participantId] = createJoinedParticipant(participantId, { ...profile, role: profile.role ?? (participantId === invite.hostId ? "host" : undefined) }, tokenHash);
     // Preserve the room's state-machine phase; only legacy rooms transition "waiting" → "ready" on first join.
     const nextPhase = invite.roomStates ? invite.phase : "ready";
     let updated: InviteState = { ...invite, phase: nextPhase, participants };
@@ -111,6 +114,18 @@ export class RoomParticipantController {
       }
       const profile = parseParticipantProfile(auth.body);
       if (profile instanceof Response) return profile;
+      if ((profile.role === "owner" || profile.role === "host") && actorId !== invite.hostId) {
+        return json({ error: "only the host can assign owner or host roles" }, 403);
+      }
+      if (profile.role === "host" && targetId !== invite.hostId) {
+        return json({ error: "host role belongs to the current host" }, 400);
+      }
+      if (profile.role === "owner" && Object.values(invite.participants).some((p) => p.id !== targetId && !p.left_at && p.role === "owner")) {
+        return json({ error: "room already has an owner; clear or reassign that role first" }, 409);
+      }
+      if (invite.participants[targetId].role === "owner" && profile.role !== undefined && profile.role !== "owner" && actorId !== invite.hostId) {
+        return json({ error: "only the host can change the owner role" }, 403);
+      }
       const updated = withUpdatedParticipant(invite, targetId, profile);
       const announcement = profileChangeMessage(invite, updated, targetId, actorId);
       if (announcement) {
@@ -143,8 +158,11 @@ export class RoomParticipantController {
       if (to instanceof Response) return to;
       if (to === invite.hostId) return json({ error: `${to} is already the host` }, 400);
       if (!isParticipantJoined(invite.participants, to)) return json({ error: `${to} is not in the room` }, 404);
+      const participants = { ...invite.participants };
+      if (participants[invite.hostId]?.role === "host") participants[invite.hostId] = { ...participants[invite.hostId], role: undefined };
+      participants[to] = { ...participants[to], role: participants[to].role === "owner" ? "owner" : "host" };
       await announceSystemMessage(this.storage, this.events, invite, "host.changed",
-        { text: `${invite.hostId} made ${to} the host`, host_id: to, updated_by: invite.hostId }, { hostId: to });
+        { text: `${invite.hostId} made ${to} the host`, host_id: to, updated_by: invite.hostId }, { hostId: to, participants });
       return json({ ok: true, host_id: to });
     });
   }

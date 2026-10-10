@@ -1,6 +1,7 @@
 import { json } from "../format";
 import type { InviteState } from "../types";
 import { activeParticipants } from "./participants";
+import { nextAskEscalation } from "./messages";
 
 const STATE_KEY = "invite";
 
@@ -40,16 +41,18 @@ export class RoomStorage {
     return invite;
   }
 
-  putInvite(invite: InviteState): Promise<void> {
-    return this.state.storage.put(STATE_KEY, invite);
+  async putInvite(invite: InviteState): Promise<void> {
+    await this.state.storage.put(STATE_KEY, invite);
+    await this.scheduleCleanup(invite.expiresAt, invite);
   }
 
   patchAndSave(invite: InviteState, patch: Partial<InviteState>): Promise<void> {
     return this.putInvite({ ...invite, ...patch });
   }
 
-  scheduleCleanup(expiresAt: number): Promise<void> {
-    return this.state.storage.setAlarm(expiresAt);
+  scheduleCleanup(expiresAt: number, invite?: InviteState): Promise<void> {
+    const next = invite && nextAskEscalation(invite);
+    return this.state.storage.setAlarm(next ? Math.min(expiresAt, Math.max(Date.now() + 1000, next.at)) : expiresAt);
   }
 
   async deleteIfEmpty(): Promise<void> {

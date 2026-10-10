@@ -46,7 +46,6 @@ export class RoomMessageController {
       if (updatedInvite.expiresAt < keepAliveUntil) updatedInvite = { ...updatedInvite, expiresAt: keepAliveUntil };
 
       await this.storage.putInvite(updatedInvite);
-      if (updatedInvite.expiresAt !== invite.expiresAt) await this.storage.scheduleCleanup(updatedInvite.expiresAt);
       if (updatedParticipant) {
         this.events.notifyParticipant(auth.participantId, "updated", updatedParticipant);
         dispatchWebhooks(updatedInvite, "participant", { participant_id: auth.participantId, action: "updated", participant: updatedParticipant });

@@ -185,6 +185,15 @@ describe("room page", () => {
     expect(await viewer.decryptMessageBody(message, keys)).toEqual({ ok: true, value: { text: "My direct message" } });
   });
 
+  it("keeps the recipient list current and excludes the sender", () => {
+    const html = roomPageHtml("room-1");
+
+    expect(html).toContain('roomEvents.addEventListener("participant", () => refreshRoom().catch(showRoomEventError))');
+    expect(html).toContain('roomEvents.addEventListener("open", () => {');
+    expect(html).toMatch(/pList\.filter\(p => !p\.left_at && p\.id !== participantId\)/);
+    expect(html).toContain('<option value="all">all</option>');
+  });
+
   it("joins/read rooms without using host-only export", () => {
     const html = roomPageHtml("room-1");
 

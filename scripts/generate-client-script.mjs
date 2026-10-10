@@ -13,8 +13,13 @@ const constants = await readFile(constantsPath, "utf8");
 const protocol = constants.match(/^export const CLIENT_PROTOCOL = (\d+);$/m);
 if (!protocol) throw new Error("Cannot read CLIENT_PROTOCOL from apps/web/src/constants.ts");
 const source = await readFile(sourcePath, "utf8");
-const declaration = /^const CLIENT_PROTOCOL = \d+;$/gm;
-if ([...source.matchAll(declaration)].length !== 1) throw new Error("Expected one CLIENT_PROTOCOL declaration in packages/helper/client/j01n.js");
+const declaration = /^const CLIENT_PROTOCOL = (\d+);$/gm;
+const helperProtocols = [...source.matchAll(declaration)];
+if (helperProtocols.length !== 1) throw new Error("Expected one CLIENT_PROTOCOL declaration in packages/helper/client/j01n.js");
+if (checkOnly && helperProtocols[0][1] !== protocol[1]) {
+  console.error("packages/helper/client/j01n.js CLIENT_PROTOCOL differs from apps/web/src/constants.ts");
+  process.exit(1);
+}
 const output = renderClientScript(source.replace(declaration, `const CLIENT_PROTOCOL = ${protocol[1]};`));
 
 if (checkOnly) {

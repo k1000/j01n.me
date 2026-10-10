@@ -384,7 +384,8 @@ async function claimTask(client, id, repo2) {
     if (!entry) throw new Error(`task ${id} does not exist`);
     const current = taskFrom(entry.value);
     if (current.status !== "open") throw new Error(`task ${id} is ${current.status}${current.owner ? ` by ${current.owner}` : ""}`);
-    const waiting = current.depends_on.filter((dep) => board[key(dep)]?.value && taskFrom(board[key(dep)].value).status === "done" ? false : true);
+    const unfinished = (entries) => current.depends_on.filter((dep) => entries[key(dep)]?.value && taskFrom(entries[key(dep)].value).status === "done" ? false : true);
+    const waiting = unfinished(board);
     if (waiting.length) {
       if (!current.waiting_for?.includes(client.participantId)) {
         try {
@@ -394,6 +395,7 @@ async function claimTask(client, id, repo2) {
           throw error;
         }
       }
+      if (unfinished((await client.board()).board).length === 0) continue;
       throw new Error(`task ${id} waits for ${waiting.join(", ")}`);
     }
     task = current;

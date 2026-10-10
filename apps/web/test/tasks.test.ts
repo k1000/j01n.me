@@ -65,6 +65,39 @@ describe("task primitives", () => {
     expect((await listTasks(a))[0].owner).toBe(winner.owner);
   });
 
+  it("retries a claim when a dependency completes before the waiter write (lost-wake interleaving)", async () => {
+    const { client, add, board } = room();
+    add("T1", task());
+    add("T2", { ...task(), depends_on: ["T1"] });
+    const base = client("b");
+    let completedBeforeWaiterWrite = false;
+    const b = { ...base, async setBoardKey(...args: Parameters<RoomClient["setBoardKey"]>) {
+      if (!completedBeforeWaiterWrite && args[0] === "task.T2" && (args[1] as { waiting_for?: string[] }).waiting_for) {
+        completedBeforeWaiterWrite = true;
+        board["task.T1"] = { value: { ...task(), status: "done" }, version: 2 };
+      }
+      return base.setBoardKey(...args);
+    } } as RoomClient;
+    expect(await claimTask(b, "T2", "repo")).toMatchObject({ status: "claimed", owner: "b" });
+    expect(completedBeforeWaiterWrite).toBe(true);
+    expect((board["task.T2"].value as { waiting_for?: string[] }).waiting_for).toBeUndefined();
+  });
+
+  it("rechecks dependencies for a previously registered waiter", async () => {
+    const { client, add, board } = room();
+    add("T1", task());
+    add("T2", { ...task(), depends_on: ["T1"], waiting_for: ["b"] });
+    const base = client("b");
+    let reads = 0;
+    const b = { ...base, async board() {
+      const snapshot = await base.board();
+      if (++reads === 1) board["task.T1"] = { value: { ...task(), status: "done" }, version: 2 };
+      return snapshot;
+    } } as RoomClient;
+    expect(await claimTask(b, "T2", "repo")).toMatchObject({ status: "claimed", owner: "b" });
+    expect(board["task.T2"].version).toBe(2); // no duplicate waiter write
+  });
+
   it("records blocked claimants with CAS without claiming or reserving, then clears waiters on claim", async () => {
     const { client, add, board } = room();
     add("T1", task());

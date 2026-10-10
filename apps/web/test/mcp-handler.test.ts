@@ -543,18 +543,20 @@ describe("hosted MCP handler", () => {
             if (auth !== "Bearer tok-b") return Response.json({ error: "participant token is required" }, { status: 403 });
             if (init?.method === "POST") announcedWith.push(auth);
             if (path.endsWith("/board")) return Response.json({ board: { kickoff: { value: { goal: "ship it" }, version: 1 } } });
+            if (path.endsWith("/asks")) return Response.json({ asks: [{ ask_id: "q1", seq: 4, from: "a", owed_by: "b", due_at: "2026-10-10T00:30:00.000Z", overdue: false, message: { id: "q1", seq: 4, from: "a", to: "b", intent: "notify", body: { text: "ready?" } } }] });
             return Response.json({ ok: true, participants: [], messages: [] });
           },
         }),
       },
     } as never;
 
-    const result = await toolResultText<{ ok: boolean; kickoff: unknown }>(await handleMcpRequest(rpc("tools/call", {
+    const result = await toolResultText<{ ok: boolean; kickoff: unknown; questions: unknown }>(await handleMcpRequest(rpc("tools/call", {
       name: "join_room", arguments: { inviteJson: "https://j01n.me/room/join-order-room#secret", participantId: "b" },
     }), env));
 
     expect(result.ok).toBe(true);
     expect(result.kickoff).toEqual({ goal: "ship it" });
+    expect(result.questions).toEqual([{ id: "q1", seq: 4, from: "a", body: { text: "ready?" }, due_at: "2026-10-10T00:30:00.000Z", overdue: false }]);
     expect(announcedWith).toEqual(["Bearer tok-b"]);
   });
 

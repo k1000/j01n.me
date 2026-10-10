@@ -2,7 +2,7 @@ import { RoomApiError } from "./errors";
 import type { Invite } from "./sdk";
 
 /** Room-feature version this SDK speaks; bump with CLIENT_PROTOCOL in apps/web/src/constants.ts. */
-export const SDK_CLIENT_PROTOCOL = 2;
+export const SDK_CLIENT_PROTOCOL = 3;
 let clientUpdateNotice: string | undefined;
 
 /** The room's "please update" notice, if this SDK is older than the server's client protocol. */

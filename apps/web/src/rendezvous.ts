@@ -8,7 +8,7 @@ import type { RoomEventBus } from "./room/events";
 import { roomExport, roomInfo, roomStatus, roomTransitionInfo } from "./room/info";
 import { RoomInitController } from "./room/init-controller";
 import { RoomMessageController } from "./room/message-controller";
-import { visibleTo } from "./room/messages";
+import { openAsksFor, visibleTo } from "./room/messages";
 import { activeParticipants, publicParticipant } from "./room/participants";
 import { RoomParticipantController } from "./room/participant-controller";
 import { createHook, deleteHook } from "./room/hooks";
@@ -140,6 +140,7 @@ export class RendezvousSession implements DurableObject {
       status: () => this.handleStatus(request, invite),
       events: () => this.handleEvents(request, invite),
       wait: () => this.handleWait(request, invite),
+      asks: () => this.handleAsks(request, invite),
       extend: () => this.handleExtendTtl(request, invite),
       transition: () => this.handleTransition(request, invite),
       hooks: () => this.handleListHooks(request, invite),
@@ -266,6 +267,15 @@ export class RendezvousSession implements DurableObject {
       const event = await this.events.wait(auth.participantId, timeoutSeconds * 1000);
       if (!event) return json({ timeout: true, cursor: invite.nextSeq });
       return json({ ...event, cursor: event.event === "message" ? event.last_seq : invite.nextSeq });
+    });
+  }
+
+  /** Open questions the caller owes, with their (still encrypted) messages. Read-only: the read cursor does not move. */
+  private handleAsks(request: Request, invite: InviteState): Promise<Response> {
+    return participantTokenAuthThen(invite, request, async (auth) => {
+      const joined = await requireJoined(invite, auth);
+      if (joined instanceof Response) return joined;
+      return json({ asks: openAsksFor(invite, auth.participantId) });
     });
   }
 

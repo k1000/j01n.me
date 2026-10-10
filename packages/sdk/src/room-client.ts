@@ -76,6 +76,17 @@ function boardKeyUrl(roomUrl: string, key: string, ifVersion?: number): string {
   return `${roomUrl}/board/${encodeURIComponent(key)}${ifVersion === undefined ? "" : `?if_version=${ifVersion}`}`;
 }
 
+/** A question waiting for your reply: answer with send(..., { replyTo: id }). */
+export interface OpenQuestion {
+  id: string;
+  seq: number;
+  from: string;
+  body?: unknown;
+  due_at: string;
+  overdue: boolean;
+  decrypt_error?: string;
+}
+
 /** Result of RoomClient.wait(): the event that woke you, or { timeout: true }. */
 export interface WaitResult {
   cursor: number;
@@ -124,6 +135,8 @@ export interface RoomClient {
    * (1-50 s). Returns at once if an unread message is waiting. Call read() afterwards to get the messages.
    */
   wait(options?: { after?: number; timeoutSeconds?: number }): Promise<WaitResult>;
+  /** Open questions you owe (addressed to you, or to all and unanswered), decrypted, newest first. Does not move the read cursor. */
+  openQuestions(): Promise<OpenQuestion[]>;
   participants(): Promise<ParticipantsResponse>;
   updateStatus(state: "free" | "busy", status: string, options?: { model?: string; skills?: string[] }): Promise<{ ok: true; participant: Participant }>;
   /** Opt into push: the room POSTs your visible events to this https URL. null switches back to polling. */
@@ -176,6 +189,28 @@ export async function buildRoomClient(
   let cursor = initialCursor;
   const session = cryptoSession ?? await createSdkCryptoSession(participantId);
 
+  async function decryptAll(messages: RoomMessage[]): Promise<RoomMessage[]> {
+    await session.processKeyExchange(messages);
+    if (messages.some((msg) => isEncryptedBody(msg.body))) {
+      // A resumed client may only see new messages, so learn keys announced earlier from the participant list.
+      const { participants = [] } = await client.participants();
+      await session.processPeerKeys(participants.flatMap((p) => (p.public_key ? [{ id: p.id, public_key: p.public_key }] : [])));
+    }
+    return Promise.all(
+      messages.map(async (msg) => {
+        if (isSealedKickoff(msg.body)) {
+          const kickoff = await openKickoff(msg.body, invite.join_secret, invite.room_id).catch(() => undefined);
+          return kickoff === undefined ? { ...msg, decrypt_error: "sealed kickoff: open it with the room link or invitation (join secret)" } : { ...msg, body: kickoff };
+        }
+        // Not decryptable with this key (e.g. sent to an older key): keep it encrypted and say so.
+        const body = await session.decryptMessageBody(msg).catch(() => msg.body);
+        return isEncryptedBody(body)
+          ? { ...msg, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" }
+          : { ...msg, body } satisfies RoomMessage;
+      }),
+    );
+  }
+
   const client: RoomClient = {
     invite,
     participantId,
@@ -218,25 +253,18 @@ export async function buildRoomClient(
         url.toString(), invite, { participantId },
       );
       cursor = result.cursor;
-      await session.processKeyExchange(result.messages);
-      if (result.messages.some((msg) => isEncryptedBody(msg.body))) {
-        // A resumed client may only see new messages, so learn keys announced earlier from the participant list.
-        const { participants = [] } = await client.participants();
-        await session.processPeerKeys(participants.flatMap((p) => (p.public_key ? [{ id: p.id, public_key: p.public_key }] : [])));
-      }
-      return Promise.all(
-        result.messages.map(async (msg) => {
-          if (isSealedKickoff(msg.body)) {
-            const kickoff = await openKickoff(msg.body, invite.join_secret, invite.room_id).catch(() => undefined);
-            return kickoff === undefined ? { ...msg, decrypt_error: "sealed kickoff: open it with the room link or invitation (join secret)" } : { ...msg, body: kickoff };
-          }
-          // Not decryptable with this key (e.g. sent to an older key): keep it encrypted and say so.
-          const body = await session.decryptMessageBody(msg).catch(() => msg.body);
-          return isEncryptedBody(body)
-            ? { ...msg, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" }
-            : { ...msg, body } satisfies RoomMessage;
-        }),
+      return decryptAll(result.messages);
+    },
+
+    async openQuestions() {
+      const { asks } = await request<{ asks: Array<OpenQuestion & { ask_id: string; message: RoomMessage }> }>(
+        `${invite.room_url.replace(/\/$/, "")}/asks`, invite, { participantId },
       );
+      const messages = await decryptAll(asks.map((ask) => ask.message));
+      return asks.map((ask, i) => ({
+        id: ask.ask_id, seq: ask.seq, from: ask.from, body: messages[i].body, due_at: ask.due_at, overdue: ask.overdue,
+        ...(messages[i].decrypt_error ? { decrypt_error: messages[i].decrypt_error } : {}),
+      }));
     },
 
     async participants() {

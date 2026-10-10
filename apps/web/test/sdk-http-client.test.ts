@@ -225,6 +225,28 @@ describe("SDK HTTP client", () => {
     expect(read[0].body).toEqual({ goal: "ship" });
   });
 
+  it("openQuestions returns the decrypted questions you owe without reading the room", async () => {
+    const peer = await createSdkCryptoSession("peer");
+    const me = await createSdkCryptoSession("me");
+    const peerKey = (await peer.announceKeyBody()).public_key;
+    await peer.processPeerKeys([{ id: "me", public_key: (await me.announceKeyBody()).public_key }]);
+    const question = { id: "q1", seq: 5, from: "peer", to: "me", intent: "notify", body: await peer.encryptForSend({ text: "can you review?" }, "me") };
+    const urls: string[] = [];
+    const impl = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      return String(url).endsWith("/participants")
+        ? Response.json({ participants: [{ id: "peer", public_key: peerKey }] })
+        : Response.json({ asks: [{ ask_id: "q1", seq: 5, from: "peer", owed_by: "me", due_at: "2026-10-10T01:00:00.000Z", overdue: false, message: question }] });
+    }) as unknown as typeof fetch;
+
+    const room = await resumeRoom({ ...makeInvite(), participant_token: "tok" }, "me", me);
+    const questions = await withFetch(impl, () => room.openQuestions());
+
+    expect(questions).toEqual([{ id: "q1", seq: 5, from: "peer", body: { text: "can you review?" }, due_at: "2026-10-10T01:00:00.000Z", overdue: false }]);
+    expect(urls.some((u) => u.endsWith("/asks"))).toBe(true);
+    expect(urls.some((u) => /\/r\/[^/]+\/?(\?|$)/.test(u))).toBe(false);
+  });
+
   it("read keeps messages it cannot decrypt instead of throwing", async () => {
     const peer = await createSdkCryptoSession("peer");
     const oldMe = await createSdkCryptoSession("me");

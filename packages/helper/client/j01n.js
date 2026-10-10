@@ -129,7 +129,7 @@ async function saveState(state) { await fs.writeFile(keyFile, JSON.stringify({ p
 function tokenHeaders(state) { return state.participantToken ? { authorization: 'Bearer ' + state.participantToken } : headers; }
 function requireParticipantToken(state) { if (!state.participantToken) die('participant token missing; run join first'); return state.participantToken; }
 // Room-feature version this helper speaks; bump with CLIENT_PROTOCOL in apps/web/src/constants.ts.
-const CLIENT_PROTOCOL = 2;
+const CLIENT_PROTOCOL = 3;
 let updateNoticeShown = false;
 async function requestJson(url, init = {}) {
   const r = await fetch(url, { ...init, headers: { ...(init.headers || {}), 'x-j01n-client': 'helper/' + CLIENT_PROTOCOL } });
@@ -149,6 +149,12 @@ async function announce(state) {
 // A JSON object is sent as is; anything else is sent as { text }.
 function parseMessageBody(raw) { try { const value = JSON.parse(raw); if (value && typeof value === 'object') return value; } catch {} return { text: raw }; }
 async function post(payload) { const r = await requestJson(roomUrl, { method: 'POST', headers: { ...tokenHeaders(currentState), 'content-type': 'application/json' }, body: JSON.stringify(payload) }); if (!r.ok) die(formatErrorBody(r.body)); return r.body; }
+// Peer keys from the participant list (does not move the read cursor, unlike reading the history).
+async function learnPeersFromParticipants(state) {
+  const r = await requestJson(roomUrl + '/participants', { headers: tokenHeaders(state) });
+  for (const p of (r.ok ? r.body.participants || [] : [])) if (p.id !== me && p.public_key) state.peers[p.id] = p.public_key;
+  await saveState(state);
+}
 async function syncKeys(state) {
   const messages = await readAllMessages();
   rememberPeerKeys(state, messages);
@@ -349,7 +355,13 @@ const COMMANDS = {
       const sealed = (await readAllMessages()).find((m) => m.intent === 'kickoff' && isSealedKickoff(m.body));
       if (sealed) kickoff.kickoff = await openKickoff(sealed.body).catch(() => null);
     }
-    console.log(JSON.stringify({ ...profile, ...kickoff }, null, 2));
+    // Questions waiting for your reply (read-only; does not mark anything read). Answer with send <from> <text> --reply-to <id>.
+    const asks = await requestJson(roomUrl + '/asks', { headers: tokenHeaders(state) });
+    const pending = asks.ok ? asks.body.asks || [] : [];
+    if (pending.length) await learnPeersFromParticipants(state);
+    const opened = await decryptedMessages(state, pending.map((a) => a.message));
+    const questions = pending.map((a, i) => ({ id: a.ask_id, seq: a.seq, from: a.from, body: opened[i].body, due_at: a.due_at, overdue: a.overdue, ...(opened[i].decrypt_error ? { decrypt_error: opened[i].decrypt_error } : {}) }));
+    console.log(JSON.stringify({ ...profile, ...kickoff, questions }, null, 2));
   },
   async send(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
     const [to, ...args] = rest;

@@ -181,8 +181,8 @@ describe("room lifecycle", () => {
 
     expect((await status("helper/0")).headers.get("x-j01n-client-update")).toContain("curl -fsSL https://j01n.me/client/j01n.js");
     expect((await status("sdk/0")).headers.get("x-j01n-client-update")).toContain("pi install https://gitlab.com/k1000/j01n.me");
-    expect((await status("helper/2")).headers.get("x-j01n-client-update")).toBeNull();
-    expect((await status("helper/1")).headers.get("x-j01n-client-update")).toContain("older than 2");
+    expect((await status("helper/3")).headers.get("x-j01n-client-update")).toBeNull();
+    expect((await status("helper/2")).headers.get("x-j01n-client-update")).toContain("older than 3");
     expect((await status()).headers.get("x-j01n-client-update")).toBeNull();
   });
 
@@ -206,6 +206,27 @@ describe("room lifecycle", () => {
     await post("agent-c", { to: "agent-a", reply_to: broadcast.id });
     expect((await asks()).map((a) => a.owed_by)).toEqual(["agent-c"]);
     expect((await asks())[0].overdue).toBe(false);
+  });
+
+  it("lists the open questions a participant owes, without moving its read cursor", async () => {
+    await joinParticipant(fix, "agent-a");
+    await joinParticipant(fix, "agent-b");
+    const post = (from: string, payload: Record<string, unknown>) =>
+      roomRequest(fix, "", {
+        method: "POST",
+        headers: { ...participantAuthHeaders(fix, from), "content-type": "application/json" },
+        body: JSON.stringify({ ...payload, body: encryptedPayload({ text: "q" }) }),
+      }).then((r) => r.json() as Promise<{ id: string }>);
+    const direct = await post("agent-a", { to: "agent-b", expects_reply: true });
+    const toAll = await post("agent-a", { to: "all", expects_reply: true });
+    const asks = (who: string) => getRoomJson<{ asks: Array<{ ask_id: string; message: { id: string } }> }>(fix, "/asks", who).then((r) => r.asks);
+    const cursor = async () => (await getRoomJson<{ participants: Array<{ id: string; last_read_seq: number }> }>(fix, "/status", "agent-a")).participants.find((p) => p.id === "agent-b")!.last_read_seq;
+
+    const before = await cursor();
+    expect((await asks("agent-b")).map((a) => a.ask_id)).toEqual([toAll.id, direct.id]);
+    expect((await asks("agent-b"))[1].message.id).toBe(direct.id);
+    expect(await asks("agent-a")).toEqual([]);
+    expect(await cursor()).toBe(before);
   });
 
   describe("wait (block until the next visible event)", () => {

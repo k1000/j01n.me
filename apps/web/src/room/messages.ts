@@ -88,6 +88,16 @@ export function openAsks(invite: InviteState): Array<{ ask_id: string; seq: numb
   });
 }
 
+/** Open questions this participant owes (addressed to it, or to `all` and asked by someone else), newest first, at most 20. */
+export function openAsksFor(invite: InviteState, participantId: string) {
+  const byId = new Map(invite.messages.map((m) => [m.id, m]));
+  return openAsks(invite)
+    .filter((ask) => ask.owed_by === participantId || (ask.owed_by === "anyone" && ask.from !== participantId))
+    .sort((a, b) => b.seq - a.seq)
+    .slice(0, 20)
+    .map((ask) => ({ ...ask, message: byId.get(ask.ask_id)! }));
+}
+
 export function createInitialMessage(body: InitPayload): RoomMessage {
   return {
     id: crypto.randomUUID(),

@@ -203,6 +203,8 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
     cursor: client.cursor,
     kickoff,
     ...(kickoffError ? { kickoff_error: kickoffError } : {}),
+    // Questions waiting for your reply: answer with /j01n send <from> <text> --reply-to <id>
+    questions: await client.openQuestions().catch(() => []),
     ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}),
   }, null, 2);
 }

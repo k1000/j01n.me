@@ -299,8 +299,14 @@ async function readRoomMessages(env: Env, params: Record<string, unknown>) {
   await crypto.processKeyExchange(messages);
 
   // Use SDK's proven decryption
+  const decrypted = await decryptRoomMessages(crypto, messages, secret, roomUrl);
+  return { cursor: result.cursor ?? 0, count: decrypted.length, messages: decrypted };
+}
+
+/** Decrypt room messages for a participant; sealed kickoffs need the real join secret. */
+async function decryptRoomMessages(crypto: SdkCryptoSession, messages: RoomMessage[], secret: string, roomUrl: string) {
   const roomId = roomUrl.split("/").pop()!;
-  const decrypted = await Promise.all(messages.map(async (msg) => {
+  return Promise.all(messages.map(async (msg) => {
     if (isSealedKickoff(msg.body)) {
       const kickoff = secret === SESSION_ROOM_SECRET ? undefined : await openKickoff(msg.body, secret, roomId).catch(() => undefined);
       return kickoff === undefined ? { ...msg, decrypt_error: "sealed kickoff: pass the room link (inviteJson) to open it" } : { ...msg, body: kickoff };
@@ -310,8 +316,6 @@ async function readRoomMessages(env: Env, params: Record<string, unknown>) {
       ? { ...msg, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" }
       : { ...msg, body };
   }));
-
-  return { cursor: result.cursor ?? 0, count: decrypted.length, messages: decrypted };
 }
 
 function parseSkills(value?: string): string[] | undefined {
@@ -801,8 +805,16 @@ const tools: Record<string, ToolDef> = {
         if (sealed) Object.assign(kickoff, { kickoff: await openKickoff(sealed.body as { encrypted_payload: string }, secret, roomUrl.split("/").pop()!).catch(() => null) });
       }
 
+      // Questions waiting for this participant's reply (answer with send_message replyTo).
+      const { asks = [] } = await doFetch(env, roomUrl, "/asks", secret, { participantId })
+        .catch(() => ({ asks: [] })) as { asks?: Array<{ ask_id: string; seq: number; from: string; due_at: string; overdue: boolean; message: RoomMessage }> };
+      const askMessages = await decryptRoomMessages(crypto, asks.map((a) => a.message), secret, roomUrl);
+      const questions = asks.map((a, i) => ({ id: a.ask_id, seq: a.seq, from: a.from, body: askMessages[i].body, due_at: a.due_at, overdue: a.overdue,
+        ...("decrypt_error" in askMessages[i] ? { decrypt_error: askMessages[i].decrypt_error } : {}) }));
+
       return {
         ...kickoff,
+        questions,
         ok: true,
         room_id: roomUrl.split("/").pop()!,
         room_url: roomUrl,

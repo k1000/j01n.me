@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { buildMinimalInvite, createRoom, getClientUpdateNotice, joinRoom, normalizeInvite, parseInviteLink, resumeRoom, RoomApiError } from "@j01n/sdk";
+import { buildMinimalInvite, createRoom, getClientUpdateNotice, joinRoom, normalizeInvite, parseInviteLink, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL } from "@j01n/sdk";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
@@ -258,8 +258,12 @@ async function handleDoctor(parsed: ParsedArgs): Promise<string> {
 
   const participants = await client.participants();
   const messages = await client.read({ all: true, includeSelf: true });
+  const openQuestions = await client.openQuestions();
   return JSON.stringify({
     ok: participants.participants.some((p) => p.id === parsed.me),
+    client_protocol: SDK_CLIENT_PROTOCOL,
+    ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}),
+    open_questions: openQuestions.length,
     participant_id: parsed.me,
     joined: participants.participants.some((p) => p.id === parsed.me),
     cursor: client.cursor,

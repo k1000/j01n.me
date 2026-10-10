@@ -56,6 +56,27 @@ describe("pi-extension sessions", () => {
     expect(JSON.parse(readFileSync(".j01n-_r_room-1-pi-agent.json", "utf8")).participantToken).toBe("tok-1");
   });
 
+  it("doctor reports the SDK protocol, update notice and open-question count", async () => {
+    const baseFetch = globalThis.fetch;
+    let asksAuth: string | null = null;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/participants") && (init?.method ?? "GET") === "GET") {
+        return Response.json({ participants: [{ id: "pi-agent" }] }, { headers: { "x-j01n-client-update": "Update the Pi extension" } });
+      }
+      if (String(url).endsWith("/asks")) {
+        asksAuth = new Headers(init?.headers).get("authorization");
+        return Response.json({ asks: [{ ask_id: "question-1", seq: 1, from: "host", due_at: null, overdue: false,
+          message: { id: "question-1", seq: 1, from: "host", to: "pi-agent", intent: "notify", body: { text: "Ready?" } } }] });
+      }
+      return baseFetch(url, init);
+    });
+
+    const { runj01n } = await import("../commands");
+    const result = JSON.parse(await runj01n(["doctor", ROOM, "secret", "pi-agent"]));
+    expect(result).toMatchObject({ client_protocol: 3, client_update: "Update the Pi extension", open_questions: 1 });
+    expect(asksAuth).toBe("Bearer tok-1");
+  });
+
   it("uses the sole room for status without repeating credentials", async () => {
     const commands = await import("../commands");
     await commands.runj01n(["join", "https://j01n.me/room/room-1#secret", "pi-agent"]);

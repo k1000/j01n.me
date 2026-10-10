@@ -1,7 +1,7 @@
 import { json } from "../format";
 import type { InviteState } from "../types";
 import { parseRequest, authenticate, joinedThen, participantTokenAuthThen } from "./auth-context";
-import { MAX_MESSAGES } from "../constants";
+import { announceSystemMessage } from "./announcement";
 import { holdsReservations, withoutReservations } from "./board";
 import { dispatchWebhooks } from "./hooks";
 import { joinResponse, roomInfo } from "./info";
@@ -34,16 +34,13 @@ function profileChangeMessage(before: InviteState, after: InviteState, participa
     capabilitiesChanged ? `${participantId} can now: ${(now.capabilities ?? []).join(", ") || "(no capabilities announced)"}` : "",
     workspaceChanged ? (now.workspace ? `${participantId} changed workspace` : `${participantId} stopped announcing its workspace`) : "",
   ].filter(Boolean).join("; ");
-  return createRoomMessage({
-    intent: "profile.changed",
-    body: {
-      text,
-      participant_id: participantId,
-      updated_by: actorId,
-      ...(capabilitiesChanged ? { capabilities: now.capabilities ?? [] } : {}),
-      ...(workspaceChanged ? { workspace: now.workspace ?? null } : {}),
-    },
-  }, "system", "all", before.nextSeq + 1);
+  return {
+    text,
+    participant_id: participantId,
+    updated_by: actorId,
+    ...(capabilitiesChanged ? { capabilities: now.capabilities ?? [] } : {}),
+    ...(workspaceChanged ? { workspace: now.workspace ?? null } : {}),
+  };
 }
 
 export class RoomParticipantController {
@@ -114,10 +111,7 @@ export class RoomParticipantController {
       const announcement = profileChangeMessage(invite, updated, targetId, actorId);
       if (announcement) {
         // Capabilities or workspace changed: tell everyone in the chat (the workspace stays sealed in the message).
-        const messages = [...updated.messages, announcement].slice(-MAX_MESSAGES);
-        await this.storage.patchAndSave(updated, { nextSeq: announcement.seq, messages });
-        this.events.notifyMessage(announcement, announcement.seq);
-        dispatchWebhooks({ ...updated, messages }, "message", { type: "message", message: announcement, last_seq: announcement.seq });
+        await announceSystemMessage(this.storage, this.events, updated, "profile.changed", announcement);
       } else {
         await this.storage.putInvite(updated);
       }
@@ -145,16 +139,8 @@ export class RoomParticipantController {
       if (to instanceof Response) return to;
       if (to === invite.hostId) return json({ error: `${to} is already the host` }, 400);
       if (!isParticipantJoined(invite.participants, to)) return json({ error: `${to} is not in the room` }, 404);
-      const seq = invite.nextSeq + 1;
-      const message = createRoomMessage(
-        { intent: "host.changed", body: { text: `${invite.hostId} made ${to} the host`, host_id: to, updated_by: invite.hostId } },
-        "system", "all", seq,
-      );
-      const messages = [...invite.messages, message].slice(-MAX_MESSAGES);
-      const updated: InviteState = { ...invite, hostId: to };
-      await this.storage.patchAndSave(updated, { nextSeq: seq, messages });
-      this.events.notifyMessage(message, seq);
-      dispatchWebhooks({ ...updated, messages }, "message", { type: "message", message, last_seq: seq });
+      await announceSystemMessage(this.storage, this.events, invite, "host.changed",
+        { text: `${invite.hostId} made ${to} the host`, host_id: to, updated_by: invite.hostId }, { hostId: to });
       return json({ ok: true, host_id: to });
     });
   }
@@ -181,13 +167,8 @@ export class RoomParticipantController {
   /** Drop a participant's file reservations from the board and announce it like any board change. */
   private async releaseReservations(invite: InviteState, participantId: string, actorId: string, text: string): Promise<InviteState> {
     const { board, changes } = withoutReservations(invite, participantId, actorId);
-    const seq = invite.nextSeq + 1;
-    const message = createRoomMessage({ intent: "board.changed", body: { text, updated_by: actorId, changes } }, "system", "all", seq);
-    const messages = [...invite.messages, message].slice(-MAX_MESSAGES);
-    await this.storage.patchAndSave(invite, { board, nextSeq: seq, messages });
-    this.events.notifyBoard(Object.keys(changes), actorId, changes);
-    this.events.notifyMessage(message, seq);
-    return { ...invite, board, nextSeq: seq, messages };
+    return announceSystemMessage(this.storage, this.events, invite, "board.changed",
+      { text, updated_by: actorId, changes }, { board }, { changes, updatedBy: actorId });
   }
 
   private async kick(invite: InviteState, actorId: string, targetId: string): Promise<Response> {

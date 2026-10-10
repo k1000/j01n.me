@@ -44,7 +44,7 @@ describe("optional live room view", () => {
     const renderMessage = vi.fn(async () => '<details class="message-entry">Opened message</details>');
     const { renderLiveRoom } = browserFunctions("  async function renderLiveRoom(", "  function subscribeRoomEvents(", {
       root, esc: escape, escAttr: escape, extractValue: (value: unknown) => value,
-      boardValueText: (value: unknown) => JSON.stringify(value),
+      renderBoardValue: (value: unknown) => escape(JSON.stringify(value)),
       renderKanbanBoard: () => '<div class="kanban-board">Kanban tasks</div>', renderMessage,
       liveActivity: [], participantId: "viewer", updateConnectionStatus: vi.fn(), connectionState: "connected",
       document: { activeElement: { closest: () => messageElement } },
@@ -73,11 +73,25 @@ describe("optional live room view", () => {
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
   });
 
+  it("shows board values as text, key/value rows and lists, escaped, outside the editor", () => {
+    const { renderValue, taskExtras } = browserFunctions("  function renderValue(", "  function wrapBoardValue(", { esc: escape }, "return { renderValue, taskExtras };");
+    const html = renderValue({ goal: "Ship <b>it</b>", rules: ["one", "two"], tasks: { a: { status: "done", n: 3 } }, none: [], empty: {}, nothing: null });
+    expect(html).toContain('<dt>goal</dt><dd><span class="json-text">Ship &lt;b>it&lt;/b></span></dd>');
+    expect(html).toContain('<ul class="json-list"><li><span class="json-text">one</span></li><li><span class="json-text">two</span></li></ul>');
+    expect(html).toContain('<dt>a</dt><dd><dl class="json-object"><div><dt>status</dt><dd><span class="json-text">done</span></dd></div>');
+    expect(html).toContain('<span class="json-empty">none</span>');
+    expect(html).toContain('<span class="json-empty">empty</span>');
+    expect(html).toContain('<span class="json-text">null</span>');
+    expect(html).not.toContain("<b>");
+    expect(taskExtras({ title: "T", owner: "o", description: "d", state: "todo", status: "done" })).toEqual({ status: "done" });
+    expect(taskExtras({ title: "T" })).toBeNull();
+  });
+
   it("shows useful empty states", async () => {
     const root = { innerHTML: "", querySelectorAll: () => [] };
     const { renderLiveRoom } = browserFunctions("  async function renderLiveRoom(", "  function subscribeRoomEvents(", {
       root, esc: escape, escAttr: escape, extractValue: (value: unknown) => value,
-      boardValueText: JSON.stringify, renderKanbanBoard: vi.fn(), renderMessage: vi.fn(),
+      renderBoardValue: JSON.stringify, renderKanbanBoard: vi.fn(), renderMessage: vi.fn(),
       liveActivity: [], participantId: 'viewer', updateConnectionStatus: vi.fn(), connectionState: 'connecting',
       document: { activeElement: null },
     }, "return { renderLiveRoom };");

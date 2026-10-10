@@ -280,6 +280,19 @@ function roomPageStyles(): string {
   .board-entry .board-key { font-weight: 700; color: var(--highlight); }
   .board-entry .board-meta { font-size: 0.85rem; opacity: 0.6; }
   .board-entry pre { grid-column: 1 / -1; margin: 0; white-space: pre-wrap; word-break: break-word; background: Canvas; color: var(--highlight); }
+  /* Board values outside the editor: objects as key/value rows, arrays as lists, strings as wrapped text. */
+  .board-entry .board-value { grid-column: 1 / -1; }
+  .board-value { min-width: 0; overflow-wrap: anywhere; }
+  .json-object { display: grid; gap: 0.4rem; margin: 0; }
+  .json-object > div { display: grid; grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr); gap: 0.15rem 1rem; }
+  .json-object dt { font-weight: 700; opacity: 0.72; }
+  .json-object dd { margin: 0; min-width: 0; }
+  .json-list { display: grid; gap: 0.25rem; margin: 0; padding-left: 1.25rem; list-style: square; }
+  .json-text { white-space: pre-wrap; }
+  .json-empty { opacity: 0.6; }
+  .kanban-card .board-value { margin-top: 0.4rem; font-size: 0.85rem; }
+  .kanban-card .json-object > div { grid-template-columns: minmax(0, 1fr); }
+  @media (max-width: 560px) { .json-object > div { grid-template-columns: minmax(0, 1fr); } }
   .participant-card { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-top: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
   .participant-card:first-child { border-top: none; }
   .participant-card .participant-name { font-weight: 700; }

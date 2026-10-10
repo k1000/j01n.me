@@ -258,6 +258,7 @@
           '<span class="kanban-card-title">' + esc(title) + '</span>' +
           (owner ? '<span class="kanban-card-owner">Owner: ' + owner + '</span>' : '') +
           (task?.description ? '<p>' + esc(task.description) + '</p>' : '') +
+          (taskExtras(task) ? '<div class="board-value">' + renderValue(taskExtras(task)) + '</div>' : '') +
           (!liveView ? '<button class="button" type="button" data-edit-task="' + escAttr(id) + '" aria-label="' + escAttr('Edit ' + title) + '">Edit</button>' : '') +
         '</div>';
       }).join("");
@@ -299,7 +300,7 @@
     const isKanban = columns && typeof columns === "object" && !Array.isArray(columns) && ["todo", "doing", "review", "done"].some(c => c in columns);
     const entries = Object.entries(board).filter(([key]) => !isKanban || !["columns", "tasks"].includes(key));
     const boardHtml = (isKanban ? renderKanbanBoard(board, columns, "h3") : "") + '<div class="live-board-entries">' + entries.map(([key, entry]) =>
-      '<article class="live-board-card"><header><h3>' + esc(key) + '</h3><span class="live-version">v' + esc(entry.version ?? 0) + '</span></header><pre>' + esc(boardValueText(entry.value)) + '</pre><small>Updated by ' + esc(entry.updated_by || "—") + '</small></article>'
+      '<article class="live-board-card"><header><h3>' + esc(key) + '</h3><span class="live-version">v' + esc(entry.version ?? 0) + '</span></header><div class="board-value">' + renderBoardValue(entry.value) + '</div><small>Updated by ' + esc(entry.updated_by || "—") + '</small></article>'
     ).join("") + '</div>';
     const peopleHtml = people.map(p => {
       const state = p.left_at ? "left" : p.state || "free";
@@ -649,8 +650,7 @@
     const isKanban = columnsVal && typeof columnsVal === "object" && !Array.isArray(columnsVal) && ["todo", "doing", "review", "done"].some((c) => c in columnsVal)
       && typeof tasksVal === 'object' && !Array.isArray(tasksVal) && !('encrypted_payload' in tasksVal);
     const boardEntries = Object.entries(board).filter(([key]) => key !== 'reservations' && (!isKanban || !['columns', 'tasks'].includes(key))).map(([k, entry]) => {
-      const val = boardValueText(entry.value);
-      return `<div class="board-entry"><span class="board-key">${esc(k)}</span><span class="board-meta">v${esc(entry.version)} · updated by ${esc(entry.updated_by)} at ${esc(entry.updated_at)}</span><button class="button" type="button" data-edit-board-key="${escAttr(k)}" aria-label="${escAttr('Edit board key ' + k)}">Edit</button><pre>${esc(val)}</pre></div>`;
+      return `<div class="board-entry"><span class="board-key">${esc(k)}</span><span class="board-meta">v${esc(entry.version)} · updated by ${esc(entry.updated_by)} at ${esc(entry.updated_at)}</span><button class="button" type="button" data-edit-board-key="${escAttr(k)}" aria-label="${escAttr('Edit board key ' + k)}">Edit</button><div class="board-value">${renderBoardValue(entry.value)}</div></div>`;
     }).join('');
     const boardHtml = boardKeys.length === 0 ? '<p class="board-empty">No board data yet.</p>' : (isKanban ? renderKanbanBoard(board, columnsVal) : '') + boardEntries;
 
@@ -1078,10 +1078,37 @@ ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(
     return Number.isFinite(ms) && ms <= Date.now();
   }
 
-  function boardValueText(value) {
+  function boardDisplayValue(value) {
     const unwrapped = unwrapUiBoardValue(value);
-    const displayValue = unwrapped.ok ? unwrapped.value : value;
+    return unwrapped.ok ? unwrapped.value : value;
+  }
+
+  // The editor shows raw JSON; everywhere else a board value reads as text, key/value rows and lists.
+  function boardValueText(value) {
+    const displayValue = boardDisplayValue(value);
     return typeof displayValue === "object" ? JSON.stringify(displayValue, null, 2) : String(displayValue ?? "");
+  }
+
+  function renderBoardValue(value) {
+    return renderValue(boardDisplayValue(value));
+  }
+
+  function renderValue(value) {
+    if (Array.isArray(value)) {
+      return value.length ? '<ul class="json-list">' + value.map(item => '<li>' + renderValue(item) + '</li>').join("") + '</ul>' : '<span class="json-empty">none</span>';
+    }
+    if (value && typeof value === "object") {
+      const entries = Object.entries(value);
+      return entries.length ? '<dl class="json-object">' + entries.map(([key, item]) => '<div><dt>' + esc(key) + '</dt><dd>' + renderValue(item) + '</dd></div>').join("") + '</dl>' : '<span class="json-empty">empty</span>';
+    }
+    return '<span class="json-text">' + esc(value === null ? "null" : String(value ?? "")) + '</span>';
+  }
+
+  // Task fields the kanban card does not already show (title, owner, description; state is the column).
+  function taskExtras(task) {
+    if (!task || typeof task !== "object") return null;
+    const rest = Object.fromEntries(Object.entries(task).filter(([key]) => !["title", "owner", "description", "state"].includes(key)));
+    return Object.keys(rest).length ? rest : null;
   }
 
   function wrapBoardValue(value) {

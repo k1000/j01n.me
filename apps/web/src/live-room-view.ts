@@ -63,7 +63,7 @@ export const LIVE_ROOM_STYLES = `
   .live-board-card h3::before { content: none; }
   .live-version, .live-board-card small { color: var(--live-muted); font-size: 0.6rem; }
   .live-board-card small { grid-column: 2; }
-  .live-board-card pre { margin: 0; padding: 0; background: transparent; color: var(--live-ink); font: inherit; font-size: 0.75rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .live-board-card .board-value { color: var(--live-ink); font-size: 0.75rem; }
   .live-room-page .kanban-board { gap: 0; margin: 0; padding-bottom: 1rem; }
   .live-room-page .kanban-column { min-width: 0; padding: 0 0.75rem; border-left: 1px dashed var(--live-line); background: transparent; }
   .live-room-page .kanban-column:first-child { padding-left: 0; border-left: 0; }

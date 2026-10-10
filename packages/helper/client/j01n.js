@@ -787,8 +787,8 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
 }
 async function runReservationCommand(client, cmd2, rest, options) {
   if (cmd2 === "reservations") return { reservations: await listReservations(client) };
-  if (cmd2 === "release") return { ok: true, reservations: await releasePaths(client, options.repo, rest.map(options.path)) };
   const at = rest.indexOf("--reason");
+  if (cmd2 === "release") return { ok: true, reservations: await releasePaths(client, options.repo, (options.releaseReasonDelimiter && at >= 0 ? rest.slice(0, at) : rest).map(options.path)) };
   const paths = (at >= 0 ? rest.slice(0, at) : rest).map(options.path);
   if (options.requirePaths && !paths.length) throw new Error("reserve needs: <path>... [--reason text]");
   const reason = at >= 0 ? rest.slice(at + 1).join(" ") || void 0 : void 0;
@@ -1107,7 +1107,8 @@ async function main() {
     output(await runReservationCommand(client, cmd, rest, {
       repo: id,
       path: (path) => relative(root, resolve(path)) || ".",
-      requirePaths: true
+      requirePaths: true,
+      releaseReasonDelimiter: true
     }));
     return;
   }

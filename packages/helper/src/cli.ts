@@ -229,7 +229,7 @@ async function main() {
   if (["reserve", "release", "reservations"].includes(cmd)) {
     const { root, id } = repo();
     output(await runReservationCommand(client, cmd as "reserve" | "release" | "reservations", rest, {
-      repo: id, path: (path) => relative(root, resolve(path)) || ".", requirePaths: true,
+      repo: id, path: (path) => relative(root, resolve(path)) || ".", requirePaths: true, releaseReasonDelimiter: true,
     })); return;
   }
   if (cmd === "leave") { await client.leave({ release: rest.includes("--release") }); await fs.rm(activePath(roomUrl, me), { force: true }); output({ ok: true, left: true }); return; }

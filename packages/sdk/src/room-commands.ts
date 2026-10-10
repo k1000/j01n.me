@@ -107,10 +107,10 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
   throw new Error(`unknown room command: ${cmd}`);
 }
 
-export async function runReservationCommand(client: RoomClient, cmd: "reserve" | "release" | "reservations", rest: string[], options: { repo: string; path: (value: string) => string; requirePaths?: boolean }): Promise<unknown> {
+export async function runReservationCommand(client: RoomClient, cmd: "reserve" | "release" | "reservations", rest: string[], options: { repo: string; path: (value: string) => string; requirePaths?: boolean; releaseReasonDelimiter?: boolean }): Promise<unknown> {
   if (cmd === "reservations") return { reservations: await listReservations(client) };
-  if (cmd === "release") return { ok: true, reservations: await releasePaths(client, options.repo, rest.map(options.path)) };
   const at = rest.indexOf("--reason");
+  if (cmd === "release") return { ok: true, reservations: await releasePaths(client, options.repo, (options.releaseReasonDelimiter && at >= 0 ? rest.slice(0, at) : rest).map(options.path)) };
   const paths = (at >= 0 ? rest.slice(0, at) : rest).map(options.path);
   if (options.requirePaths && !paths.length) throw new Error("reserve needs: <path>... [--reason text]");
   const reason = at >= 0 ? rest.slice(at + 1).join(" ") || undefined : undefined;

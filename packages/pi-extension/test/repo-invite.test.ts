@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +11,7 @@ vi.mock("../commands", () => ({ activeRoomClients: vi.fn(), prepareRoomPeerSpawn
 import { inviteAgent } from "@j01n/sdk";
 import { listHerdrRepoAgents, promptHerdrAgent } from "../herdr";
 import { activeRoomClients } from "../commands";
-import { inviteRepoAgents, repoInviteCandidates, registerRepoInviteTool } from "../repo-invite";
+import { inviteRepoAgents, isExternalStorage, repoInviteCandidates, registerRepoInviteTool } from "../repo-invite";
 
 const link = "https://j01n.me/room/demo#private-join-secret";
 const sender = { name: "host-123", base: "https://j01n.me" } as AgentIdentity;
@@ -66,6 +66,13 @@ describe("repo agent invitations", () => {
     expect(listHerdrRepoAgents).not.toHaveBeenCalled();
   });
 
+  it("resolves symlinks before deciding whether CLI identities would be written on external storage", () => {
+    const link = join(mkdtempSync(join(tmpdir(), "j01n-storage-check-")), "external");
+    symlinkSync("/Volumes", link);
+    expect(isExternalStorage(root)).toBe(false);
+    expect(isExternalStorage(link)).toBe(true);
+  });
+
   it("uses the downloaded Node CLI helper for non-Pi agents, not an uninstalled j01n binary", async () => {
     vi.mocked(listHerdrRepoAgents).mockReturnValue([{ ...peer("w2:p1", root, "claude-agent"), agent: "claude" }]);
     let registered = false;
@@ -74,7 +81,8 @@ describe("repo agent invitations", () => {
     expect(await inviteRepoAgents(client, sender, link, false, root)).toMatchObject({ results: [{ status: "invited" }] });
     expect(vi.mocked(promptHerdrAgent).mock.calls[0][1]).toContain("node .j01n/j01n.js register claude-agent-12345678 host-123");
     expect(vi.mocked(promptHerdrAgent).mock.calls[0][1]).toContain("https://j01n.me/cli.md");
-    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("node .j01n/j01n.js listen claude-agent-12345678 --as claude-agent");
+    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("node .j01n/j01n.js listen claude-agent-12345678 to join");
+    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).not.toContain("--as");
     expect(JSON.stringify(vi.mocked(promptHerdrAgent).mock.calls)).not.toContain("private-join-secret");
   });
 

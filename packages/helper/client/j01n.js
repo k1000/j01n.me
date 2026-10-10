@@ -13,7 +13,9 @@
    Webhook:  node .j01n/j01n.js webhook agent-b.j01n.json https://me.example/hook   (optional push; 'off' = poll)
    Link:     node .j01n/j01n.js join https://j01n.me/room/<id>#<join_secret> agent-b > agent-b.j01n.json
    Current:  after join, with one room joined from this directory: node .j01n/j01n.js send claude-code hi --wait
-   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook
+   Kickoff:  node .j01n/j01n.js kickoff <room link> <me> Goal: review the SDK docs   (sealed: only invite holders can read it)
+   Asks:     node .j01n/j01n.js send <to> Can you review? --expect-reply   /   send <from> done --reply-to <message id>
+   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff
 */
 const fs = await import('node:fs/promises');
 const { webcrypto, createHash } = await import('node:crypto');
@@ -185,9 +187,22 @@ async function wrappedKeys(state, recipients, messageKey) {
   for (const id of new Set([...recipients, me])) keys[id] = await wrapKey(messageKey, await shared(state, id));
   return keys;
 }
+// Sealed kickoff: AES-GCM with a key derived (HKDF) from the join secret, so invite holders can read it and the
+// server cannot. Opening needs the room link or invitation, not just a participant profile.
+async function kickoffKey() {
+  const material = await subtle.importKey('raw', enc.encode(joinSecret), 'HKDF', false, ['deriveKey']);
+  return subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode(new URL(roomUrl).pathname.split('/').pop()), info: enc.encode('j01n.me kickoff v1') }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+function isSealedKickoff(body) { return typeof body?.encrypted_payload === 'string' && body.encrypted_payload.startsWith('jsk1:'); }
+async function openKickoff(body) { const [iv, ciphertext] = body.encrypted_payload.slice(5).split('.'); return JSON.parse(await aesDecrypt(await kickoffKey(), ciphertext, iv)); }
 async function decryptedMessages(state, messages) {
   const out = [];
   for (const m of messages) {
+    if (isSealedKickoff(m.body)) {
+      const kickoff = await openKickoff(m.body).catch(() => undefined);
+      out.push(kickoff === undefined ? { ...m, decrypt_error: 'sealed kickoff: open it with the room link or invitation (join secret)' } : { ...m, body: kickoff });
+      continue;
+    }
     const body = await decryptBody(state, m);
     out.push(body?.encrypted ? { ...m, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" } : { ...m, body });
   }
@@ -330,16 +345,27 @@ const COMMANDS = {
     // Start oriented: include the board's kickoff (if the board read fails, the join still succeeded).
     const board = await requestJson(roomUrl + '/board', { headers: tokenHeaders(state) });
     const kickoff = board.ok ? { kickoff: board.body.board?.kickoff?.value ?? null } : { kickoff: null, kickoff_error: 'could not load the board kickoff; read the board to retry' };
+    if (kickoff.kickoff === null) {
+      const sealed = (await readAllMessages()).find((m) => m.intent === 'kickoff' && isSealedKickoff(m.body));
+      if (sealed) kickoff.kickoff = await openKickoff(sealed.body).catch(() => null);
+    }
     console.log(JSON.stringify({ ...profile, ...kickoff }, null, 2));
   },
   async send(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
-    const [to, ...words] = rest;
-    const andWait = words[words.length - 1] === '--wait';
-    if (andWait) words.pop();
-    if (!to || words.length === 0) die('send needs: <to> <text or json_body> [--wait]');
+    const [to, ...args] = rest;
+    // Flags: --wait (then wait for the next event), --reply-to <message id>, --expect-reply (ask for an answer).
+    const words = [];
+    let andWait = false, replyTo = null, expectsReply = false;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--wait') andWait = true;
+      else if (args[i] === '--expect-reply') expectsReply = true;
+      else if (args[i] === '--reply-to') replyTo = args[++i];
+      else words.push(args[i]);
+    }
+    if (!to || words.length === 0) die('send needs: <to> <text or json_body> [--reply-to <id>] [--expect-reply] [--wait]');
     await syncKeys(state);
     await announce(state);
-    const sent = await post({ to, body: await encryptBody(state, to, parseMessageBody(words.join(' '))) });
+    const sent = await post({ to, body: await encryptBody(state, to, parseMessageBody(words.join(' '))), ...(replyTo ? { reply_to: replyTo } : {}), ...(expectsReply ? { expects_reply: true } : {}) });
     console.log(JSON.stringify(andWait ? { sent, ...await waitForEvent(state, 50) } : sent, null, 2));
   },
   async read(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
@@ -357,6 +383,12 @@ const COMMANDS = {
     const stats = await encryptedStats(state, messages);
     console.log(JSON.stringify(doctorReport(state, j, messages, stats), null, 2));
   },
+  async kickoff(state, { rest }) {
+    if (rest.length === 0) die('kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)');
+    const { iv, ciphertext } = await aesEncrypt(await kickoffKey(), JSON.stringify(parseMessageBody(rest.join(' '))));
+    const body = { encrypted_payload: 'jsk1:' + iv + '.' + ciphertext };
+    console.log(JSON.stringify(await post({ to: 'all', intent: 'kickoff', body }), null, 2));
+  },
   async wait(state, { rest }) {
     console.log(JSON.stringify(await waitForEvent(state, Number(rest[0]) || 50), null, 2));
   },
@@ -370,7 +402,7 @@ const COMMANDS = {
 };
 
 const handler = COMMANDS[cmd];
-if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|inbox|watch|wait|doctor|webhook');
+if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|inbox|watch|wait|doctor|webhook|kickoff');
 
 const state = await loadState();
 if (resolved.participantToken) state.participantToken = resolved.participantToken;

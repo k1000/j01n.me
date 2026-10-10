@@ -7,6 +7,7 @@ import {
   bootstrapRoom,
   closeRoom,
   decodedPayload,
+  encryptedPayload,
   deleteParticipant,
   getRoomJson,
   joinParticipant,
@@ -182,6 +183,28 @@ describe("room lifecycle", () => {
     expect((await status("sdk/0")).headers.get("x-j01n-client-update")).toContain("pi install https://gitlab.com/k1000/j01n.me");
     expect((await status("helper/1")).headers.get("x-j01n-client-update")).toBeNull();
     expect((await status()).headers.get("x-j01n-client-update")).toBeNull();
+  });
+
+  it("tracks questions until they are answered (any reply closes a question to all)", async () => {
+    await joinParticipant(fix, "agent-a");
+    await joinParticipant(fix, "agent-b");
+    await joinParticipant(fix, "agent-c");
+    const post = (from: string, payload: Record<string, unknown>) =>
+      roomRequest(fix, "", {
+        method: "POST",
+        headers: { ...participantAuthHeaders(fix, from), "content-type": "application/json" },
+        body: JSON.stringify({ ...payload, body: encryptedPayload({ text: "x" }) }),
+      }).then((r) => r.json() as Promise<{ id: string }>);
+    const asks = () => getRoomJson<{ open_asks: Array<{ ask_id: string; owed_by: string; overdue: boolean }> }>(fix, "/status", "agent-a").then((s) => s.open_asks);
+
+    const direct = await post("agent-a", { to: ["agent-b", "agent-c"], expects_reply: true, reply_by_minutes: 5 });
+    const broadcast = await post("agent-a", { to: "all", expects_reply: true });
+    expect((await asks()).map((a) => `${a.ask_id === direct.id ? "direct" : "all"}:${a.owed_by}`)).toEqual(["direct:agent-b", "direct:agent-c", "all:anyone"]);
+
+    await post("agent-b", { to: "agent-a", reply_to: direct.id });
+    await post("agent-c", { to: "agent-a", reply_to: broadcast.id });
+    expect((await asks()).map((a) => a.owed_by)).toEqual(["agent-c"]);
+    expect((await asks())[0].overdue).toBe(false);
   });
 
   describe("wait (block until the next visible event)", () => {

@@ -1,6 +1,6 @@
 import { createSdkCryptoSession } from "./sdk-crypto-session";
 import type { SdkCryptoSession } from "./sdk-crypto-session";
-import { isEncryptedBody } from "./crypto";
+import { isEncryptedBody, isSealedKickoff, openKickoff } from "./crypto";
 import { request } from "./transport";
 import type {
   Recipient,
@@ -102,6 +102,10 @@ export interface SendOptions {
   status?: string;
   model?: string;
   skills?: string[];
+  /** Ask for a reply: the message stays in /status open_asks until the recipient (anyone, for "all") replies to it. */
+  expectsReply?: boolean;
+  /** Minutes until an open ask counts as overdue (default 30). */
+  replyByMinutes?: number;
 }
 
 export interface RoomClient {
@@ -152,6 +156,7 @@ function buildSendPayload(to: Recipient, body: unknown, options: SendOptions): R
     reply_to: options.replyTo ?? null,
     intent: options.intent ?? "notify",
     priority: options.priority ?? "normal",
+    ...(options.expectsReply ? { expects_reply: true, ...(options.replyByMinutes ? { reply_by_minutes: options.replyByMinutes } : {}) } : {}),
     ...Object.fromEntries(
       (["state", "status", "model", "skills"] as const)
         .map((k) => [k, options[k]])
@@ -221,6 +226,10 @@ export async function buildRoomClient(
       }
       return Promise.all(
         result.messages.map(async (msg) => {
+          if (isSealedKickoff(msg.body)) {
+            const kickoff = await openKickoff(msg.body, invite.join_secret, invite.room_id).catch(() => undefined);
+            return kickoff === undefined ? { ...msg, decrypt_error: "sealed kickoff: open it with the room link or invitation (join secret)" } : { ...msg, body: kickoff };
+          }
           // Not decryptable with this key (e.g. sent to an older key): keep it encrypted and say so.
           const body = await session.decryptMessageBody(msg).catch(() => msg.body);
           return isEncryptedBody(body)

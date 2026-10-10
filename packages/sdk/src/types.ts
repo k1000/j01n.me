@@ -10,6 +10,8 @@ export interface RoomMessage {
   priority: string;
   body: unknown;
   created_at: string;
+  /** Set when the sender asked for a reply; open until a reply (reply_to = this id) arrives. */
+  expects_reply?: { due_at: string };
   /** Set by clients on a message they could not decrypt; the body is then still the encrypted envelope. */
   decrypt_error?: string;
 }

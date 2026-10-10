@@ -190,6 +190,11 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
   } catch {
     kickoffError = "Could not load kickoff; use /j01n board to retry";
   }
+  if (kickoff === null) {
+    // Otherwise the sealed kickoff message, which the SDK opens with this invitation's join secret.
+    const sealed = (await client.read({ all: true, includeSelf: true }).catch(() => [])).find((m) => m.intent === "kickoff" && !m.decrypt_error);
+    if (sealed) kickoff = sealed.body;
+  }
   return JSON.stringify({
     ok: true,
     participant_id: parsed.me,
@@ -207,11 +212,18 @@ async function handleSend(parsed: ParsedArgs): Promise<string> {
   const invite = resolveInvite(parsed);
   const client = await openSession(invite, parsed.me);
 
-  const [toRaw, ...words] = parsed.rest;
-  const andWait = words[words.length - 1] === "--wait";
-  if (andWait) words.pop();
-  if (!toRaw || words.length === 0) throw new Error("send needs: <to> <text or json_body> [--wait] (e.g. all hello there)");
-  const sent = await client.send(parseRecipient(toRaw), parseMessageBody(words.join(" ")));
+  const [toRaw, ...args] = parsed.rest;
+  // Flags: --wait (then wait for the next event), --reply-to <message id>, --expect-reply (ask for an answer).
+  const words: string[] = [];
+  let andWait = false, replyTo: string | undefined, expectsReply = false;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--wait") andWait = true;
+    else if (args[i] === "--expect-reply") expectsReply = true;
+    else if (args[i] === "--reply-to") replyTo = args[++i];
+    else words.push(args[i]);
+  }
+  if (!toRaw || words.length === 0) throw new Error("send needs: <to> <text or json_body> [--reply-to <id>] [--expect-reply] [--wait]");
+  const sent = await client.send(parseRecipient(toRaw), parseMessageBody(words.join(" ")), { replyTo, expectsReply });
   return JSON.stringify(andWait ? { sent, ...await waitAndRead(client) } : sent, null, 2);
 }
 

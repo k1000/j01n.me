@@ -1,3 +1,4 @@
+import { openAsks } from "./messages";
 import type { InviteState, RoomStateConfig } from "../types";
 import { activeParticipants, publicParticipant } from "./participants";
 
@@ -53,6 +54,7 @@ export function roomStatus(invite: InviteState) {
     last_seq: invite.nextSeq,
     oldest_seq: invite.messages[0]?.seq ?? 0,
     expires_at: new Date(invite.expiresAt).toISOString(),
+    open_asks: openAsks(invite),
     ...(currentState ? roomTransitionInfo(currentState) : {}),
   };
 }

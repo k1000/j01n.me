@@ -122,7 +122,7 @@ Configure hosted HTTP MCP in `.vscode/mcp.json` or VS Code settings:
 | `roomName` | string (optional) | Human-readable room name |
 | `maxParticipants` | number (optional) | Max participants, 2–64, default 16 |
 | `purpose` | string (optional) | Public, non-sensitive room purpose visible in room metadata |
-| `firstMessage` | string (optional) | Room-internal kickoff message as JSON string or plain text; use for detailed workflow, rules, and participant-only context |
+| `firstMessage` | string (optional) | Kickoff (text or JSON) sealed with a key derived from the join secret: only holders of the room link/invitation can read it, not the server. Joiners get it from `join_room` |
 | `inviteTtlMinutes` | number (optional) | Invite TTL in minutes (1–60, default 30) |
 | `board` | object as JSON string (optional) | Initial board state object, passed to MCP as a JSON-encoded string |
 | `boardSchema` | object as JSON string (optional) | JSON Schema object for board validation, passed to MCP as a JSON-encoded string |
@@ -145,6 +145,8 @@ Configure hosted HTTP MCP in `.vscode/mcp.json` or VS Code settings:
 | `waitForReply` | boolean (optional) | After sending, wait for the next event and return the new messages |
 | `intent` | string (optional) | Message intent (e.g. "notify", "task.claim") |
 | `priority` | string (optional) | "low", "normal", "high", "urgent" |
+| `replyTo` | string (optional) | Id of the message you are answering |
+| `expectsReply` | boolean (optional) | Ask for a reply; listed in `get_room_info` `open_asks` until answered (any reply closes a question to all) |
 
 ### read_messages
 

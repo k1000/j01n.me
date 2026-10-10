@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createRoom, createRoomAndJoin, joinRoom, resumeRoom, type Invite } from "@j01n/sdk";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
+import { sealKickoff } from "@j01n/sdk/crypto";
 
 async function withFetch<T>(impl: typeof globalThis.fetch, fn: () => Promise<T>): Promise<T> {
   const original = globalThis.fetch;
@@ -213,6 +214,15 @@ describe("SDK HTTP client", () => {
     const read = await withFetch(impl, () => room.read());
 
     expect(read[0].body).toEqual({ text: "only new message" });
+  });
+
+  it("read opens a sealed kickoff with the invite's join secret", async () => {
+    const invite = makeInvite();
+    const sealed = await sealKickoff({ goal: "ship" }, invite.join_secret, invite.room_id);
+    const impl = (async () => Response.json({ cursor: 1, messages: [{ id: "k", seq: 1, from: "host", to: "all", intent: "kickoff", body: sealed }] })) as unknown as typeof fetch;
+    const room = await resumeRoom({ ...invite, participant_token: "tok" }, "me");
+    const read = await withFetch(impl, () => room.read());
+    expect(read[0].body).toEqual({ goal: "ship" });
   });
 
   it("read keeps messages it cannot decrypt instead of throwing", async () => {

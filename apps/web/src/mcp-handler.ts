@@ -22,7 +22,7 @@ import type { CreateRoomBody } from "./invite";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { SdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
-import { isEncryptedBody } from "@j01n/sdk/crypto";
+import { isEncryptedBody, isSealedKickoff, openKickoff, sealKickoff } from "@j01n/sdk/crypto";
 import type { RoomMessage } from "./types";
 
 // ── Unified session store (per-worker-isolate, in-memory) ───────
@@ -299,7 +299,12 @@ async function readRoomMessages(env: Env, params: Record<string, unknown>) {
   await crypto.processKeyExchange(messages);
 
   // Use SDK's proven decryption
+  const roomId = roomUrl.split("/").pop()!;
   const decrypted = await Promise.all(messages.map(async (msg) => {
+    if (isSealedKickoff(msg.body)) {
+      const kickoff = secret === SESSION_ROOM_SECRET ? undefined : await openKickoff(msg.body, secret, roomId).catch(() => undefined);
+      return kickoff === undefined ? { ...msg, decrypt_error: "sealed kickoff: pass the room link (inviteJson) to open it" } : { ...msg, body: kickoff };
+    }
     const body = await crypto.decryptMessageBody(msg).catch(() => msg.body);
     return isEncryptedBody(body)
       ? { ...msg, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" }
@@ -412,6 +417,11 @@ async function createRoomTool(env: Env, params: Record<string, unknown>, ctx: To
     body: JSON.stringify({ to: "all", intent: "key.exchange", body: { public_key: hostPublicKey } }),
   });
 
+  if (typeof params.firstMessage === "string" && params.firstMessage.trim()) {
+    const sealed = await sealKickoff(parseMessageBody(params.firstMessage), room.joinSecret, room.roomId);
+    await doFetch(env, room.roomUrl, "/", room.joinSecret, { method: "POST", participantId: hostId, body: { to: "all", intent: "kickoff", body: sealed } });
+  }
+
   // Auto-subscribe the MCP session to room events (no separate subscribe_room call needed)
   const subscribed = await autoSubscribeRoom(env, ctx, room.roomUrl, room.joinSecret, hostId, room.roomId);
 
@@ -448,7 +458,6 @@ function createHostedRoomBody(params: Record<string, unknown>, hostId: string): 
     room_name: params.roomName as string | undefined,
     max_participants: params.maxParticipants as number | undefined,
     purpose: params.purpose as string | undefined,
-    first_message: params.firstMessage as string | undefined,
     board_schema: parseJsonParam(params.boardSchema),
     board_acls: parseJsonParam(params.boardAcls),
     template: params.template as string | undefined,
@@ -729,7 +738,7 @@ const tools: Record<string, ToolDef> = {
         roomName: { type: "string", description: "Human-readable room name" },
         maxParticipants: { type: "number", description: "Participant cap, including the host" },
         purpose: { type: "string", description: "What the room is for; shown to joiners" },
-        firstMessage: { type: "string", description: "Opening message posted when the room is created" },
+        firstMessage: { type: "string", description: "Kickoff text or JSON, sealed so only holders of the room link/invitation can read it (the server cannot); joiners get it from join_room" },
         board: { type: "string", description: 'Initial board as a JSON string, e.g. {"tasks":{"t1":{"title":"Docs"}}}' },
         boardSchema: { type: "string", description: "JSON string: JSON Schema (draft 7) the whole board must satisfy; invalid writes are rejected" },
         boardAcls: { type: "string", description: 'JSON string: per-key write access, e.g. {"decisions":"host_only","tasks":["agent-a"]} (default "anyone")' },
@@ -785,6 +794,12 @@ const tools: Record<string, ToolDef> = {
       const kickoff = await doFetch(env, roomUrl, "/board", secret, { participantId })
         .then((b) => ({ kickoff: (b as { board?: Record<string, { value?: unknown }> }).board?.kickoff?.value ?? null }))
         .catch(() => ({ kickoff: null, kickoff_error: "could not load the board kickoff; call read_board to retry" }));
+      if (kickoff.kickoff === null) {
+        // Otherwise the sealed kickoff message (readable with the join secret this call was given).
+        const history = await doFetch(env, roomUrl, "/?view=all", secret, { participantId }).catch(() => ({ messages: [] })) as { messages?: RoomMessage[] };
+        const sealed = (history.messages ?? []).find((m) => m.intent === "kickoff" && isSealedKickoff(m.body));
+        if (sealed) Object.assign(kickoff, { kickoff: await openKickoff(sealed.body as { encrypted_payload: string }, secret, roomUrl.split("/").pop()!).catch(() => null) });
+      }
 
       return {
         ...kickoff,
@@ -810,6 +825,9 @@ const tools: Record<string, ToolDef> = {
         state: { type: "string" }, status: { type: "string" },
         model: { type: "string" }, skills: { type: "string" },
         waitForReply: { type: "boolean", description: "After sending, wait (up to ~50 s) for the next event you can see and return the new messages, like wait_for_event." },
+        replyTo: { type: "string", description: "Id of the message you are answering; closes it if it asked for a reply" },
+        expectsReply: { type: "boolean", description: "Ask for a reply: listed in get_room_info open_asks until answered (any reply closes a question to all)" },
+        replyByMinutes: { type: "number", description: "Minutes until the ask counts as overdue (default 30)" },
       },
       required: ["inviteJson", "participantId", "to", "body"],
     },
@@ -828,7 +846,8 @@ const tools: Record<string, ToolDef> = {
 
       const body: Record<string, unknown> = {
         to, body: encryptedBody,
-        reply_to: null, intent: params.intent ?? "notify", priority: params.priority ?? "normal",
+        reply_to: params.replyTo ?? null, intent: params.intent ?? "notify", priority: params.priority ?? "normal",
+        ...(params.expectsReply ? { expects_reply: true, reply_by_minutes: params.replyByMinutes } : {}),
         state: params.state, status: params.status,
         model: params.model, skills: parseSkills(params.skills as string),
       };

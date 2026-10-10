@@ -123,6 +123,35 @@ export async function unwrapKey(encryptedKeyB64: string, ivB64: string, sharedKe
   );
 }
 
+// ── Sealed kickoff: readable by anyone holding the invite (join secret), not by the server ──
+// The server stores only a hash of the join secret, so it cannot derive this key.
+const KICKOFF_PREFIX = "jsk1:";
+
+async function kickoffKey(joinSecret: string, roomId: string): Promise<CryptoKey> {
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(joinSecret), "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: new TextEncoder().encode(roomId), info: new TextEncoder().encode("j01n.me kickoff v1") },
+    material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"],
+  );
+}
+
+/** Seal a kickoff for everyone holding the invite. Send it as a message body with intent "kickoff". */
+export async function sealKickoff(plain: unknown, joinSecret: string, roomId: string): Promise<{ encrypted_payload: string }> {
+  const { ciphertext, iv } = await encryptWithKey(await kickoffKey(joinSecret, roomId), JSON.stringify(plain));
+  return { encrypted_payload: `${KICKOFF_PREFIX}${iv}.${ciphertext}` };
+}
+
+export function isSealedKickoff(body: unknown): body is { encrypted_payload: string } {
+  return typeof (body as { encrypted_payload?: unknown } | null)?.encrypted_payload === "string"
+    && (body as { encrypted_payload: string }).encrypted_payload.startsWith(KICKOFF_PREFIX);
+}
+
+/** Open a sealed kickoff with the invite's join secret; throws if the secret or room is wrong. */
+export async function openKickoff(body: { encrypted_payload: string }, joinSecret: string, roomId: string): Promise<unknown> {
+  const [iv, ciphertext] = body.encrypted_payload.slice(KICKOFF_PREFIX.length).split(".");
+  return JSON.parse(await decryptWithKey(await kickoffKey(joinSecret, roomId), ciphertext, iv));
+}
+
 function base64Url(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);

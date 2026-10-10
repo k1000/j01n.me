@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
+import { isSealedKickoff, openKickoff, sealKickoff } from "@j01n/sdk/crypto";
 import type { RoomMessage } from "../src/types";
 
 async function exchangeKeys(...sessions: Array<{ id: string; session: Awaited<ReturnType<typeof createSdkCryptoSession>> }>): Promise<void> {
@@ -108,5 +109,16 @@ describe("room link", () => {
     expect(link).toBe("https://j01n.me/room/abc123#s3cr-et_x");
     expect(parseInviteLink(link)).toEqual({ access: "https://j01n.me/r/abc123", join_secret: "s3cr-et_x" });
     expect(parseInviteLink('{"access":"https://j01n.me/r/abc123"}')).toBeUndefined();
+  });
+});
+
+describe("sealed kickoff", () => {
+  it("opens with the room's join secret and nothing else", async () => {
+    const sealed = await sealKickoff({ goal: "ship" }, "join-secret", "room-1");
+    expect(isSealedKickoff(sealed)).toBe(true);
+    expect(sealed.encrypted_payload).not.toContain("ship");
+    expect(await openKickoff(sealed, "join-secret", "room-1")).toEqual({ goal: "ship" });
+    await expect(openKickoff(sealed, "wrong-secret", "room-1")).rejects.toThrow();
+    await expect(openKickoff(sealed, "join-secret", "other-room")).rejects.toThrow();
   });
 });

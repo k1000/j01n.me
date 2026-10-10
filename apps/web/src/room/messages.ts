@@ -58,7 +58,34 @@ export function createRoomMessage(body: Record<string, unknown>, participantId: 
     priority: (body.priority as string) ?? "normal",
     body: (body.body as unknown) ?? {},
     created_at: new Date().toISOString(),
+    ...(body.expects_reply === true ? { expects_reply: { due_at: new Date(Date.now() + replyByMinutes(body.reply_by_minutes) * 60_000).toISOString() } } : {}),
   };
+}
+
+function replyByMinutes(value: unknown): number {
+  const minutes = Number(value);
+  return Number.isFinite(minutes) && minutes >= 1 ? Math.min(Math.round(minutes), 24 * 60) : 30;
+}
+
+/**
+ * Questions still waiting for an answer. A direct (or list) question is open for each addressee until that addressee
+ * sends a message with reply_to = its id; a question to `all` is closed by any reply from someone other than the asker.
+ */
+export function openAsks(invite: InviteState): Array<{ ask_id: string; seq: number; from: string; owed_by: string; due_at: string; overdue: boolean }> {
+  const repliers = new Map<string, Set<string>>();
+  for (const m of invite.messages) {
+    if (!m.reply_to) continue;
+    if (!repliers.has(m.reply_to)) repliers.set(m.reply_to, new Set());
+    repliers.get(m.reply_to)!.add(m.from);
+  }
+  const now = Date.now();
+  return invite.messages.filter((m) => m.expects_reply).flatMap((ask) => {
+    const replied = repliers.get(ask.id) ?? new Set<string>();
+    const owedBy = ask.to === "all"
+      ? ([...replied].some((id) => id !== ask.from) ? [] : ["anyone"])
+      : (Array.isArray(ask.to) ? ask.to : [ask.to]).filter((id) => !replied.has(id));
+    return owedBy.map((owed) => ({ ask_id: ask.id, seq: ask.seq, from: ask.from, owed_by: owed, due_at: ask.expects_reply!.due_at, overdue: Date.parse(ask.expects_reply!.due_at) < now }));
+  });
 }
 
 export function createInitialMessage(body: InitPayload): RoomMessage {

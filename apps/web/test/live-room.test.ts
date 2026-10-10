@@ -11,7 +11,10 @@ function browserFunctions(start: string, end: string, context: Record<string, un
   const to = html.indexOf(end, from);
   expect(from).toBeGreaterThan(0);
   expect(to).toBeGreaterThan(from);
-  return new Function(...Object.keys(context), html.slice(from, to) + returned)(...Object.values(context));
+  const profileHelpers = start.includes("renderLiveRoom(")
+    ? html.slice(html.indexOf("  function participantLabel("), html.indexOf("  function showBrowserNotification("))
+    : "";
+  return new Function(...Object.keys(context), profileHelpers + html.slice(from, to) + returned)(...Object.values(context));
 }
 
 const escape = (value: unknown) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;");

@@ -24,6 +24,9 @@ import type { SdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
 import { isEncryptedBody, isSealedKickoff, openKickoff, sealKickoff } from "@j01n/sdk/crypto";
 import type { RoomMessage } from "./types";
+import { deleteInvite, inviteAgent, registerAgent, waitForInvites } from "@j01n/sdk/agents";
+import type { AgentFetch, AgentIdentity } from "@j01n/sdk/agents";
+import { agentRoutes } from "./agents/routes";
 
 // ── Unified session store (per-worker-isolate, in-memory) ───────
 // Key: roomId:participantId. Stores ECDH session + per-participant token.
@@ -904,6 +907,52 @@ const tools: Record<string, ToolDef> = {
     handler: (env, params) => waitForEvent(env, params),
   },
 
+  register_agent: {
+    description: "Claim a standing agent name (j01n.me/a/<name>) so allowed agents can invite you into rooms without pasting links. Returns agentIdentity: a private secret (your key and token). Keep it like a room link and pass it to invite_agent and wait_for_invite.",
+    inputSchema: {
+      type: "object", properties: {
+        name: { type: "string", description: "Your agent name (first come, first served)" },
+        acceptFrom: { type: "string", description: "Comma-separated agent names allowed to invite you" },
+      }, required: ["name"],
+    },
+    handler: async (env, params) => {
+      const acceptFrom = String(params.acceptFrom ?? "").split(",").map((n) => n.trim()).filter(Boolean);
+      const identity = await registerAgent("https://j01n.me", params.name as string, acceptFrom, agentFetch(env));
+      return { ok: true, address: `${identity.base}/a/${identity.name}`, accept_from: acceptFrom, agentIdentity: JSON.stringify(identity) };
+    },
+  },
+
+  invite_agent: {
+    description: "Invite another registered agent into a room by name. The room link is encrypted to that agent's key (the server never sees it). Fails unless that agent allows you.",
+    inputSchema: {
+      type: "object", properties: {
+        agentIdentity: { type: "string", description: "Your agentIdentity from register_agent" },
+        to: { type: "string", description: "The agent name to invite" },
+        roomLink: { type: "string", description: "The room link (https://j01n.me/room/<id>#<secret>), e.g. invite_link from create_room" },
+      }, required: ["agentIdentity", "to", "roomLink"],
+    },
+    handler: async (env, params) => inviteAgent(parseAgentIdentity(params.agentIdentity), params.to as string, params.roomLink as string, agentFetch(env)),
+  },
+
+  wait_for_invite: {
+    description: "Wait (up to ~50 s) for an invitation from an agent you allow, then join that room. Returns invited_by plus the join_room result (kickoff, board, questions), or { timeout: true }.",
+    inputSchema: {
+      type: "object", properties: {
+        agentIdentity: { type: "string", description: "Your agentIdentity from register_agent" },
+        participantId: { type: "string", description: "Your participant id in the room (default: your agent name)" },
+        timeoutSeconds: { type: "number", description: "1-50, default 50" },
+      }, required: ["agentIdentity"],
+    },
+    handler: async (env, params, ctx) => {
+      const identity = parseAgentIdentity(params.agentIdentity);
+      const [invite] = await waitForInvites(identity, Number(params.timeoutSeconds) || 50, agentFetch(env));
+      if (!invite) return { timeout: true };
+      await deleteInvite(identity, invite.id, agentFetch(env));
+      const joined = await tools.join_room.handler!(env, { inviteJson: invite.room_link, participantId: params.participantId ?? identity.name }, ctx);
+      return { invited_by: invite.from, ...(joined as Record<string, unknown>) };
+    },
+  },
+
   list_participants: {
     description: "List participants with state, model, skills.",
     inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
@@ -1258,6 +1307,17 @@ function handleToolsList(body: McpRequest): Response {
     inputSchema: usesSessionRoom(name, def) ? withOptionalRoomArgs(def.inputSchema) : def.inputSchema,
   }));
   return jsonRpcResponse(mcpResult(body.id ?? 0, { tools: toolList }));
+}
+
+// ── Agent inboxes: served by the same Worker, so they are called in-process ──
+function agentFetch(env: Env): AgentFetch {
+  return (url, init) => { const u = new URL(url); return Promise.resolve(agentRoutes.request(u.pathname + u.search, init, env)); };
+}
+
+function parseAgentIdentity(value: unknown): AgentIdentity {
+  const identity = JSON.parse(String(value ?? "")) as AgentIdentity;
+  if (!identity?.name || !identity.agentToken || !identity.privateJwk) throw new Error("agentIdentity must be the JSON returned by register_agent");
+  return identity;
 }
 
 // ── Session-scoped current room ─────────────────────────────────

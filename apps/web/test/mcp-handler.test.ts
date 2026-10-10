@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { handleMcpRequest } from "../src/mcp-handler";
 import { RoomEvents } from "../src/room/events";
 import { RoomRegistry } from "../src/room/registry";
+import { AgentInbox } from "../src/agents/agent-inbox";
 import { createMockState } from "./room/helpers";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 
@@ -675,5 +676,46 @@ describe("hosted MCP handler", () => {
     const result = await toolResultText<{ messages: Array<{ body: unknown }> }>(response);
 
     expect(result.messages[1].body).toEqual({ text: "hi host" });
+  });
+
+  it("register_agent, invite_agent and wait_for_invite: invited by name, the agent joins; the inbox sees only ciphertext", async () => {
+    const inboxes = new Map<string, AgentInbox>();
+    const inboxBodies: string[] = [];
+    const joined: string[] = [];
+    const env = {
+      AGENT_INBOX: {
+        idFromName: (name: string) => name,
+        get: (name: string) => {
+          if (!inboxes.has(name)) inboxes.set(name, new AgentInbox(createMockState(), {}));
+          const inbox = inboxes.get(name)!;
+          return { fetch: async (request: Request) => { inboxBodies.push(await request.clone().text()); return inbox.fetch(request); } };
+        },
+      },
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({
+          fetch: async (url: string, init?: RequestInit) => {
+            const path = new URL(url).pathname;
+            if (path.includes("__load_session")) return Response.json({ sessions: {} });
+            if (init?.method === "PUT") { joined.push(path); return Response.json({ ok: true, cursor: 0, participant_token: "tok" }); }
+            return Response.json({ ok: true, participants: [], messages: [], board: {}, asks: [] });
+          },
+        }),
+      },
+    } as never;
+    const call = async <T,>(name: string, args: Record<string, unknown>) =>
+      toolResultText<T>(await handleMcpRequest(rpc("tools/call", { name, arguments: args }), env));
+
+    const host = await call<{ agentIdentity: string }>("register_agent", { name: "host-agent" });
+    const guest = await call<{ agentIdentity: string; address: string }>("register_agent", { name: "guest-agent", acceptFrom: "host-agent" });
+    expect(guest.address).toBe("https://j01n.me/a/guest-agent");
+
+    await call("invite_agent", { agentIdentity: host.agentIdentity, to: "guest-agent", roomLink: "https://j01n.me/room/agent-room#very-secret-join-secret" });
+    const result = await call<Record<string, unknown>>("wait_for_invite", { agentIdentity: guest.agentIdentity, timeoutSeconds: 1 });
+
+    expect(result).toMatchObject({ invited_by: "host-agent", ok: true, room_id: "agent-room", participant_id: "guest-agent" });
+    expect(joined).toContain("/participants/guest-agent");
+    expect(inboxBodies.some((body) => body.includes("very-secret-join-secret"))).toBe(false);
+    expect(await call("wait_for_invite", { agentIdentity: guest.agentIdentity, timeoutSeconds: 1 })).toEqual({ timeout: true });
   });
 });

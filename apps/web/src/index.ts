@@ -9,12 +9,13 @@ import { homeMarkdown, homePage, roomPageHtml, renderRoomAsMarkdown, roomPageMar
 import { RendezvousSession } from "./rendezvous";
 import { RoomRegistry, sweepStaleRooms } from "./room/registry";
 import { AgentInbox } from "./agents/agent-inbox";
+import { agentRoutes } from "./agents/routes";
 import { securityPage } from "./security";
 import { skillExampleMarkdown, skillMarkdown } from "@j01n/skill";
 import { skillExamplePage, skillPage } from "./skill-pages";
 import { handleCreateRoom } from "./invite";
 import { handleMcpRequest } from "./mcp-handler";
-import { isValidRoomId, normalizeParticipantId } from "./validation";
+import { isValidRoomId } from "./validation";
 import type { Env } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -205,34 +206,8 @@ async function scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
 
 (app as unknown as { scheduled: typeof scheduled }).scheduled = scheduled;
 
-// ── Agent inboxes: invite an agent by name (j01n.me/a/<name>) ──────────────
-function agentInbox(env: Env, name: string, path: string, init?: RequestInit): Promise<Response> {
-  if (!env.AGENT_INBOX) return Promise.resolve(Response.json({ error: "agent inboxes are not configured" }, { status: 503 }));
-  return env.AGENT_INBOX.get(env.AGENT_INBOX.idFromName(name)).fetch(new Request(`https://agent-inbox.internal${path}`, init));
-}
-const auth = (request: Request) => ({ authorization: request.headers.get("authorization") ?? "" });
-
-app.post("/agents", async (c) => {
-  const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
-  const name = normalizeParticipantId(body.name);
-  if (name instanceof Response) return name;
-  return agentInbox(c.env, name, "/register", { method: "POST", body: JSON.stringify({ ...body, name }) });
-});
-app.get("/a/:name", (c) => agentInbox(c.env, c.req.param("name"), "/profile"));
-app.patch("/a/:name", async (c) => agentInbox(c.env, c.req.param("name"), "/settings", { method: "PATCH", headers: auth(c.req.raw), body: await c.req.text() }));
-app.get("/a/:name/invites", (c) => agentInbox(c.env, c.req.param("name"), "/invites", { headers: auth(c.req.raw) }));
-app.get("/a/:name/wait", (c) => agentInbox(c.env, c.req.param("name"), `/wait${new URL(c.req.url).search}`, { headers: auth(c.req.raw) }));
-app.delete("/a/:name/invites/:id", (c) => agentInbox(c.env, c.req.param("name"), `/invites/${encodeURIComponent(c.req.param("id"))}`, { method: "DELETE", headers: auth(c.req.raw) }));
-// Inviting: the inviter proves who it is with its own agent token; the recipient's allowlist decides.
-app.post("/a/:name/invites", async (c) => {
-  const body = await c.req.json().catch(() => ({})) as { from?: unknown; sealed?: unknown };
-  const from = normalizeParticipantId(body.from);
-  if (from instanceof Response) return from;
-  const token = auth(c.req.raw).authorization.replace(/^Bearer\s+/i, "");
-  const verified = await agentInbox(c.env, from, "/verify", { method: "POST", body: JSON.stringify({ token }) }).then((r) => r.json() as Promise<{ ok?: boolean }>);
-  if (!verified.ok) return c.json({ error: `send your own agent token as ${from}` }, 401);
-  return agentInbox(c.env, c.req.param("name"), "/invites", { method: "POST", body: JSON.stringify({ from, sealed: body.sealed }) });
-});
+// Agent inboxes: invite an agent by name (j01n.me/a/<name>).
+app.route("/", agentRoutes);
 
 export default app;
 export { AgentInbox, RendezvousSession, RoomRegistry };

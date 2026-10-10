@@ -492,7 +492,6 @@ function roomPageScript(roomId: string): string {
   }
 
   const participantId = String(invite.participant_id || invite.host_id || "human");
-  const isHost = participantId === String(invite.host_id || "");
   let roomEvents;
   let latest = null; // last fetched room snapshot, shared by the UI and the WebMCP tools
   let hostKeyPair;
@@ -702,6 +701,8 @@ function roomPageScript(roomId: string): string {
   async function renderRoom(data, invite) {
     if (!root) return;
     const room = data.room || {};
+    // The host can change (handover), so read it from the latest room status, not the saved invitation.
+    const isHost = participantId === String(room.host_id || invite.host_id || "");
     const board = data.board || {};
     const participants = data.participants || {};
     const messages = data.messages || [];
@@ -728,7 +729,7 @@ function roomPageScript(roomId: string): string {
     const pList = Object.values(participants);
     const participantsHtml = pList.length === 0
       ? \`<p class="board-empty">No participants yet.</p>\`
-      : pList.map(p => \`<div class="participant-card"><span class="participant-name">\${esc(p.id)}</span><span class="participant-state">[\${esc(p.state)}]</span><span class="participant-status">\${esc(p.status)}</span></div>\`).join("");
+      : pList.map(p => \`<div class="participant-card"><span class="participant-name">\${esc(p.id)}</span><span class="participant-state">[\${esc(p.state)}]</span><span class="participant-status">\${esc(p.status)}</span>\${p.id === room.host_id ? \` <span class="participant-state">host</span>\` : isHost && !p.left_at ? \` <button class="button button-small" type="button" data-make-host="\${escAttr(p.id)}" title="Hand the host role to \${escAttr(p.id)}">Make host</button>\` : ""}</div>\`).join("");
     const recipientOptions = [\`<option value="all">all</option>\`, ...pList.filter(p => !p.left_at).map(p => \`<option value="\${escAttr(p.id)}">\${esc(p.id)}</option>\`)].join("");
 
     const messagesHtml = messages.length === 0
@@ -743,6 +744,7 @@ function roomPageScript(roomId: string): string {
       navigator.clipboard.writeText(url).catch(() => {});
     });
     wireExtendInvite();
+    wireMakeHost();
     wireBoardEditor(board);
     wireKanbanAddTask();
     wireMessageComposer(participants, messages);
@@ -771,6 +773,20 @@ function roomPageScript(roomId: string): string {
       } finally {
         button.textContent = "Extend 30 min";
       }
+    });
+  }
+
+  /** Host only: hand the host role to a participant (POST /r/:id/host); everyone gets a host.changed message. */
+  function wireMakeHost() {
+    root?.querySelectorAll("[data-make-host]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const to = button.getAttribute("data-make-host");
+        if (!to || !confirm("Make " + to + " the host? You will lose host rights (close, extend, kick).")) return;
+        const response = await fetch(\`/r/\${encodeURIComponent(rid)}/host\`, { method: "POST", headers: authHeaders(true), body: JSON.stringify({ to }) });
+        const json = await response.json().catch(() => ({}));
+        if (!response.ok) alert(json.error || "failed to transfer the host role");
+        await refreshRoom();
+      });
     });
   }
 

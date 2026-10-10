@@ -4,6 +4,9 @@
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
+  "dependencies": {
+    "@j01n/sdk": "workspace:*"
+  },
   "exports": {
     "./client-script": "./src/client-script.ts",
     "./local-crypto-assets": "./src/local-crypto-assets.ts"

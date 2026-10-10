@@ -1,6 +1,7 @@
 import type { RoomClient } from "./room-client";
 import type { Workspace } from "./crypto";
 import { listReservations, releasePaths, reservePaths } from "./reservations";
+import { blockTask, claimTask, completeTask, listTasks, unblockTask } from "./tasks";
 
 export function parseRoomBody(raw: string): unknown {
   try {
@@ -34,8 +35,34 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
   webhookResult?: "helper";
   beforeSend?: () => Promise<void>;
   trimWaitFrom?: boolean;
+  repo?: string;
 } = {}): Promise<unknown> {
   const prefix = options.prefix ?? "/j01n";
+  if (cmd === "tasks") return { tasks: await listTasks(client) };
+  if (cmd === "claim") {
+    if (!rest[0]) throw new Error("claim needs: <id>");
+    return { task: await claimTask(client, rest[0], options.repo ?? "") };
+  }
+  if (cmd === "done") {
+    const [id, ...args] = rest;
+    if (!id) throw new Error("done needs: <id> --summary <text> --commit <sha>... --tests <text> [--contract <text>]");
+    const flag = (name: string) => { const at = args.indexOf(name); return at < 0 ? undefined : args[at + 1]; };
+    const commits: string[] = [];
+    for (let i = 0; i < args.length; i++) if (args[i] === "--commit" && args[i + 1] && !args[i + 1].startsWith("--")) commits.push(args[++i]);
+    const summary = flag("--summary"), tests = flag("--tests"), contract = flag("--contract"), changes = flag("--behaviour-changes");
+    if (!summary || !tests || !commits.length) throw new Error("done needs --summary, --commit and --tests");
+    return { task: await completeTask(client, id, options.repo ?? "", summary, { commits, tests, ...(contract ? { contract } : {}) }, changes) };
+  }
+  if (cmd === "block") {
+    const [id, ...args] = rest;
+    const at = args.indexOf("--reason");
+    if (!id || at < 0 || !args[at + 1]) throw new Error("block needs: <id> --reason <text>");
+    return { task: await blockTask(client, id, args.slice(at + 1).join(" ")) };
+  }
+  if (cmd === "unblock") {
+    if (!rest[0]) throw new Error("unblock needs: <id>");
+    return { task: await unblockTask(client, rest[0]) };
+  }
   if (cmd === "send") {
     const [toRaw, ...args] = rest;
     const words: string[] = [];

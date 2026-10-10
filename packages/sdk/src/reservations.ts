@@ -82,6 +82,14 @@ export async function reservePaths(client: RoomClient, repo: string, paths: stri
 }
 
 /** Release your reservations: all of them, or those covering any of `paths` (in `repo`). */
+export async function releaseReservationIds(client: RoomClient, ids: string[]): Promise<Reservation[]> {
+  return update(client, async ({ stored, reservations }) => {
+    const owned = new Set(reservations.filter((r) => r.by === client.participantId && ids.includes(r.id)).map((r) => r.id));
+    if (!owned.size) return null;
+    return Object.fromEntries(Object.entries(stored).filter(([id]) => !owned.has(id)));
+  });
+}
+
 export async function releasePaths(client: RoomClient, repo?: string, paths: string[] = []): Promise<Reservation[]> {
   return update(client, async ({ stored, reservations }) => {
     const mine = reservations.filter((r) => r.by === client.participantId

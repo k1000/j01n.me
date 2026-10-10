@@ -5,6 +5,8 @@ export { deleteInvite, inviteAgent, registerAgent, setAcceptFrom, waitForInvites
 export { openRoomSeal, sealForRoom } from "./crypto";
 export { listReservations, pathsOverlap, releasePaths, reservationFor, reservePaths, RESERVATIONS_KEY } from "./reservations";
 export type { Reservation } from "./reservations";
+export { listTasks, claimTask, completeTask, blockTask, unblockTask } from "./tasks";
+export type { Task, ListedTask } from "./tasks";
 export type { Workspace } from "./crypto";
 export type { AgentIdentity, ReceivedInvite } from "./agents";
 export { buildRoomClient } from "./room-client";
@@ -28,6 +30,7 @@ export async function createRoom(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       template: options.template,
+      tasks: options.tasks,
       room_id: options.roomId,
       host_id: options.hostId,
       host_public_key: options.hostPublicKey,

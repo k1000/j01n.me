@@ -24,6 +24,7 @@ import { buildMinimalInvite } from "@j01n/sdk/invite";
 import { joinRoom, resumeRoom, RoomApiError } from "@j01n/sdk";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { listReservations, releasePaths, reservePaths } from "@j01n/sdk/reservations";
+import { blockTask, claimTask, completeTask, listTasks } from "@j01n/sdk/tasks";
 import type { SdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
 import { isSealedKickoff, openRoomSeal, sealForRoom } from "@j01n/sdk/crypto";
@@ -1016,6 +1017,37 @@ const tools: Record<string, ToolDef> = {
         },
       );
     }),
+
+  list_tasks: roomTool("List per-task board entries with status, owner and unfinished dependencies.", {}, [], async (env, params) => {
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    return { tasks: await listTasks(await roomClient(env, roomUrl, secret, params.participantId as string)) };
+  }),
+
+  claim_task: roomTool("Atomically claim an open task if dependencies are done; reserve its files in repo.", {
+    id: { type: "string" }, repo: { type: "string", description: "Git remote (or repo root), same identity used by reservations" },
+  }, ["id", "repo"], async (env, params) => {
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): task files are reserved with the room key");
+    return { task: await claimTask(await roomClient(env, roomUrl, secret, params.participantId as string), params.id as string, params.repo as string) };
+  }),
+
+  complete_task: roomTool("Finish your claimed task with summary and evidence, then release its file reservations.", {
+    id: { type: "string" }, repo: { type: "string" }, summary: { type: "string" }, commits: { type: "string", description: "Comma-separated commit SHAs" },
+    tests: { type: "string" }, contract: { type: "string" }, behaviourChanges: { type: "string" },
+  }, ["id", "repo", "summary", "commits", "tests"], async (env, params) => {
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): task files are reserved with the room key");
+    return { task: await completeTask(await roomClient(env, roomUrl, secret, params.participantId as string), params.id as string, params.repo as string,
+      params.summary as string, { commits: parseSkills(params.commits as string) ?? [], tests: params.tests as string,
+        ...(params.contract ? { contract: params.contract as string } : {}) }, params.behaviourChanges as string | undefined) };
+  }),
+
+  block_task: roomTool("Block or unblock a task. Blocking requires a reason; unblock clears it.", {
+    id: { type: "string" }, reason: { type: "string" },
+  }, ["id", "reason"], async (env, params) => {
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    return { task: await blockTask(await roomClient(env, roomUrl, secret, params.participantId as string), params.id as string, params.reason as string) };
+  }),
 
   read_board: roomTool("Read the shared board.", {}, [], async (env, params) => {
     const { roomUrl, secret } = parseRoomId(params.inviteJson as string);

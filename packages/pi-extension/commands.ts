@@ -101,7 +101,7 @@ function isRoomFile(ref: string): boolean {
 
 const ACTIVE_COMMANDS = new Set([
   "send", "wait", "read", "inbox", "doctor", "board", "board_set", "board_patch", "board_delete",
-  "status", "webhook", "participants", "room_status", "transition", "host", "profile", "reserve", "release", "reservations", "leave", "close",
+  "status", "webhook", "participants", "room_status", "transition", "host", "profile", "reserve", "release", "reservations", "tasks", "claim", "done", "block", "unblock", "leave", "close",
 ]);
 
 const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen", "herdr_agents", "invite_herdr"]);
@@ -295,7 +295,7 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
 async function sharedCommand(parsed: ParsedArgs): Promise<string> {
   if (parsed.cmd === "send" && !parsed.me) throw new Error("send needs: participant_id <to> <json_body>");
   if ((parsed.cmd === "read" || parsed.cmd === "inbox") && !parsed.me) throw new Error("read needs: participant_id");
-  return JSON.stringify(await runRoomCommand(await getClient(parsed), parsed.cmd, parsed.rest, { recipientList: true }), null, 2);
+  return JSON.stringify(await runRoomCommand(await getClient(parsed), parsed.cmd, parsed.rest, { recipientList: true, repo: currentRepo().repo }), null, 2);
 }
 
 /** A ready command to answer a message in its thread (closes it if it asked for a reply). */
@@ -532,6 +532,11 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   inbox: sharedCommand,
   doctor: handleDoctor,
   board: sharedCommand,
+  tasks: sharedCommand,
+  claim: sharedCommand,
+  done: sharedCommand,
+  block: sharedCommand,
+  unblock: sharedCommand,
   board_set: sharedCommand,
   board_patch: sharedCommand,
   board_delete: sharedCommand,

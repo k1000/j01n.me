@@ -33,7 +33,7 @@ const modelProfile = (rest: string[]) => {
   const flag = (name: string) => { const i = rest.indexOf(name); return i >= 0 && rest[i + 1] && !rest[i + 1].startsWith("--") ? rest[i + 1] : undefined; };
   return { ...(flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL ? { model: flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL } : {}), ...(flag("--provider") || process.env.J01N_PROVIDER ? { provider: flag("--provider") || process.env.J01N_PROVIDER } : {}) };
 };
-const roomCommand = (client: RoomClient, command: string, rest: string[], beforeSend?: () => Promise<void>) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend });
+const roomCommand = (client: RoomClient, command: string, rest: string[], beforeSend?: () => Promise<void>) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend, repo: repo().id });
 
 async function isRoomRef(ref?: string) {
   if (!ref) return false;
@@ -216,7 +216,7 @@ async function main() {
     output({ ok: joined, client_protocol: SDK_CLIENT_PROTOCOL, ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}), open_questions: openQuestions, ...(openQuestionsError ? { open_questions_error: openQuestionsError } : {}), participant_id: me, joined, key_file: keyFile, local_key_created: created, key_announced: messages.some((m) => m.from === me && m.intent === "key.exchange"), known_peers: participants.participants.filter((p) => p.id !== me && p.public_key).map((p) => p.id), encrypted_messages_seen: encrypted.length, encrypted_messages_decryptable: decryptable, key_note: `Reuse this key file from the same directory to retain your ECDH keypair across sessions: ${keyFile}` }); return;
   }
   if (cmd === "kickoff") { if (!rest.length) throw Error("kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)"); output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true })); return; }
-  if (cmd === "webhook") { output(await roomCommand(client, cmd, rest)); return; }
+  if (["webhook", "tasks", "claim", "done", "block", "unblock"].includes(cmd || "")) { output(await roomCommand(client, cmd!, rest)); return; }
   if (cmd === "profile") {
     output(await runProfileCommand(client, rest, {
       modelFallback: process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL,
@@ -234,6 +234,6 @@ async function main() {
   }
   if (cmd === "leave") { await client.leave({ release: rest.includes("--release") }); await fs.rm(activePath(roomUrl, me), { force: true }); output({ ok: true, left: true }); return; }
   if (cmd === "host") { output(await roomCommand(client, cmd, rest)); return; }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|leave`);
 }
 main().catch((error: unknown) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

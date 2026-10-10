@@ -77,6 +77,26 @@ describe("pi-extension sessions", () => {
     expect(asksAuth).toBe("Bearer tok-1");
   });
 
+  it.each(["http", "network"])("doctor keeps other diagnostics when /asks has a %s error", async (failure) => {
+    const baseFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/participants") && (init?.method ?? "GET") === "GET") {
+        return Response.json({ participants: [{ id: "pi-agent" }] });
+      }
+      if (String(url).endsWith("/asks")) {
+        if (failure === "network") throw new TypeError("network unavailable");
+        return Response.json({ error: "not found" }, { status: 404 });
+      }
+      return baseFetch(url, init);
+    });
+
+    const { runj01n } = await import("../commands");
+    const result = JSON.parse(await runj01n(["doctor", ROOM, "secret", "pi-agent"]));
+    expect(result).toMatchObject({ ok: true, joined: true, client_protocol: 3,
+      open_questions: null, open_questions_error: expect.any(String) });
+    expect(result.open_questions_error).toContain(failure === "http" ? "404" : "network");
+  });
+
   it("uses the sole room for status without repeating credentials", async () => {
     const commands = await import("../commands");
     await commands.runj01n(["join", "https://j01n.me/room/room-1#secret", "pi-agent"]);

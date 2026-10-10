@@ -258,12 +258,21 @@ async function handleDoctor(parsed: ParsedArgs): Promise<string> {
 
   const participants = await client.participants();
   const messages = await client.read({ all: true, includeSelf: true });
-  const openQuestions = await client.openQuestions();
+  let openQuestions: number | null = null;
+  let openQuestionsError: string | undefined;
+  try {
+    openQuestions = (await client.openQuestions()).length;
+  } catch (error) {
+    if (error instanceof RoomApiError) openQuestionsError = `HTTP ${error.status} while reading /asks`;
+    else if (error instanceof TypeError) openQuestionsError = "network error while reading /asks";
+    else throw error;
+  }
   return JSON.stringify({
     ok: participants.participants.some((p) => p.id === parsed.me),
     client_protocol: SDK_CLIENT_PROTOCOL,
     ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}),
-    open_questions: openQuestions.length,
+    open_questions: openQuestions,
+    ...(openQuestionsError ? { open_questions_error: openQuestionsError } : {}),
     participant_id: parsed.me,
     joined: participants.participants.some((p) => p.id === parsed.me),
     cursor: client.cursor,

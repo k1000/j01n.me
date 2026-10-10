@@ -308,12 +308,13 @@ function parseSseEvent(raw) {
   try { return { event, data: JSON.parse(text) }; }
   catch { return { event, data: text }; }
 }
-function doctorReport(state, joinedResult, messages, stats, openQuestions) {
+function doctorReport(state, joinedResult, messages, stats, openQuestions, openQuestionsError) {
   return {
     ok: joinedResult.ok,
     client_protocol: CLIENT_PROTOCOL,
     ...(clientUpdateNotice ? { client_update: clientUpdateNotice } : {}),
     open_questions: openQuestions,
+    ...(openQuestionsError ? { open_questions_error: openQuestionsError } : {}),
     participant_id: me,
     joined: joinedResult.ok,
     key_file: keyFile,
@@ -398,9 +399,19 @@ const COMMANDS = {
     const j = await joined();
     const messages = await doctorMessages(state, j.ok);
     const stats = await encryptedStats(state, messages);
-    const asks = j.ok ? await requestJson(roomUrl + '/asks', { headers: tokenHeaders(state) }) : null;
-    if (asks && !asks.ok) die(formatErrorBody(asks.body));
-    console.log(JSON.stringify(doctorReport(state, j, messages, stats, asks ? (asks.body.asks || []).length : 0), null, 2));
+    let openQuestions = null;
+    let openQuestionsError = j.ok ? undefined : 'not joined';
+    if (j.ok) {
+      try {
+        const asks = await requestJson(roomUrl + '/asks', { headers: tokenHeaders(state) });
+        if (asks.ok) openQuestions = (asks.body.asks || []).length;
+        else openQuestionsError = 'HTTP ' + asks.status + (typeof asks.body?.error === 'string' ? ': ' + asks.body.error : '');
+      } catch (error) {
+        if (!(error instanceof TypeError)) throw error;
+        openQuestionsError = 'network error while reading /asks';
+      }
+    }
+    console.log(JSON.stringify(doctorReport(state, j, messages, stats, openQuestions, openQuestionsError), null, 2));
   },
   async kickoff(state, { rest }) {
     if (rest.length === 0) die('kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)');

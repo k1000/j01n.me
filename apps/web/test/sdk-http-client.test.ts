@@ -36,6 +36,34 @@ describe("SDK HTTP client", () => {
     expires_at: new Date(Date.now() + 60_000).toISOString(),
   });
 
+  it("forwards opaque checkout and human profile fields while sealing workspace", async () => {
+    let body: Record<string, unknown> = {};
+    const impl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({ ok: true, participant: {} });
+    }) as typeof fetch;
+    await withFetch(impl, async () => {
+      const client = await resumeRoom({ ...makeInvite(), participant_token: "tok" }, "agent-a");
+      await client.setProfile({ checkout: "opaque-checkout", display_name: "Ravi", role: "builder", workspace: { path: "/private/home", host: "host-a" } });
+    });
+    expect(body).toMatchObject({ checkout: "opaque-checkout", display_name: "Ravi", role: "builder" });
+    expect(body.workspace).toMatch(/^jsk1:/);
+    expect(JSON.stringify(body)).not.toContain("/private/home");
+  });
+
+  it("PATCHes a joined target's owner role using the host token, without modifying self", async () => {
+    const requests: Array<{ url: string; method: string; auth: string | null; body: unknown }> = [];
+    const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(url), method: init?.method ?? "GET", auth: new Headers(init?.headers).get("authorization"), body: JSON.parse(String(init?.body)) });
+      return Response.json({ ok: true, participant: { id: "human", role: "owner" } });
+    }) as typeof fetch;
+    await withFetch(impl, async () => {
+      const host = await resumeRoom({ ...makeInvite(), participant_token: "host-token" }, "host");
+      await host.setParticipantRole("human", "owner");
+    });
+    expect(requests).toEqual([{ url: "https://j01n.me/r/invite/participants/human", method: "PATCH", auth: "Bearer host-token", body: { role: "owner" } }]);
+  });
+
   it("creates rooms with normalized request keys", async () => {
     let requestBody: unknown;
     let requestUrl = "";

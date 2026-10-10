@@ -1,6 +1,6 @@
 import type { RoomClient } from "./room-client";
 import { RoomApiError } from "./errors";
-import { listReservations, releaseReservationIds, reservePaths } from "./reservations";
+import { listReservations, pathsOverlap, releaseReservationIds, reservePaths } from "./reservations";
 
 export interface Task {
   title: string;
@@ -15,7 +15,7 @@ export interface Task {
   blocked_reason?: string;
   waiting_for?: string[];
 }
-export type ListedTask = Task & { id: string; blocked_by: string[]; unblocked: boolean };
+export type ListedTask = Task & { id: string; blocked_by: string[]; unblocked: boolean; overlaps?: string[] };
 
 const key = (id: string) => {
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error("invalid task id");
@@ -38,7 +38,8 @@ export async function listTasks(client: RoomClient): Promise<ListedTask[]> {
   const done = new Set(tasks.filter((task) => task.status === "done").map((task) => task.id));
   return tasks.map((task) => {
     const blocked_by = task.depends_on.filter((id) => !done.has(id));
-    return { ...task, blocked_by, unblocked: task.status === "open" && blocked_by.length === 0 };
+    const overlaps = tasks.filter((other) => other.id !== task.id && other.status !== "done" && task.files.some((a) => other.files.some((b) => pathsOverlap(a, b)))).map((other) => other.id);
+    return { ...task, blocked_by, unblocked: task.status === "open" && blocked_by.length === 0, ...(overlaps.length ? { overlaps } : {}) };
   });
 }
 

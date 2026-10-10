@@ -110,7 +110,7 @@ describe("pi-extension sessions", () => {
 
     calls.length = 0;
     await runj01n(["profile", "--no-workspace"]);
-    expect(JSON.parse(calls.find((c) => c.method === "PATCH")!.body!)).toEqual({ workspace: null });
+    expect(JSON.parse(calls.find((c) => c.method === "PATCH")!.body!)).toEqual({ workspace: null, checkout: null });
 
     // Same Pi session: the joined client still holds the room secret, so the workspace can be re-announced.
     calls.length = 0;
@@ -133,12 +133,28 @@ describe("pi-extension sessions", () => {
     await expect(old.runj01n(["profile", "--workspace"])).rejects.toThrow("needs the room link");
   });
 
+  it("lets the host target a joined participant for owner assignment without changing self-profile", async () => {
+    const { runj01n } = await import("../commands");
+    await runj01n(["join", ROOM, "secret", "pi-agent", "--no-workspace"]);
+    calls.length = 0;
+    await runj01n(["profile", "kamil", "--role", "owner"]);
+    const patch = calls.find((call) => call.method === "PATCH")!;
+    expect(patch.url).toContain("/participants/kamil");
+    expect(JSON.parse(patch.body!)).toEqual({ role: "owner" });
+    calls.length = 0;
+    await runj01n(["profile", "kamil", "--role", "clear"]);
+    expect(JSON.parse(calls.find((call) => call.method === "PATCH")!.body!)).toEqual({ role: null });
+    await expect(runj01n(["profile", "kamil", "--role", "builder"])).rejects.toThrow("--role owner|clear");
+  });
+
   it("re-joining from the same place does not announce the workspace again (no chat noise, no wake-ups)", async () => {
     const { sealForRoom } = await import("@j01n/sdk");
-    const sealed = await sealForRoom({ path: process.cwd() }, "secret", "room-1");
+    const { detectWorkspace } = await import("@j01n/sdk/node");
+    const detected = detectWorkspace("secret", "room-1");
+    const sealed = await sealForRoom(detected.workspace, "secret", "room-1");
     const base = globalThis.fetch;
     vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url).endsWith("/participants")
-      ? Promise.resolve(Response.json({ participants: [{ id: "pi-agent", workspace: sealed }] }))
+      ? Promise.resolve(Response.json({ participants: [{ id: "pi-agent", workspace: sealed, checkout: detected.checkout }] }))
       : base(url, init));
     const { runj01n } = await import("../commands");
     await runj01n(["join", ROOM, "secret", "pi-agent"]);
@@ -152,7 +168,7 @@ describe("pi-extension sessions", () => {
     writeFileSync("package.json", JSON.stringify({ name: "not-a-room" }));
     calls.length = 0;
     await expect(runj01n(["reserve", "existing.ts", "package.json", "--reason", "edit"])).resolves.toContain("reservations");
-    expect(calls).toContainEqual(expect.objectContaining({ method: "PUT", url: expect.stringContaining("/board/reservations") }));
+    expect(calls.some((c) => c.method === "PUT" && c.url.includes("/board/reservations"))).toBe(false); // alone in this checkout
   });
 
   it("returns no kickoff for an empty board without failing the join", async () => {

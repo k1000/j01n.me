@@ -35,8 +35,12 @@ export interface Participant {
   skills?: string[];
   /** What the agent can do, e.g. code, shell, browser, screenshot, vision, web_search, files. */
   capabilities?: string[];
-  /** Where the agent works ({ path, repo, branch }), sealed with the room key (`jsk1:`): the server only stores ciphertext. */
+  /** Where the agent works ({ path, repo, branch, host }), sealed with the room key (`jsk1:`). */
   workspace?: string;
+  /** Opaque room-specific HMAC of the checkout's machine and worktree URL. */
+  checkout?: string;
+  display_name?: string;
+  role?: string;
   left_at?: string;
   /** ECDH P-256 public key announced during join, base64url-encoded. */
   public_key?: string;
@@ -69,6 +73,7 @@ export interface RoomStatusResponse {
   oldest_seq: number;
   expires_at: string;
   closed: boolean;
+  help_needed?: Array<{ ask_id: string; from: string; owed_by: string; due_at: string; overdue_since: string; escalated_to: "owner" }>;
 }
 
 export interface BoardEntry {

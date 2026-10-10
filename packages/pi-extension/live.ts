@@ -181,7 +181,8 @@ export function registerLive(pi: ExtensionAPI): { refresh(): Promise<void>; setE
     if ((event.toolName !== "edit" && event.toolName !== "write") || typeof input.path !== "string") return;
     const path = repoPath(root, input.path);
     for (const client of clients) {
-      const held = reservationFor(await reservationsOf(client), client.participantId, repo, path);
+      const checkout = (await client.team()).find((p) => p.id === client.participantId)?.checkout;
+      const held = reservationFor(await reservationsOf(client), client.participantId, repo, path, checkout);
       if (held) {
         return {
           block: true,

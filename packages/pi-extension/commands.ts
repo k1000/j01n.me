@@ -7,6 +7,8 @@ import type { AgentIdentity, Workspace } from "@j01n/sdk";
 import { execFileSync } from "node:child_process";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { roomReplyHint, roomReplyHints, runProfileCommand, runReservationCommand, runRoomCommand } from "@j01n/sdk/room-commands";
+import { detectWorkspace } from "@j01n/sdk/node";
+import { checkConflicts } from "@j01n/sdk/conflicts-node";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
 import { listHerdrPeers, notifyHerdrPeer } from "./herdr";
@@ -101,7 +103,7 @@ function isRoomFile(ref: string): boolean {
 
 const ACTIVE_COMMANDS = new Set([
   "send", "wait", "read", "inbox", "doctor", "board", "board_set", "board_patch", "board_delete",
-  "status", "webhook", "participants", "room_status", "transition", "host", "profile", "reserve", "release", "reservations", "tasks", "claim", "done", "block", "unblock", "leave", "close",
+  "status", "webhook", "participants", "room_status", "transition", "host", "profile", "reserve", "release", "reservations", "tasks", "claim", "done", "conflicts", "block", "unblock", "leave", "close",
 ]);
 
 const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen", "herdr_agents", "invite_herdr", "worktrees"]);
@@ -209,12 +211,6 @@ function git(...args: string[]): string | undefined {
   try { return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined; } catch { return undefined; }
 }
 
-function detectWorkspace(): Workspace {
-  const repo = git("remote", "get-url", "origin")?.replace(/\/\/[^@/]+@/, "//");
-  const branch = git("branch", "--show-current");
-  return { path: process.cwd(), ...(repo ? { repo } : {}), ...(branch ? { branch } : {}) };
-}
-
 /** The repo this directory belongs to: its root, and its identity (remote without credentials, else the root). */
 export function currentRepo(): { root: string; repo: string } {
   const root = git("rev-parse", "--show-toplevel") ?? process.cwd();
@@ -249,17 +245,19 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
   };
   const model = flag("--model") || process.env.J01N_MODEL || process.env.PI_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL;
   const provider = flag("--provider") || process.env.J01N_PROVIDER || process.env.PI_PROVIDER;
-  let workspace = parsed.rest.includes("--no-workspace") ? undefined : detectWorkspace();
+  const detected = parsed.rest.includes("--no-workspace") ? undefined : detectWorkspace(client.invite.join_secret, client.invite.room_id);
+  let workspace = detected?.workspace;
   // Re-joining from the same place announces nothing new (every seal differs, so compare the opened values).
   const teamList = workspace || model || provider ? await client.team().catch(() => []) : [];
   const mine = teamList.find((p) => p.id === parsed.me);
   if (mine && JSON.stringify(mine.workspace) === JSON.stringify(workspace)) workspace = undefined;
   const display_name = flag("--display-name");
   const role = flag("--role");
-  const profile: { capabilities?: string[]; workspace?: Workspace; model?: string; provider?: string; display_name?: string; role?: string } = { capabilities, workspace, display_name, role };
+  const profile: { capabilities?: string[]; workspace?: Workspace; checkout?: string; model?: string; provider?: string; display_name?: string; role?: string } = { capabilities, workspace, display_name, role };
+  if (detected?.checkout !== mine?.checkout) profile.checkout = detected?.checkout;
   if (model && mine?.model !== model) profile.model = model;
   if (provider && mine?.provider !== provider) profile.provider = provider;
-  if (capabilities || workspace || profile.model || profile.provider || display_name || role) await client.setProfile(profile);
+  if (capabilities || workspace || profile.checkout || profile.model || profile.provider || display_name || role) await client.setProfile(profile);
   let kickoff: unknown = null;
   let kickoffError: string | undefined;
   let board: Record<string, unknown> | null = null;
@@ -297,7 +295,11 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
 async function sharedCommand(parsed: ParsedArgs): Promise<string> {
   if (parsed.cmd === "send" && !parsed.me) throw new Error("send needs: participant_id <to> <json_body>");
   if ((parsed.cmd === "read" || parsed.cmd === "inbox") && !parsed.me) throw new Error("read needs: participant_id");
-  return JSON.stringify(await runRoomCommand(await getClient(parsed), parsed.cmd, parsed.rest, { recipientList: true, repo: currentRepo().repo }), null, 2);
+  const client = await getClient(parsed);
+  return JSON.stringify(await runRoomCommand(client, parsed.cmd, parsed.rest, {
+    recipientList: true, repo: currentRepo().repo,
+    conflicts: (branch) => checkConflicts(client, currentRepo().root, branch),
+  }), null, 2);
 }
 
 /** A ready command to answer a message in its thread (closes it if it asked for a reply). */
@@ -383,7 +385,8 @@ async function handleProfile(parsed: ParsedArgs): Promise<string> {
   return JSON.stringify(await runProfileCommand(client, parsed.rest, {
     modelFallback: process.env.J01N_MODEL || process.env.PI_MODEL,
     providerFallback: process.env.J01N_PROVIDER,
-    workspace: detectWorkspace,
+    workspace: () => detectWorkspace(client.invite.join_secret, client.invite.room_id).workspace,
+    checkout: () => detectWorkspace(client.invite.join_secret, client.invite.room_id).checkout,
     secret: client.invite.join_secret,
     workspaceError: "re-announcing the workspace needs the room link (it is sealed with the room key): /j01n profile <room link> <me> --workspace",
   }), null, 2);
@@ -556,6 +559,7 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   doctor: handleDoctor,
   board: sharedCommand,
   tasks: sharedCommand,
+  conflicts: sharedCommand,
   claim: sharedCommand,
   done: sharedCommand,
   block: sharedCommand,

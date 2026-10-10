@@ -165,6 +165,13 @@ export async function runProfileCommand(client: RoomClient, rest: string[], opti
   secret: string;
   workspaceError: string;
 }): Promise<unknown> {
+  const target = rest[0] && !rest[0].startsWith("--") ? rest[0] : undefined;
+  if (target) {
+    const role = rest[1] === "--role" ? rest[2] : undefined;
+    if (rest.length !== 3 || (role !== "owner" && role !== "clear")) throw new Error("profile <participant> needs --role owner|clear");
+    await client.setParticipantRole(target, role === "owner" ? "owner" : null);
+    return { ok: true, team: await client.team() };
+  }
   const flag = (name: string) => {
     const at = rest.indexOf(name);
     return at >= 0 && rest[at + 1] && !rest[at + 1].startsWith("--") ? rest[at + 1] : undefined;

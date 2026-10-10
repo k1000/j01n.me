@@ -152,6 +152,8 @@ export interface RoomClient {
   updateStatus(state: "free" | "busy", status: string, options?: { model?: string; skills?: string[]; provider?: string; capabilities?: string[]; workspace?: Workspace | null; checkout?: string | null; display_name?: string; role?: string; webhookUrl?: string | null }): Promise<{ ok: true; participant: Participant }>;
   /** Announce what you can do and where you work (only the given fields change; workspace is sealed, null clears it). */
   setProfile(profile: { capabilities?: string[]; workspace?: Workspace | null; checkout?: string | null; display_name?: string; role?: string; model?: string; provider?: string }): Promise<{ ok: true; participant: Participant }>;
+  /** Host-targeted role change; the server enforces host authorization and joined target. */
+  setParticipantRole(targetId: string, role: "owner" | null): Promise<{ ok: true; participant: Participant }>;
   /** Everyone in the room with their capabilities and opened workspace (null when it cannot be opened). */
   team(): Promise<Array<{ id: string; state: string; status: string; last_seen_at: string; model?: string; provider?: string; checkout?: string; checkout_status: string; display_name?: string; role?: string; capabilities: string[]; workspace: Workspace | null }>>;
   /** Opt into push: the room POSTs your visible events to this https URL. null switches back to polling. */
@@ -320,6 +322,13 @@ export async function buildRoomClient(
         `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
         invite,
         { method: "PATCH", participantId, body },
+      );
+    },
+    async setParticipantRole(targetId: string, role: "owner" | null) {
+      return request<{ ok: true; participant: Participant }>(
+        `${invite.room_url}/participants/${encodeURIComponent(targetId)}`,
+        invite,
+        { method: "PATCH", participantId, body: { role } },
       );
     },
     async team() {

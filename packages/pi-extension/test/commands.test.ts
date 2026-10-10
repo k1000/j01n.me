@@ -124,6 +124,20 @@ describe("pi-extension sessions", () => {
     await expect(old.runj01n(["profile", "--workspace"])).rejects.toThrow("needs the room link");
   });
 
+  it("lets the host target a joined participant for owner assignment without changing self-profile", async () => {
+    const { runj01n } = await import("../commands");
+    await runj01n(["join", ROOM, "secret", "pi-agent", "--no-workspace"]);
+    calls.length = 0;
+    await runj01n(["profile", "kamil", "--role", "owner"]);
+    const patch = calls.find((call) => call.method === "PATCH")!;
+    expect(patch.url).toContain("/participants/kamil");
+    expect(JSON.parse(patch.body!)).toEqual({ role: "owner" });
+    calls.length = 0;
+    await runj01n(["profile", "kamil", "--role", "clear"]);
+    expect(JSON.parse(calls.find((call) => call.method === "PATCH")!.body!)).toEqual({ role: null });
+    await expect(runj01n(["profile", "kamil", "--role", "builder"])).rejects.toThrow("--role owner|clear");
+  });
+
   it("re-joining from the same place does not announce the workspace again (no chat noise, no wake-ups)", async () => {
     const { sealForRoom } = await import("@j01n/sdk");
     const { detectWorkspace } = await import("@j01n/sdk/node");

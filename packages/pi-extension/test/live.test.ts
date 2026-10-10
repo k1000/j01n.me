@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sealKickoff } from "@j01n/sdk/crypto";
+import { sealForRoom } from "@j01n/sdk/crypto";
 import type { RoomClient } from "@j01n/sdk";
 import type { RoomMessage } from "@j01n/sdk/types";
 
@@ -44,7 +44,7 @@ describe("pi live mode", () => {
   it("blocks editing a path another participant reserved, naming the holder and how to reach them", async () => {
     const dir = mkdtempSync(join(tmpdir(), "j01n-live-"));
     process.chdir(dir);
-    const sealed = (await sealKickoff({ repo: process.cwd(), paths: ["src/auth"], reason: "refactoring auth" }, "secret", "room-1")).encrypted_payload;
+    const sealed = await sealForRoom({ repo: process.cwd(), paths: ["src/auth"], reason: "refactoring auth" }, "secret", "room-1");
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       if (method === "PUT") return Response.json({ ok: true, cursor: 0, participant_token: "tok-1" });

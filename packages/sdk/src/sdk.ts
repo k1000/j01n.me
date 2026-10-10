@@ -2,7 +2,7 @@ export { RoomApiError } from "./errors";
 export { buildMinimalInvite, inviteLink, normalizeInvite, parseInviteLink } from "./invite";
 export { getClientUpdateNotice, SDK_CLIENT_PROTOCOL } from "./transport";
 export { deleteInvite, inviteAgent, registerAgent, setAcceptFrom, waitForInvites } from "./agents";
-export { openRoomSeal, sealForRoom, openWorkspace, sealWorkspace } from "./crypto";
+export { openRoomSeal, sealForRoom } from "./crypto";
 export { listReservations, pathsOverlap, releasePaths, reservationFor, reservePaths, RESERVATIONS_KEY } from "./reservations";
 export type { Reservation } from "./reservations";
 export type { Workspace } from "./crypto";

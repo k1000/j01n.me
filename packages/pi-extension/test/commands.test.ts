@@ -98,8 +98,8 @@ describe("pi-extension sessions", () => {
   });
 
   it("re-joining from the same place does not announce the workspace again (no chat noise, no wake-ups)", async () => {
-    const { sealWorkspace } = await import("@j01n/sdk");
-    const sealed = await sealWorkspace({ path: process.cwd() }, "secret", "room-1");
+    const { sealForRoom } = await import("@j01n/sdk");
+    const sealed = await sealForRoom({ path: process.cwd() }, "secret", "room-1");
     const base = globalThis.fetch;
     vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url).endsWith("/participants")
       ? Promise.resolve(Response.json({ participants: [{ id: "pi-agent", workspace: sealed }] }))
@@ -107,6 +107,16 @@ describe("pi-extension sessions", () => {
     const { runj01n } = await import("../commands");
     await runj01n(["join", ROOM, "secret", "pi-agent"]);
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+  });
+
+  it("an existing file as the first argument is a path to reserve, not an invitation (unless it holds one)", async () => {
+    const { runj01n } = await import("../commands");
+    await runj01n(["join", ROOM, "secret", "pi-agent", "--no-workspace"]);
+    writeFileSync("existing.ts", "export {};\n");
+    writeFileSync("package.json", JSON.stringify({ name: "not-a-room" }));
+    calls.length = 0;
+    await expect(runj01n(["reserve", "existing.ts", "package.json", "--reason", "edit"])).resolves.toContain("reservations");
+    expect(calls).toContainEqual(expect.objectContaining({ method: "PUT", url: expect.stringContaining("/board/reservations") }));
   });
 
   it("returns no kickoff for an empty board without failing the join", async () => {
@@ -232,8 +242,8 @@ describe("pi-extension sessions", () => {
   });
 
   it("join returns the sealed kickoff when the board has none", async () => {
-    const { sealKickoff } = await import("@j01n/sdk/crypto");
-    const sealed = await sealKickoff({ text: "sealed hello" }, "secret", "room-1");
+    const { sealForRoom } = await import("@j01n/sdk/crypto");
+    const sealed = { encrypted_payload: await sealForRoom({ text: "sealed hello" }, "secret", "room-1") };
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       calls.push({ method, url: String(url), auth: new Headers(init?.headers).get("authorization") });

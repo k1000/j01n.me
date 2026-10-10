@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
-import { isSealedKickoff, openKickoff, openRoomSeal, sealForRoom, sealKickoff } from "@j01n/sdk/crypto";
+import { isSealedKickoff, openRoomSeal, sealForRoom } from "@j01n/sdk/crypto";
 import type { RoomMessage } from "../src/types";
 
 async function exchangeKeys(...sessions: Array<{ id: string; session: Awaited<ReturnType<typeof createSdkCryptoSession>> }>): Promise<void> {
@@ -122,8 +122,5 @@ describe("room seal", () => {
     expect(await openRoomSeal(sealed, "join-secret", "room-1")).toEqual(value);
     await expect(openRoomSeal(sealed, "wrong-secret", "room-1")).rejects.toThrow();
     await expect(openRoomSeal(sealed, "join-secret", "other-room")).rejects.toThrow();
-    const legacyBody = await sealKickoff(value, "join-secret", "room-1");
-    expect(await openKickoff(legacyBody, "join-secret", "room-1")).toEqual(value);
-    expect(await openRoomSeal(legacyBody.encrypted_payload, "join-secret", "room-1")).toEqual(value);
   });
 });

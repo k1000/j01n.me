@@ -118,7 +118,11 @@ async function resolveRoomArgs(args) {
   if (args[1]) return inviteRoomArgs(args);
   return envRoomArgs(args);
 }
-async function isRoomRef(value) { if (value.trim().startsWith('{')) return true; try { await fs.access(value); return true; } catch { return false; } }
+// A file names a room only if it holds an invitation or participant profile, not just because it exists (reserve src/x.ts).
+async function isRoomRef(value) {
+  if (value.trim().startsWith('{')) return true;
+  try { const v = JSON.parse(await fs.readFile(value, 'utf8')); return !!v && typeof v === 'object' && ['access', 'room_url', 'join_secret', 'participant_token'].some((k) => k in v); } catch { return false; }
+}
 function activeRoomPath(url, id) { return ACTIVE_ROOMS_DIR + '/' + createHash('sha256').update(url + '\0' + id).digest('hex') + '.json'; }
 async function activeRooms() {
   let names = [];

@@ -84,7 +84,17 @@ function activeCommand(cmd: string, rest: string[]): ParsedArgs {
 }
 
 function hasExplicitInvite(ref: string): boolean {
-  return /^https?:/.test(ref) || ref.startsWith("{") || ref.endsWith(".json") || existsSync(ref);
+  return /^https?:/.test(ref) || ref.startsWith("{") || isRoomFile(ref);
+}
+
+/** A file names a room only if it holds an invitation or participant profile, not just because it exists (reserve src/x.ts). */
+function isRoomFile(ref: string): boolean {
+  try {
+    const value = JSON.parse(readFileSync(ref, "utf8")) as Record<string, unknown>;
+    return !!value && typeof value === "object" && ["access", "room_url", "join_secret", "participant_token"].some((key) => key in value);
+  } catch {
+    return false;
+  }
 }
 
 const ACTIVE_COMMANDS = new Set([

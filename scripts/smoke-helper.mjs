@@ -11,7 +11,7 @@
 // file reservations (reserve / release / leave guard), inviting an agent by name (register / invite /
 // listen), and that the active-room entry holds no secrets. Closes the room.
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,8 +56,9 @@ try {
   const joinB = run(b, ["join", room.invite_link, "smoke-b", "--capabilities", "code,shell"]);
   const teamA = joinB.team?.find((p) => p.id === "smoke-a");
   check("join shows the team: capabilities and others' opened (sealed) workspaces", teamA?.workspace?.path?.endsWith(a.split("/").pop()) && joinB.team.find((p) => p.id === "smoke-b")?.capabilities?.join() === "code,shell");
-  const teamText = execFileSync("node", [helper, "team"], { cwd: b, env, encoding: "utf8" });
-  check("team prints participants, state, status, capabilities, workspace and recency", teamText.includes("smoke-a | state: free | status:") && teamText.includes("smoke-b | state: free | status:") && teamText.includes("capabilities: code, shell") && teamText.includes(a.split("/").pop()) && /active \d+ min ago/.test(teamText));
+  const teamList = run(b, ["team"]).team ?? [];
+  const [teamA2, teamB2] = ["smoke-a", "smoke-b"].map((id) => teamList.find((p) => p.id === id));
+  check("team prints participants, state, status, capabilities, workspace and last activity as JSON", teamA2?.state === "free" && typeof teamB2?.status === "string" && teamB2?.capabilities?.join() === "code,shell" && teamA2?.workspace?.path?.endsWith(a.split("/").pop()) && !!teamA2?.last_seen_at);
   const entry = readdirSync(join(a, ".j01n-rooms"))[0];
   check("active-room entry holds no secrets", !/token|secret/i.test(readFileSync(join(a, ".j01n-rooms", entry), "utf8")));
 
@@ -107,6 +108,8 @@ try {
   check("reserving a path someone else holds fails, naming the holder", fails(b, ["reserve", "src/auth/login.ts"]).includes("already reserved by smoke-a (smoke refactor)"));
   check("reservations are announced in the chat", run(b, ["read"]).some((m) => m.body?.text === "smoke-a reserved files (1)"));
   run(b, ["reserve", "docs/"]);
+  writeFileSync(join(b, "README.md"), "existing file\n");
+  check("an existing file can be reserved by its path (not mistaken for an invitation)", run(b, ["reserve", "README.md"]).reservations.some((r) => r.by === "smoke-b" && r.paths.includes("README.md")));
   check("leaving while holding reservations is refused", fails(b, ["leave"]).includes("release them first"));
   check("leave --release releases them and leaves", run(b, ["leave", "--release"]).left === true && run(a, asA("reservations")).reservations.every((r) => r.by === "smoke-a"));
   run(a, asA("release"));

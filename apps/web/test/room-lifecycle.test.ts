@@ -1,4 +1,4 @@
-import { openKickoff, sealKickoff } from "@j01n/sdk/crypto";
+import { openRoomSeal, sealForRoom } from "@j01n/sdk/crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_EXTEND_MS, MAX_BODY_BYTES, MAX_INVITE_TTL_MS, MIN_INVITE_TTL_MS } from "../src/constants";
 import { hashJoinSecret } from "@j01n/sdk/crypto";
@@ -870,11 +870,11 @@ describe("capabilities and workspace", () => {
   it("announces capabilities and a sealed workspace that every participant sees", async () => {
     const fix = await bootstrapRoom();
     await joinParticipant(fix, "agent-a");
-    const sealed = (await sealKickoff({ path: "/work/api", repo: "gitlab.com/acme/api", branch: "main" }, fix.joinSecret, fix.roomId)).encrypted_payload;
+    const sealed = await sealForRoom({ path: "/work/api", repo: "gitlab.com/acme/api", branch: "main" }, fix.joinSecret, fix.roomId);
     expect((await patch(fix, { capabilities: ["code", "browser", "vision"], workspace: sealed })).status).toBe(200);
     const announced = await agentA(fix);
     expect(announced?.capabilities).toEqual(["code", "browser", "vision"]);
-    expect(await openKickoff({ encrypted_payload: announced!.workspace! }, fix.joinSecret, fix.roomId)).toEqual({ path: "/work/api", repo: "gitlab.com/acme/api", branch: "main" });
+    expect(await openRoomSeal(announced!.workspace!, fix.joinSecret, fix.roomId)).toEqual({ path: "/work/api", repo: "gitlab.com/acme/api", branch: "main" });
 
     expect((await patch(fix, { status: "working" })).status).toBe(200);
     expect((await agentA(fix))?.workspace).toBe(sealed);
@@ -892,12 +892,12 @@ describe("capabilities and workspace", () => {
     const bWaits = wait("agent-b", 5);
     const aWaits = wait("agent-a", 1);
     await new Promise((r) => setTimeout(r, 50));
-    const sealed = (await sealKickoff({ path: "/work/web", branch: "feature/x" }, fix.joinSecret, fix.roomId)).encrypted_payload;
+    const sealed = await sealForRoom({ path: "/work/web", branch: "feature/x" }, fix.joinSecret, fix.roomId);
     await patch(fix, { capabilities: ["code", "browser"], workspace: sealed });
 
     const woke = (await bWaits).message!;
     expect(woke).toMatchObject({ from: "system", to: "all", intent: "profile.changed", body: { text: "agent-a can now: code, browser; agent-a changed workspace", participant_id: "agent-a", capabilities: ["code", "browser"] } });
-    expect(await openKickoff({ encrypted_payload: (woke.body as { workspace: string }).workspace }, fix.joinSecret, fix.roomId)).toEqual({ path: "/work/web", branch: "feature/x" });
+    expect(await openRoomSeal((woke.body as { workspace: string }).workspace, fix.joinSecret, fix.roomId)).toEqual({ path: "/work/web", branch: "feature/x" });
     expect(await aWaits).toMatchObject({ timeout: true });
 
     const announcements = async () => (await getRoomJson<{ messages: RoomMessage[] }>(fix, "/?view=all", "agent-b")).messages.filter((m) => m.intent === "profile.changed").length;

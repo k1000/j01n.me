@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sealKickoff } from "@j01n/sdk/crypto";
+import { sealForRoom } from "@j01n/sdk/crypto";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { cliMarkdown, orchestrationMarkdown, piMarkdown, sdkMarkdown, securityMarkdown } from "../src/markdown-assets";
 import app from "../src/index";
@@ -170,7 +170,7 @@ async function roomPageDecryptors(joinSecret: string, latest: unknown = null) {
 
 describe("room page", () => {
   it("opens a sealed kickoff with the invite secret, but not with a wrong secret", async () => {
-    const body = await sealKickoff({ text: "Review the tasks" }, "correct-secret", "room-1");
+    const body = { encrypted_payload: await sealForRoom({ text: "Review the tasks" }, "correct-secret", "room-1") };
     const message = { from: "host", intent: "kickoff", body };
     const valid = await roomPageDecryptors("correct-secret");
     const invalid = await roomPageDecryptors("wrong-secret");
@@ -230,10 +230,10 @@ describe("room page", () => {
     expect(html).toContain('await renderReservations(board)');
 
     const render = new Function("openSealedKickoff", "esc", html.slice(start, end) + "return renderReservations;")(
-      async (sealed: string) => (await import("@j01n/sdk/crypto")).openKickoff({ encrypted_payload: sealed }, "secret", "room-1"),
+      async (sealed: string) => (await import("@j01n/sdk/crypto")).openRoomSeal(sealed, "secret", "room-1"),
       (value: unknown) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
     ) as (board: unknown) => Promise<string>;
-    const { encrypted_payload: sealed } = await sealKickoff({ repo: "repo", paths: ["src/<api>.ts", "test/api.test.ts"], reason: "fix <bug>" }, "secret", "room-1");
+    const sealed = await sealForRoom({ repo: "repo", paths: ["src/<api>.ts", "test/api.test.ts"], reason: "fix <bug>" }, "secret", "room-1");
     const board = { reservations: { value: { one: { by: "alice", since: "2026-10-10T09:00:00Z", sealed } } } };
     const output = await render(board);
     for (const text of ["alice", "repo", "src/&lt;api&gt;.ts", "test/api.test.ts", "fix &lt;bug&gt;", "2026-10-10T09:00:00Z"]) expect(output).toContain(text);
@@ -277,10 +277,16 @@ describe("skill page", () => {
     expect(skillPage()).toContain("/skill/SKILL.md");
     expect(skillMarkdown).toContain("# j01n.me Agent Rendezvous");
     expect(skillMarkdown).toContain("heterogeneous agents");
-    expect(skillMarkdown).toContain("## Invitation delivery: host handoff");
-    expect(skillMarkdown).toContain("## Shared board");
-    expect(skillMarkdown).toContain("board_schema");
+    expect(skillMarkdown).toContain("Path A: MCP host");
+    expect(skillMarkdown).toContain("Path B: Shell-capable agent");
+    expect(skillMarkdown).toContain("npm install @j01n/sdk");
+    expect(skillMarkdown).toContain("kanban");
+    expect(skillMarkdown).toContain("milestone");
+    expect(skillMarkdown).toContain("quick");
+    expect(skillMarkdown).toContain("Board ACLs");
+    expect(skillMarkdown).toContain("Keep messages concise");
     expect(skillMarkdown).toContain("reservation.claim");
+    expect(skillMarkdown).toContain("concise. Link to artifacts");
     expect(skillMarkdown).toContain("Announce files before editing");
     expect(skillMarkdown).not.toContain("https://j01n.me/client/agent.py");
   });

@@ -159,20 +159,6 @@ export interface Workspace {
   branch?: string;
 }
 
-// Compatibility entry points for existing kickoff/workspace callers.
-export async function sealKickoff(value: unknown, joinSecret: string, roomId: string): Promise<{ encrypted_payload: string }> {
-  return { encrypted_payload: await sealForRoom(value, joinSecret, roomId) };
-}
-export async function openKickoff(body: { encrypted_payload: string }, joinSecret: string, roomId: string): Promise<unknown> {
-  return openRoomSeal(body.encrypted_payload, joinSecret, roomId);
-}
-export async function sealWorkspace(workspace: Workspace, joinSecret: string, roomId: string): Promise<string> {
-  return sealForRoom(workspace, joinSecret, roomId);
-}
-export async function openWorkspace(sealed: string, joinSecret: string, roomId: string): Promise<Workspace> {
-  return openRoomSeal(sealed, joinSecret, roomId) as Promise<Workspace>;
-}
-
 function base64Url(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);

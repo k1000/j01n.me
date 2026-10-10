@@ -13,6 +13,7 @@
     "./invite": "./src/invite.ts",
     "./errors": "./src/errors.ts",
     "./agents": "./src/agents.ts",
-    "./reservations": "./src/reservations.ts"
+    "./reservations": "./src/reservations.ts",
+    "./transport": "./src/transport.ts"
   }
 }

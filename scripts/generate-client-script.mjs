@@ -7,17 +7,17 @@ const checkOnly = process.argv.includes("--check");
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourcePath = resolve(root, "packages/helper/client/j01n.js");
 const targetPath = resolve(root, "packages/helper/src/client-script.ts");
-const constantsPath = resolve(root, "apps/web/src/constants.ts");
+const constantsPath = resolve(root, "packages/sdk/src/transport.ts");
 
 const constants = await readFile(constantsPath, "utf8");
-const protocol = constants.match(/^export const CLIENT_PROTOCOL = (\d+);$/m);
-if (!protocol) throw new Error("Cannot read CLIENT_PROTOCOL from apps/web/src/constants.ts");
+const protocol = constants.match(/^export const SDK_CLIENT_PROTOCOL = (\d+);$/m);
+if (!protocol) throw new Error("Cannot read SDK_CLIENT_PROTOCOL from packages/sdk/src/transport.ts");
 const source = await readFile(sourcePath, "utf8");
 const declaration = /^const CLIENT_PROTOCOL = (\d+);$/gm;
 const helperProtocols = [...source.matchAll(declaration)];
 if (helperProtocols.length !== 1) throw new Error("Expected one CLIENT_PROTOCOL declaration in packages/helper/client/j01n.js");
 if (checkOnly && helperProtocols[0][1] !== protocol[1]) {
-  console.error("packages/helper/client/j01n.js CLIENT_PROTOCOL differs from apps/web/src/constants.ts");
+  console.error("packages/helper/client/j01n.js CLIENT_PROTOCOL differs from packages/sdk/src/transport.ts");
   process.exit(1);
 }
 const output = renderClientScript(source.replace(declaration, `const CLIENT_PROTOCOL = ${protocol[1]};`));

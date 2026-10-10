@@ -6,11 +6,14 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const smokeIndex = process.argv.indexOf("--smoke");
-if (smokeIndex !== -1 && (!process.argv[smokeIndex + 1] || process.argv.length !== smokeIndex + 2)) {
-  throw new Error("Usage: check-contract.mjs [--smoke <base>]");
+const flags = process.argv.slice(2);
+const peer = flags.includes("--peer");
+const smokeIndex = flags.indexOf("--smoke");
+if (flags.some((flag, index) => flag === "--peer" && index !== flags.lastIndexOf(flag)) ||
+    (smokeIndex !== -1 && (!flags[smokeIndex + 1] || flags[smokeIndex + 1].startsWith("--"))) ||
+    flags.length !== (peer ? 1 : 0) + (smokeIndex !== -1 ? 2 : 0)) {
+  throw new Error("Usage: check-contract.mjs [--peer] [--smoke <base>]");
 }
-if (smokeIndex === -1 && process.argv.length !== 2) throw new Error("Usage: check-contract.mjs [--smoke <base>]");
 
 function run(command, args, cwd = root) {
   console.log(`$ ${command} ${args.join(" ")}`);
@@ -77,8 +80,11 @@ function checkDependencies() {
 checkDependencies();
 run("npx", ["tsc", "--noEmit"]);
 run("npx", ["vitest", "run"]);
-run(process.execPath, ["scripts/generate-client-script.mjs", "--check"]);
-run(process.execPath, ["scripts/generate-assets.mjs", "--check"]);
+if (peer) console.log("Peer mode: generated-file checks skipped (integrator owns generated files)");
+else {
+  run(process.execPath, ["scripts/generate-client-script.mjs", "--check"]);
+  run(process.execPath, ["scripts/generate-assets.mjs", "--check"]);
+}
 
 const temp = mkdtempSync(join(tmpdir(), "j01n-contract-"));
 try {
@@ -100,5 +106,5 @@ try {
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
-if (smokeIndex !== -1) run(process.execPath, ["scripts/smoke-helper.mjs", process.argv[smokeIndex + 1]]);
+if (smokeIndex !== -1) run(process.execPath, ["scripts/smoke-helper.mjs", flags[smokeIndex + 1]]);
 console.log("Contract check passed");

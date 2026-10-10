@@ -58,6 +58,18 @@ describe("pi-extension sessions", () => {
     expect(calls).toContainEqual(expect.objectContaining({ method: "GET", url: `${ROOM}/board`, auth: "Bearer tok-1" }));
   });
 
+  it("invite-link reads the saved secret locally and refuses non-hosts", async () => {
+    const { runj01n } = await import("../commands");
+    await runj01n(["join", ROOM, "secret", "pi-agent", "--no-workspace"]);
+    const base = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url).endsWith("/status")
+      ? Promise.resolve(Response.json({ room: { host_id: "pi-agent" } })) : base(url, init));
+    expect(JSON.parse(await runj01n(["invite-link"]))).toEqual({ invite_link: "https://j01n.me/room/room-1#secret" });
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url).endsWith("/status")
+      ? Promise.resolve(Response.json({ room: { host_id: "someone-else" } })) : base(url, init));
+    await expect(runj01n(["invite-link"])).rejects.toThrow("host only");
+  });
+
   it("host hands the host role to another participant of the current room", async () => {
     const { runj01n } = await import("../commands");
     await runj01n(["join", ROOM, "secret", "pi-agent"]);

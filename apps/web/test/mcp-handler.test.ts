@@ -92,7 +92,7 @@ describe("hosted MCP handler", () => {
 
     expect(body.result.tools.map((tool) => tool.name)).toContain("create_room");
     expect(body.result.tools.map((tool) => tool.name)).toContain("send_message");
-    for (const name of ["list_tasks", "claim_task", "complete_task", "block_task"]) {
+    for (const name of ["list_tasks", "claim_task", "complete_task", "block_task", "room_summary", "add_note", "add_decision"]) {
       expect(body.result.tools.map((tool) => tool.name)).toContain(name);
     }
   });
@@ -544,6 +544,29 @@ describe("hosted MCP handler", () => {
       const result = await toolResultText<{ ok: boolean }>(await handleMcpRequest(rpc("tools/call", { name, arguments: { inviteJson: invite, participantId: "a" } }), env));
       expect(result.ok).toBe(true);
     }
+  });
+
+  it("appends notes and decisions via MCP and summarizes without reading messages", async () => {
+    const board: Record<string, { value: unknown; version: number }> = {};
+    const paths: string[] = [];
+    const env = { RENDEZVOUS: { idFromName: () => "id", get: () => ({ fetch: async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      paths.push(path);
+      if (path.endsWith("/participants")) return Response.json({ participants: [{ id: "maya", state: "free", status: "ready", last_seen_at: "2026-01-01", capabilities: [] }] });
+      if (init?.method === "PUT" && path.includes("/board/")) {
+        const key = decodeURIComponent(path.split("/").pop()!);
+        board[key] = { value: JSON.parse(String(init.body)), version: (board[key]?.version ?? 0) + 1 };
+        return Response.json({ ok: true });
+      }
+      return Response.json({ board, cursor: 0, messages: [] });
+    } }) } } as never;
+    const call = (name: string, args: Record<string, unknown> = {}) =>
+      handleMcpRequest(rpc("tools/call", { name, arguments: { inviteJson: TEST_INVITE, participantId: "maya", ...args } }), env).then((r) => toolResultText<Record<string, unknown>>(r));
+    expect(await call("add_note", { text: "Pin versions", tag: "gotcha", files: "package.json" })).toMatchObject({ notes: [{ by: "maya", tags: ["gotcha"] }] });
+    expect(await call("add_decision", { decision: "Ship", why: "Checks pass" })).toMatchObject({ decisions: [{ decision: "Ship", why: "Checks pass" }] });
+    const before = paths.length;
+    expect(await call("room_summary")).toMatchObject({ notes: [{ text: "Pin versions" }], decisions: [{ decision: "Ship" }], participants: [{ id: "maya" }] });
+    expect(paths.slice(before)).not.toContain("/"); // reading messages would advance the cursor
   });
 
   it("waits for an event, takes a room link and plain text, and reads others' messages by default", async () => {

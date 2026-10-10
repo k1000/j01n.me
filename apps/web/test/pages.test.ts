@@ -22,6 +22,12 @@ describe("web UI scripts", () => {
     expect(roomPageScript).toContain("const rid = document.currentScript.dataset.roomId;");
   });
 
+  it("displays the host report prominently and labels only recognized message kinds", () => {
+    expect(roomPageScript).toContain('aria-label="Host review report"');
+    expect(roomPageScript).toContain("renderBoardValue(board.report.value)");
+    expect(roomPageScript).toContain('["finding", "question", "decision", "blocker", "handoff"].includes(message.kind)');
+  });
+
   it("defines the saved-room helpers the home and room pages call", () => {
     for (const html of [homePage(), roomPageHtml("room-1")]) {
       for (const fn of ["persistInvite", "loadInvite", "removeInvite", "renderSavedRooms"]) {

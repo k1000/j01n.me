@@ -25,6 +25,8 @@ import { joinRoom, resumeRoom, RoomApiError } from "@j01n/sdk";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { listReservations, releasePaths, reservePaths } from "@j01n/sdk/reservations";
 import { blockTask, claimTask, completeTask, listTasks } from "@j01n/sdk/tasks";
+import { addDecision, addNote, notesAndDecisions } from "@j01n/sdk/notes";
+import { roomSummary } from "@j01n/sdk/room-commands";
 import type { SdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
 import { isSealedKickoff, openRoomSeal, sealForRoom } from "@j01n/sdk/crypto";
@@ -316,10 +318,13 @@ async function waitForEvent(env: Env, params: Record<string, unknown>) {
     ...(params.from ? { from: String(params.from).split(",") } : {}),
     ...(typeof params.board === "string" ? { board: params.board } : {}),
     ...(params.system === false ? { system: false as const } : {}),
-  });
+    ...(params.kind ? { kind: parseMessageKinds(params.kind) } : {}),
+  } as Parameters<RoomClient["wait"]>[0]);
   if (woke.timeout) return { timeout: true };
   const read = await readRoomMessages(env, { inviteJson: params.inviteJson, participantId });
-  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), ...read };
+  // Reading consumes all unread messages even when the response selects one kind.
+  const messages = params.kind ? read.messages.filter((message) => parseMessageKinds(params.kind).includes((message as typeof message & { kind?: string }).kind as ReturnType<typeof parseMessageKinds>[number])) : read.messages;
+  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), ...read, count: messages.length, messages };
 }
 
 /** A JSON object is sent as is; anything else is sent as { text }. */
@@ -338,6 +343,13 @@ async function readRoomMessages(env: Env, params: Record<string, unknown>) {
   const messages = await client.read({ all: !!params.all, includeSelf: !!params.includeSelf, after: params.afterSeq as number | undefined });
   const withReplies = messages.map((m) => (m.from === "system" || m.intent === "key.exchange" ? m : { ...m, reply: { tool: "send_message", to: m.from, replyTo: m.id } }));
   return { cursor: client.cursor ?? 0, count: withReplies.length, messages: withReplies };
+}
+
+function parseMessageKinds(raw: unknown): Array<"finding" | "question" | "decision" | "blocker" | "handoff"> {
+  const valid = ["finding", "question", "decision", "blocker", "handoff"];
+  const kinds = String(raw).split(",").map((kind) => kind.trim());
+  if (kinds.some((kind) => !valid.includes(kind))) throw new Error("kind must be finding, question, decision, blocker or handoff");
+  return kinds as Array<"finding" | "question" | "decision" | "blocker" | "handoff">;
 }
 
 function parseSkills(value?: string): string[] | undefined {
@@ -778,7 +790,7 @@ async function resumeRoomTool(env: Env, params: Record<string, unknown>, ctx: To
   ]);
   return { ok: true, resumed: true, room_id: roomId, room_url: roomUrl, participant_id: participantId,
     room: status.room, phase: status.phase, participants: status.participants, expires_at: status.expires_at,
-    ...read, board: boardResult?.board ?? null, questions,
+    ...read, board: boardResult?.board ?? null, ...notesAndDecisions(boardResult?.board ?? {}), questions,
     ...(boardResult ? {} : { board_error: "Could not load board; call read_board to retry" }),
     ...(questions ? {} : { questions_error: "Could not load open questions; retry resume_room" }),
     resume_profile: profile, subscription_active: subscribed };
@@ -883,6 +895,7 @@ const tools: Record<string, ToolDef> = {
         ...kickoff,
         // The whole board: every key with value, version, updated_by and updated_at.
         board,
+        ...notesAndDecisions(board ?? {}),
         questions,
         // Who is in the room: capabilities and where each works.
         team: await teamOf(env, roomUrl, secret, participantId),
@@ -900,6 +913,7 @@ const tools: Record<string, ToolDef> = {
   send_message: roomTool("Send plain text or JSON, encrypted by the hosted MCP bridge. Optionally update status or wait for an event or a linked reply.", {
     to: { type: "string" }, body: { type: "string" },
     intent: { type: "string" }, priority: { type: "string" },
+    kind: { type: "string", enum: ["finding", "question", "decision", "blocker", "handoff"] },
     state: { type: "string" }, status: { type: "string" },
     model: { type: "string" }, skills: { type: "string" },
     waitForReply: { type: "boolean", description: "Legacy alias for waitMode:event. Waits for the next visible event, not necessarily a linked reply. Use waitMode:reply for a specific answer." },
@@ -926,12 +940,13 @@ const tools: Record<string, ToolDef> = {
       const sent = await client.send(to, parseMessageBody(params.body as string), {
         replyTo: params.replyTo as string | undefined,
         intent: params.intent as string | undefined, priority: params.priority as string | undefined,
+        kind: params.kind as "finding" | "question" | "decision" | "blocker" | "handoff" | undefined,
         expectsReply: !!params.expectsReply || waitMode === "reply",
         replyByMinutes: params.replyByMinutes as number | undefined,
         state: params.state as "free" | "busy" | undefined, status: params.status as string | undefined,
         model: params.model as string | undefined, skills: parseSkills(params.skills as string),
         skipKeySync: true, forceEncrypt: true,
-      });
+      } as Parameters<RoomClient["send"]>[2]);
       if (waitMode === "reply") return waitForLinkedReply(env, params, sent, to, lastReadSeq);
       return waitMode === "event" ? { sent, ...await waitForEvent(env, params) } : sent;
     }),
@@ -945,6 +960,7 @@ const tools: Record<string, ToolDef> = {
     from: { type: "string", description: "Only wake on events caused by these participants (comma-separated ids)" },
     board: { type: "string", description: "Only wake on board changes to keys starting with one of these comma-separated prefixes (messages are not included)" },
     system: { type: "boolean", description: "false: skip joins/leaves and system notices" },
+    kind: { type: "string", description: "Only wake on messages of these kinds (comma-separated: finding,question,decision,blocker,handoff)" },
   }, [], (env, params) => waitForEvent(env, params)),
 
   register_agent: {
@@ -1020,6 +1036,27 @@ const tools: Record<string, ToolDef> = {
         },
       );
     }),
+
+  room_summary: roomTool("Read-only sprint summary: tasks, blockers, reservations, participants, report, notes and decisions. Does not advance your message cursor.", {}, [], async (env, params) => {
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link) to open sealed reservations and workspaces");
+    return roomSummary(await roomClient(env, roomUrl, secret, params.participantId as string));
+  }),
+
+  add_note: roomTool("Append a durable sprint note to board key notes (concurrent writers are retried).", {
+    text: { type: "string" }, tag: { type: "string", enum: ["gotcha", "finding", "howto"] }, files: { type: "string", description: "Comma-separated file paths" },
+  }, ["text"], async (env, params) => {
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    return { notes: await addNote(await roomClient(env, roomUrl, secret, params.participantId as string), params.text as string,
+      params.tag ? [params.tag as string] : [], parseSkills(params.files as string) ?? []) };
+  }),
+
+  add_decision: roomTool("Append a durable decision and rationale to board key decisions.", {
+    decision: { type: "string" }, why: { type: "string" },
+  }, ["decision", "why"], async (env, params) => {
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    return { decisions: await addDecision(await roomClient(env, roomUrl, secret, params.participantId as string), params.decision as string, params.why as string) };
+  }),
 
   list_tasks: roomTool("List per-task board entries with status, owner and unfinished dependencies.", {}, [], async (env, params) => {
     const { roomUrl, secret } = parseRoomId(params.inviteJson as string);

@@ -7,6 +7,7 @@ import type { AgentIdentity, Workspace } from "@j01n/sdk";
 import { execFileSync } from "node:child_process";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { roomReplyHint, roomReplyHints, runProfileCommand, runReservationCommand, runRoomCommand } from "@j01n/sdk/room-commands";
+import { notesAndDecisions } from "@j01n/sdk/notes";
 import { detectWorkspace } from "@j01n/sdk/node";
 import { checkConflicts } from "@j01n/sdk/conflicts-node";
 import type { Invite, RoomClient } from "@j01n/sdk";
@@ -103,7 +104,7 @@ function isRoomFile(ref: string): boolean {
 
 const ACTIVE_COMMANDS = new Set([
   "send", "wait", "read", "inbox", "doctor", "board", "board_set", "board_patch", "board_delete",
-  "status", "webhook", "participants", "room_status", "transition", "host", "profile", "reserve", "release", "reservations", "tasks", "claim", "done", "conflicts", "block", "unblock", "leave", "close",
+  "status", "webhook", "participants", "room_status", "transition", "host", "profile", "reserve", "release", "reservations", "tasks", "claim", "done", "conflicts", "block", "unblock", "summary", "note", "decide", "invite-link", "leave", "close",
 ]);
 
 const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen", "herdr_agents", "invite_herdr", "worktrees"]);
@@ -263,7 +264,7 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
   if (capabilities || workspace || profile.checkout || profile.model || profile.provider || display_name || role) await client.setProfile(profile);
   let kickoff: unknown = null;
   let kickoffError: string | undefined;
-  let board: Record<string, unknown> | null = null;
+  let board: Awaited<ReturnType<RoomClient["board"]>>["board"] | null = null;
   try {
     board = (await client.board()).board;
     kickoff = (board.kickoff as { value?: unknown } | undefined)?.value ?? null;
@@ -286,6 +287,7 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
     ...(kickoffError ? { kickoff_error: kickoffError } : {}),
     // The whole board: every key with value, version, updated_by and updated_at.
     board,
+    ...notesAndDecisions(board ?? {}),
     // Questions waiting for your reply: answer with /j01n send <from> <text> --reply-to <id>
     questions: await client.openQuestions().catch(() => []),
     // Who is in the room: capabilities and where each works (workspaces are sealed with the room key).
@@ -293,6 +295,17 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
     ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}),
     ...(extension.warnings.length ? { extension_warning: extension.warnings } : {}),
   }, null, 2);
+}
+
+async function handleInviteLink(parsed: ParsedArgs): Promise<string> {
+  if (parsed.rest.length && (parsed.rest.length !== 1 || parsed.rest[0] !== "--open")) throw new Error("invite-link needs: [--open]");
+  const client = await getClient(parsed);
+  if ((await client.status()).room.host_id !== parsed.me) throw new Error("invite-link is host only");
+  const saved: SavedSession = JSON.parse(readFileSync(keyFilePath(client.invite.room_url, client.participantId), "utf8"));
+  if (!saved.joinSecret || saved.joinSecret === "resume-only") throw new Error("room link unavailable in local key file; rejoin with the invitation");
+  const link = inviteLink(client.invite.room_url, saved.joinSecret);
+  if (parsed.rest.includes("--open")) execFileSync("open", [link], { stdio: "ignore" });
+  return JSON.stringify({ invite_link: link, ...(parsed.rest.includes("--open") ? { opened: true } : {}) }, null, 2);
 }
 
 async function sharedCommand(parsed: ParsedArgs): Promise<string> {
@@ -562,6 +575,10 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   doctor: handleDoctor,
   board: sharedCommand,
   tasks: sharedCommand,
+  summary: sharedCommand,
+  note: sharedCommand,
+  decide: sharedCommand,
+  "invite-link": handleInviteLink,
   conflicts: sharedCommand,
   claim: sharedCommand,
   done: sharedCommand,

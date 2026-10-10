@@ -22,6 +22,10 @@ interface ParticipantProfile {
   /** Sealed workspace; null clears it. */
   workspace?: string | null;
   public_key?: string;
+  display_name?: string | null;
+  role?: string | null;
+  /** Opaque room-keyed checkout identity; never a path or URL. */
+  checkout?: string | null;
   /** null clears the webhook. */
   webhook_url?: string | null;
 }
@@ -68,9 +72,26 @@ export function parseParticipantProfile(body: Record<string, unknown>): Particip
   const workspace = normalizeWorkspace(body.workspace);
   if (workspace instanceof Response) return workspace;
   const public_key = typeof body.public_key === "string" ? body.public_key.slice(0, 256) : undefined;
+  const display_name = normalizeLabel(body.display_name, "display_name", 64);
+  if (display_name instanceof Response) return display_name;
+  const role = normalizeLabel(body.role, "role", 64);
+  if (role instanceof Response) return role;
+  const checkout = body.checkout === undefined ? undefined : body.checkout === null ? null : body.checkout;
+  if (checkout !== undefined && checkout !== null && (typeof checkout !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(checkout))) {
+    return json({ error: "checkout must be a room-keyed HMAC-SHA256 base64url digest" }, 400);
+  }
   const webhook_url = normalizeWebhookUrl(body.webhook_url);
   if (webhook_url instanceof Response) return webhook_url;
-  return { state, status, model, provider, skills, capabilities, workspace, public_key, webhook_url };
+  return { state, status, model, provider, skills, capabilities, workspace, public_key, display_name, role, checkout, webhook_url };
+}
+
+function normalizeLabel(value: unknown, field: string, max: number): string | null | undefined | Response {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string" || !value.trim() || value.length > max || /[\x00-\x1f\x7f]/.test(value)) {
+    return json({ error: `${field} must be a nonempty string of at most ${max} characters, or null to clear` }, 400);
+  }
+  return value.trim();
 }
 
 /** The workspace must arrive sealed with the room key, so the server never stores a plaintext path or repo. */
@@ -108,6 +129,9 @@ export function createJoinedParticipant(participantId: string, profile: Particip
     ...(profile.skills ? { skills: profile.skills } : {}),
     ...(profile.capabilities ? { capabilities: profile.capabilities } : {}),
     ...(profile.workspace ? { workspace: profile.workspace } : {}),
+    ...(profile.display_name ? { display_name: profile.display_name } : {}),
+    ...(profile.role ? { role: profile.role } : {}),
+    ...(profile.checkout ? { checkout: profile.checkout } : {}),
     ...(profile.public_key ? { public_key: profile.public_key } : {}),
     ...(profile.webhook_url ? { webhook_url: profile.webhook_url } : {}),
     ...(tokenHash ? { tokenHash } : {}),
@@ -130,13 +154,19 @@ export function withTokenIndex(invite: InviteState, tokenOnlyHash: string | unde
 
 function updateParticipantProfile(participant: Participant, profile: ParticipantProfile): Participant {
   const now = new Date().toISOString();
-  const { webhook_url: currentWebhookUrl, workspace: currentWorkspace, ...rest } = participant;
+  const { webhook_url: currentWebhookUrl, workspace: currentWorkspace, display_name: currentName, role: currentRole, checkout: currentCheckout, ...rest } = participant;
   const webhook_url = profile.webhook_url === undefined ? currentWebhookUrl : profile.webhook_url ?? undefined;
   const workspace = profile.workspace === undefined ? currentWorkspace : profile.workspace ?? undefined;
+  const display_name = profile.display_name === undefined ? currentName : profile.display_name ?? undefined;
+  const role = profile.role === undefined ? currentRole : profile.role ?? undefined;
+  const checkout = profile.checkout === undefined ? currentCheckout : profile.checkout ?? undefined;
   return {
     ...rest,
     ...(webhook_url ? { webhook_url } : {}),
     ...(workspace ? { workspace } : {}),
+    ...(display_name ? { display_name } : {}),
+    ...(role ? { role } : {}),
+    ...(checkout ? { checkout } : {}),
     state: profile.state ?? participant.state ?? "free",
     status: profile.status ?? participant.status ?? "joined",
     status_updated_at: now,

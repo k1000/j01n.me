@@ -89,6 +89,36 @@ export function openAsks(invite: InviteState): Array<{ ask_id: string; seq: numb
 }
 
 /** Open questions this participant owes (addressed to it, or to `all` and asked by someone else), newest first, at most 20. */
+export function helpNeeded(invite: InviteState, now = Date.now()) {
+  const byId = new Map(invite.messages.map((message) => [message.id, message]));
+  return openAsks(invite).filter((ask) => {
+    const message = byId.get(ask.ask_id);
+    if (!message) return false;
+    const due = Date.parse(ask.due_at);
+    const period = Math.max(60_000, due - Date.parse(message.created_at));
+    return now >= due + (ask.from === invite.hostId ? 0 : period);
+  }).map((ask) => ({ ...ask, overdue_since: ask.due_at, escalated_to: "owner" as const }));
+}
+
+/** The next pending notification for a question; never stores or exposes its encrypted body. */
+export function nextAskEscalation(invite: InviteState, now = Date.now()) {
+  const notices = new Set(invite.messages.filter((m) => m.intent === "help.overdue" || m.intent === "help.needed")
+    .map((m) => `${m.intent}:${(m.body as { ask_id?: string }).ask_id}:${(m.body as { owed_by?: string }).owed_by}`));
+  const byId = new Map(invite.messages.map((m) => [m.id, m]));
+  const pending = openAsks(invite).flatMap((ask) => {
+    const original = byId.get(ask.ask_id);
+    if (!original) return [];
+    const due = Date.parse(ask.due_at);
+    const period = Math.max(60_000, due - Date.parse(original.created_at));
+    const owner = Object.values(invite.participants).find((p) => p.role === "owner" && !p.left_at)?.id;
+    const stages = ask.from === invite.hostId ? [] : [{ at: due, to: invite.hostId, intent: "help.overdue" }];
+    if (owner) stages.push({ at: due + (ask.from === invite.hostId ? 0 : period), to: owner, intent: "help.needed" });
+    return stages.filter((stage) => !notices.has(`${stage.intent}:${ask.ask_id}:${ask.owed_by}`))
+      .map((stage) => ({ ...stage, ask_id: ask.ask_id, from: ask.from, owed_by: ask.owed_by, due_at: ask.due_at }));
+  });
+  return pending.sort((a, b) => Math.max(a.at, now) - Math.max(b.at, now))[0];
+}
+
 export function openAsksFor(invite: InviteState, participantId: string) {
   const byId = new Map(invite.messages.map((m) => [m.id, m]));
   return openAsks(invite)

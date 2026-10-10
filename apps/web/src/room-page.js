@@ -203,7 +203,7 @@
     const readBody = await read.json();
     const participantList = statusBody.participants || [];
     const participants = Object.fromEntries(participantList.map((p) => [p.id, p]));
-    latest = { room: statusBody.room, phase: statusBody.phase, participants, messages: readBody.messages || [], board: boardBody.board || {}, expires_at: statusBody.expires_at };
+    latest = { room: statusBody.room, phase: statusBody.phase, participants, messages: readBody.messages || [], board: boardBody.board || {}, help_needed: statusBody.help_needed || [], expires_at: statusBody.expires_at };
     window.j01nArcade?.update(latest, participantId, extractValue);
     await renderRoom({
       room: statusBody.room,
@@ -211,11 +211,28 @@
       participants,
       messages: readBody.messages || [],
       board: boardBody.board || {},
+      help_needed: statusBody.help_needed || [],
       board_schema: boardBody.board_schema || null,
       next_seq: readBody.cursor,
       expires_at: statusBody.expires_at,
     }, invite);
     if (roomEvents && roomEvents.readyState === EventSource.OPEN) updateConnectionStatus("connected");
+  }
+
+  function participantLabel(p) {
+    return p.display_name || p.id;
+  }
+
+  function checkoutLabel(p, people) {
+    if (!p.checkout) return "";
+    const shared = people.find(other => other.id !== p.id && !other.left_at && other.checkout === p.checkout);
+    return shared ? "shares checkout with " + participantLabel(shared) : "own checkout";
+  }
+
+  function helpNeededHtml(data) {
+    const owner = Object.values(data.participants || {}).find(p => p.role === "owner" && !p.left_at);
+    if (!owner || participantId !== owner.id || !(data.help_needed || []).length) return "";
+    return '<section class="room-help-needed" role="alert"><h2>Help needed</h2><ul>' + data.help_needed.map(ask => '<li>Question #' + esc(ask.ask_id) + ' from ' + esc(ask.from) + ' awaits ' + esc(ask.owed_by) + ' since ' + esc(ask.overdue_since) + '</li>').join('') + '</ul></section>';
   }
 
   function showBrowserNotification(body) {
@@ -302,10 +319,12 @@
     const boardHtml = (isKanban ? renderKanbanBoard(board, columns, "h3") : "") + '<div class="live-board-entries">' + entries.map(([key, entry]) =>
       '<article class="live-board-card"><header><h3>' + esc(key) + '</h3><span class="live-version">v' + esc(entry.version ?? 0) + '</span></header><div class="board-value">' + renderBoardValue(entry.value) + '</div><small>Updated by ' + esc(entry.updated_by || "—") + '</small></article>'
     ).join("") + '</div>';
+    const workspaces = Object.fromEntries(await Promise.all(people.map(async p => [p.id, p.workspace ? await openSealedKickoff(p.workspace).catch(() => null) : null])));
     const peopleHtml = people.map(p => {
       const state = p.left_at ? "left" : p.state || "free";
       const label = state === "left" ? "Left" : state === "busy" ? "Busy" : state === "free" ? "Available" : state;
-      return '<article class="live-person"><div><header><strong>' + esc(p.id) + '</strong><span class="live-state" data-state="' + escAttr(state) + '">' + esc(label) + '</span></header><p>' + esc(p.status || "No status shared") + '</p><small>' + esc([p.provider, p.model].filter(Boolean).join("/") || (p.id === participantId ? "This browser · you" : "Agent")) + '</small></div></article>';
+      const where = [workspaces[p.id]?.host, checkoutLabel(p, people)].filter(Boolean).join(' · ');
+      return '<article class="live-person"><div><header><strong>' + esc(participantLabel(p)) + '</strong> ' + (p.role ? '<span>' + esc(p.role) + '</span> ' : '') + '<span class="live-state" data-state="' + escAttr(state) + '">' + esc(label) + '</span></header><p>' + esc(p.status || "No status shared") + '</p><small>' + esc(where || [p.provider, p.model].filter(Boolean).join("/") || (p.id === participantId ? "This browser · you" : "Agent")) + '</small></div></article>';
     }).join("");
     const messagesHtml = (await Promise.all(messages.map(m => renderMessage(m, messages)))).join("");
     const activityHtml = liveActivity.map(item => '<li><span>' + esc(item.text) + '</span><time>' + esc(item.time) + '</time></li>').join("");
@@ -313,7 +332,7 @@
     const focusedMessage = document.activeElement?.closest("[data-message-id]")?.dataset.messageId;
     root.innerHTML = '<header class="live-header"><div><span class="live-eyebrow">j01n.me / live coordination</span><h1>' + esc(room.name || "Room") + '</h1><p>' + esc(room.purpose || "A shared space for agents, ideas, and progress.") + '</p></div><div class="live-connection"><span data-connection-status role="status" aria-live="polite"></span><small>Snapshot ' + esc(new Date().toLocaleTimeString()) + '</small></div></header>' +
       '<dl class="live-stats"><div><dt>Active participants</dt><dd>' + active.length + '</dd></div><div><dt>Busy right now</dt><dd>' + active.filter(p => p.state === "busy").length + '</dd></div><div><dt>Visible messages</dt><dd>' + messages.length + '</dd></div><div><dt>Room phase</dt><dd>' + esc(data.phase || "Open") + '</dd></div></dl>' +
-      '<div class="live-grid"><section class="live-panel" aria-labelledby="live-board-title"><header><h2 id="live-board-title"><span class="live-marker" aria-hidden="true">## </span>Shared board</h2><span>' + Object.keys(board).length + ' keys</span></header><div class="live-panel-body">' + (Object.keys(board).length ? boardHtml : '<p class="live-empty">No board data yet. Updates will appear here.</p>') + '</div></section>' +
+      helpNeededHtml(data) + '<div class="live-grid"><section class="live-panel" aria-labelledby="live-board-title"><header><h2 id="live-board-title"><span class="live-marker" aria-hidden="true">## </span>Shared board</h2><span>' + Object.keys(board).length + ' keys</span></header><div class="live-panel-body">' + (Object.keys(board).length ? boardHtml : '<p class="live-empty">No board data yet. Updates will appear here.</p>') + '</div></section>' +
       '<section class="live-panel" aria-labelledby="live-people-title"><header><h2 id="live-people-title"><span class="live-marker" aria-hidden="true">## </span>Participants</h2><span>' + active.length + ' active</span></header><div class="live-panel-body live-people">' + (peopleHtml || '<p class="live-empty">No participants yet.</p>') + '</div></section>' +
       '<section class="live-panel" aria-labelledby="live-messages-title"><header><h2 id="live-messages-title"><span class="live-marker" aria-hidden="true">## </span>Message timeline</h2><span>Visible to you · oldest first</span></header>' + (messagesHtml || '<p class="live-panel-body live-empty">No messages yet. The conversation starts here.</p>') + '</section>' +
       '<section class="live-panel" aria-labelledby="live-events-title"><header><h2 id="live-events-title"><span class="live-marker" aria-hidden="true">## </span>Recent events</h2><span>SSE · this session</span></header><div class="live-panel-body"><ol class="live-activity">' + activityHtml + '</ol>' + (activityHtml ? '' : '<p class="live-empty">Waiting for room events.</p>') + '</div></section></div>' +
@@ -560,7 +579,9 @@
       recordRoomActivity(event, "message");
       unreadCount++;
       updateTitle();
-      showBrowserNotification("New messages arrived.");
+      let eventMessage;
+      try { eventMessage = JSON.parse(event.data)?.message; } catch {}
+      showBrowserNotification(eventMessage?.intent === "help.needed" && latest?.participants?.[participantId]?.role === "owner" ? "Help needed: an overdue question requires attention." : "New messages arrived.");
       refreshRoom().catch(showRoomEventError);
     });
     roomEvents.addEventListener("board", (event) => {
@@ -668,12 +689,13 @@
       const running = [p.provider, p.model].filter(Boolean).join("/");
       const modelChip = running ? `<span class="participant-model">${esc(running)}</span>` : "";
       const ws = workspaces[p.id];
-      const where = ws ? [[ws.repo, ws.branch && "@" + ws.branch].filter(Boolean).join(" "), ws.path].filter(Boolean).map((line) => `<code class="participant-workspace">${esc(line)}</code>`).join("") : "";
-      return caps || modelChip || where ? `<div class="participant-profile">${caps}${modelChip}${where}</div>` : "";
+      const where = ws ? [[ws.repo, ws.branch && "@" + ws.branch].filter(Boolean).join(" "), ws.path, ws.host && "machine: " + ws.host].filter(Boolean).map((line) => `<code class="participant-workspace">${esc(line)}</code>`).join("") : "";
+      const checkout = checkoutLabel(p, pList);
+      return caps || modelChip || where || checkout ? `<div class="participant-profile">${caps}${modelChip}${where}${checkout ? `<span class="participant-workspace">${esc(checkout)}</span>` : ""}</div>` : "";
     };
     const participantsHtml = pList.length === 0
       ? `<p class="board-empty">No participants yet.</p>`
-      : pList.map(p => `<div class="participant-card"><span class="participant-name">${esc(p.id)}</span><span class="participant-state">[${esc(p.state)}]</span><span class="participant-status">${esc(p.status)}</span><span class="participant-state">${esc(activeAgo(p))}</span>${p.id === room.host_id ? ` <span class="participant-state">host</span>` : isHost && !p.left_at ? ` <button class="button button-small" type="button" data-make-host="${escAttr(p.id)}" title="Hand the host role to ${escAttr(p.id)}">Make host</button>` : ""}${profileLine(p)}</div>`).join("");
+      : pList.map(p => `<div class="participant-card"><span class="participant-name">${esc(participantLabel(p))}</span>${p.role ? `<span class="participant-state">${esc(p.role)}</span>` : ""}<span class="participant-state">[${esc(p.state)}]</span><span class="participant-status">${esc(p.status)}</span><span class="participant-state">${esc(activeAgo(p))}</span>${p.id === room.host_id ? ` <span class="participant-state">host</span>` : isHost && !p.left_at ? ` <button class="button button-small" type="button" data-make-host="${escAttr(p.id)}" title="Hand the host role to ${escAttr(p.id)}">Make host</button>` : ""}${profileLine(p)}</div>`).join("");
     const recipientOptions = [`<option value="all">all</option>`, ...pList.filter(p => !p.left_at && p.id !== participantId).map(p => `<option value="${escAttr(p.id)}">${esc(p.id)}</option>`)].join("");
 
     const messagesHtml = messages.length === 0
@@ -701,6 +723,7 @@ ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(
 </dl>
 <section class="room-board"><h2>Board</h2><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>
 <section class="room-reservations" aria-label="File reservations"><h2>File reservations</h2>${reservationsHtml}</section>
+${helpNeededHtml(data)}
 <section class="room-participants"><h2>Participants</h2>${participantsHtml}</section>
 <section class="room-messages"><h2>Messages</h2><div class="message-list" data-message-list tabindex="0" aria-label="Messages">${messagesHtml}</div><form class="message-composer" data-message-form><input type="hidden" name="reply_to" /><p data-reply-status role="status"></p><button class="button" type="button" data-cancel-reply hidden>Cancel reply</button><label>Recipient<select name="to" required>${recipientOptions}</select></label><label>Message<textarea name="message" required placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><label class="reply-request"><input type="checkbox" name="expects_reply" /> Request a reply</label><button class="button" type="submit">Send</button><button class="button" type="button" data-check-delivery hidden>Check delivery</button><button class="button" type="button" data-retry-delivery hidden>Allow retry (may duplicate)</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>`;
     updateConnectionStatus(connectionState);

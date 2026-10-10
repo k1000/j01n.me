@@ -57,15 +57,8 @@ function sessionKey(roomId: string, participantId: string): string {
   return `${roomId}:${participantId}`;
 }
 
-function getEffectiveSecret(roomUrl: string, participantId: string, fallbackSecret: string): string {
-  const roomId = roomUrl.split("/").pop()!;
-  return sessions.get(sessionKey(roomId, participantId))?.token ?? fallbackSecret;
-}
-
-function isUsingParticipantToken(roomUrl: string, participantId: string, fallbackSecret: string): boolean {
-  const roomId = roomUrl.split("/").pop()!;
-  const entry = sessions.get(sessionKey(roomId, participantId));
-  return !!entry?.token && entry.token !== fallbackSecret;
+function sessionToken(roomUrl: string, participantId: string): string | undefined {
+  return sessions.get(sessionKey(roomUrl.split("/").pop()!, participantId))?.token;
 }
 
 /**
@@ -113,7 +106,7 @@ async function persistSessionToDo(env: Env, roomUrl: string, pid: string, force 
   }
 }
 
-async function ensureEcdhSession(env: Env | undefined, roomUrl: string, participantId: string, _fallbackSecret?: string): Promise<SdkCryptoSession> {
+async function ensureEcdhSession(env: Env | undefined, roomUrl: string, participantId: string): Promise<SdkCryptoSession> {
   const roomId = roomUrl.split("/").pop()!;
   const key = sessionKey(roomId, participantId);
   let entry = sessions.get(key);
@@ -228,10 +221,10 @@ function roomFetch(env: Env, roomUrl: string): typeof fetch {
 }
 
 async function roomClient(env: Env, roomUrl: string, secret: string, participantId: string): Promise<RoomClient> {
-  const crypto = await ensureEcdhSession(env, roomUrl, participantId, secret);
+  const crypto = await ensureEcdhSession(env, roomUrl, participantId);
+  const token = sessionToken(roomUrl, participantId);
   const invite: Invite = { ...buildMinimalInvite(roomUrl, secret),
-    ...(sessions.get(sessionKey(roomUrl.split("/").pop()!, participantId))?.token
-      ? { participant_token: getEffectiveSecret(roomUrl, participantId, secret) } : {}),
+    ...(token ? { participant_token: token } : {}),
     transportFetch: roomFetch(env, roomUrl),
   };
   return resumeRoom(invite, participantId, crypto);
@@ -245,15 +238,13 @@ async function doFetchRaw(
   options: { method?: string; body?: unknown; participantId?: string } = {},
 ): Promise<Response> {
   // Requests for one room can land on different isolates: load this participant's saved token if it isn't here.
-  if (options.participantId && !sessions.get(sessionKey(roomUrl.split("/").pop()!, options.participantId))?.token) {
+  if (options.participantId && !sessionToken(roomUrl, options.participantId)) {
     await loadPersistedSessions(env, roomUrl);
   }
   // Use per-participant token when available (more secure than room-level join_secret)
-  const effectiveSecret = options.participantId
-    ? getEffectiveSecret(roomUrl, options.participantId, secret)
-    : secret;
-  const usingToken = options.participantId
-    && isUsingParticipantToken(roomUrl, options.participantId, secret as string);
+  const token = options.participantId ? sessionToken(roomUrl, options.participantId) : undefined;
+  const effectiveSecret = token ?? secret;
+  const usingToken = !!token && token !== secret;
   const stub = getRoomStub(env, roomUrl);
   const url = new URL(path, roomUrl);
   const headers: Record<string, string> = { authorization: `Bearer ${effectiveSecret}` };
@@ -318,7 +309,6 @@ async function waitForLinkedReply(env: Env, params: Record<string, unknown>, sen
 async function waitForEvent(env: Env, params: Record<string, unknown>) {
   const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
   const participantId = params.participantId as string;
-  await ensureEcdhSession(env, roomUrl, participantId, secret);
   const timeout = Math.min(Math.max(Number(params.timeoutSeconds) || 50, 1), 50);
   const woke = await (await roomClient(env, roomUrl, secret, participantId)).wait({
     timeoutSeconds: timeout,
@@ -425,7 +415,7 @@ async function createRoomTool(env: Env, params: Record<string, unknown>, ctx: To
   const hostId = (params.hostId as string) ?? "agent";
   const room = await createRoomDirect(env, createHostedRoomBody(params, hostId), "https://j01n.me");
   const stub = env.RENDEZVOUS.get(env.RENDEZVOUS.idFromName(room.roomId));
-  const hostCrypto = await ensureEcdhSession(env, room.roomUrl, hostId, room.joinSecret);
+  const hostCrypto = await ensureEcdhSession(env, room.roomUrl, hostId);
   const { public_key: hostPublicKey } = await hostCrypto.announceKeyBody();
 
   const joinResponse = await stub.fetch(`https://rendezvous.internal/r/${room.roomId}/participants/${encodeURIComponent(hostId)}`, {
@@ -440,7 +430,7 @@ async function createRoomTool(env: Env, params: Record<string, unknown>, ctx: To
   }
   if (joinData.peers?.length) await hostCrypto.processPeerKeys(joinData.peers);
 
-  const hostToken = getEffectiveSecret(room.roomUrl, hostId, room.joinSecret);
+  const hostToken = sessionToken(room.roomUrl, hostId) ?? room.joinSecret;
   await stub.fetch(`https://rendezvous.internal/r/${room.roomId}/`, {
     method: "POST",
     headers: {
@@ -795,6 +785,19 @@ async function resumeRoomTool(env: Env, params: Record<string, unknown>, ctx: To
 const INVITE_JSON_PARAM = { type: "string", description: 'The room link from create_room (https://j01n.me/room/<id>#<secret>) or the handoff JSON {"access":"<room_url>","join_secret":"<secret>"}' };
 const WEBHOOK_URL_PARAM = { type: "string", description: 'Optional, only if you can expose a public https endpoint: the room POSTs events you can see (messages to you or all, board and participant changes) there as wake-up signals, then call read_messages. Omit to use wait_for_event between turns (default). "off" removes it.' };
 const IF_VERSION_PARAM = { type: "number", description: "Optional: only write if the key is still at this version (from read_board / wait_for_event; 0 = the key must not exist yet). A conflict returns the current value." };
+const ROOM_PROPERTIES = { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } };
+
+function roomTool(
+  description: string,
+  properties: Record<string, unknown>,
+  required: string[],
+  handler: NonNullable<ToolDef["handler"]>,
+): ToolDef {
+  return { description, inputSchema: {
+    type: "object", properties: { ...ROOM_PROPERTIES, ...properties },
+    required: ["inviteJson", "participantId", ...required],
+  }, handler };
+}
 
 const tools: Record<string, ToolDef> = {
   create_room: {
@@ -828,25 +831,13 @@ const tools: Record<string, ToolDef> = {
     handler: resumeRoomTool,
   },
 
-  join_room: {
-    description: "Join once using the private room link or handoff JSON and a unique name. Returns kickoff, board, open questions and a private resume_profile. Use resume_room after reconnecting, not join_room again. Events are auto-subscribed when GET /mcp is active; otherwise use wait_for_event.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        inviteJson: INVITE_JSON_PARAM,
-        participantId: { type: "string" },
-        webhookUrl: WEBHOOK_URL_PARAM,
-        capabilities: CAPABILITIES_PARAM,
-        workspace: WORKSPACE_PARAM,
-        model: MODEL_PARAM,
-        provider: PROVIDER_PARAM,
-      },
-      required: ["inviteJson", "participantId"],
-    },
-    handler: async (env, params, ctx) => {
+  join_room: roomTool("Join once using the private room link or handoff JSON and a unique name. Returns kickoff, board, open questions and a private resume_profile. Use resume_room after reconnecting, not join_room again. Events are auto-subscribed when GET /mcp is active; otherwise use wait_for_event.", {
+    webhookUrl: WEBHOOK_URL_PARAM, capabilities: CAPABILITIES_PARAM, workspace: WORKSPACE_PARAM,
+    model: MODEL_PARAM, provider: PROVIDER_PARAM,
+  }, [], async (env, params, ctx) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       const participantId = params.participantId as string;
-      const crypto = await ensureEcdhSession(env, roomUrl, participantId, secret);
+      const crypto = await ensureEcdhSession(env, roomUrl, participantId);
       const workspace = params.workspace as Workspace | undefined;
       const joined = await joinRoom({ ...buildMinimalInvite(roomUrl, secret), transportFetch: roomFetch(env, roomUrl) }, participantId, {
         state: "free", status: "joined via hosted MCP",
@@ -901,35 +892,26 @@ const tools: Record<string, ToolDef> = {
         resume_profile: resumeProfile(roomUrl, participantId),
         subscription_active: subscribed,
       };
-    },
-  },
+    }),
 
-  send_message: {
-    description: "Send plain text or JSON, encrypted by the hosted MCP bridge. Optionally update status or wait for an event or a linked reply.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
-        to: { type: "string" }, body: { type: "string" },
-        intent: { type: "string" }, priority: { type: "string" },
-        state: { type: "string" }, status: { type: "string" },
-        model: { type: "string" }, skills: { type: "string" },
-        waitForReply: { type: "boolean", description: "Legacy alias for waitMode:event. Waits for the next visible event, not necessarily a linked reply. Use waitMode:reply for a specific answer." },
-        waitMode: { type: "string", enum: ["event", "reply"], description: "event waits for any visible event; reply marks an ask and waits for a replyTo matching the sent id from an addressed recipient. Takes precedence over waitForReply." },
-        timeoutSeconds: { type: "integer", minimum: 1, maximum: 50, description: "Wait budget in seconds (default 50); unrelated events do not reset it." },
-        replyTo: { type: "string", description: "Id of the message you are answering; closes it if it asked for a reply" },
-        expectsReply: { type: "boolean", description: "Ask for a reply: listed in get_room_info open_asks until answered (any reply closes a question to all)" },
-        replyByMinutes: { type: "number", description: "Minutes until the ask counts as overdue (default 30)" },
-      },
-      required: ["inviteJson", "participantId", "to", "body"],
-    },
-    handler: async (env, params) => {
+  send_message: roomTool("Send plain text or JSON, encrypted by the hosted MCP bridge. Optionally update status or wait for an event or a linked reply.", {
+    to: { type: "string" }, body: { type: "string" },
+    intent: { type: "string" }, priority: { type: "string" },
+    state: { type: "string" }, status: { type: "string" },
+    model: { type: "string" }, skills: { type: "string" },
+    waitForReply: { type: "boolean", description: "Legacy alias for waitMode:event. Waits for the next visible event, not necessarily a linked reply. Use waitMode:reply for a specific answer." },
+    waitMode: { type: "string", enum: ["event", "reply"], description: "event waits for any visible event; reply marks an ask and waits for a replyTo matching the sent id from an addressed recipient. Takes precedence over waitForReply." },
+    timeoutSeconds: { type: "integer", minimum: 1, maximum: 50, description: "Wait budget in seconds (default 50); unrelated events do not reset it." },
+    replyTo: { type: "string", description: "Id of the message you are answering; closes it if it asked for a reply" },
+    expectsReply: { type: "boolean", description: "Ask for a reply: listed in get_room_info open_asks until answered (any reply closes a question to all)" },
+    replyByMinutes: { type: "number", description: "Minutes until the ask counts as overdue (default 30)" },
+  }, ["to", "body"], async (env, params) => {
       if (params.waitMode !== undefined && params.waitMode !== "event" && params.waitMode !== "reply") throw new Error("waitMode must be event or reply");
       if (params.timeoutSeconds !== undefined && (!Number.isInteger(params.timeoutSeconds) || Number(params.timeoutSeconds) < 1 || Number(params.timeoutSeconds) > 50)) throw new Error("timeoutSeconds must be an integer from 1 to 50");
       const waitMode = params.waitMode ?? (params.waitForReply ? "event" : undefined);
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       const participantId = params.participantId as string;
-      const crypto = await ensureEcdhSession(env, roomUrl, participantId, secret);
+      const crypto = await ensureEcdhSession(env, roomUrl, participantId);
 
       // Ensure self-key is registered for self-include, then refresh peer keys
       // (handles cross-isolate session loss).
@@ -949,35 +931,18 @@ const tools: Record<string, ToolDef> = {
       });
       if (waitMode === "reply") return waitForLinkedReply(env, params, sent, to, lastReadSeq);
       return waitMode === "event" ? { sent, ...await waitForEvent(env, params) } : sent;
-    },
-  },
+    }),
 
-  read_messages: {
-    description: "Read recent/all messages. Auto-decrypted.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
-        all: { type: "boolean" }, includeSelf: { type: "boolean" },
-      },
-      required: ["inviteJson", "participantId"],
-    },
-    handler: (env, params) => readRoomMessages(env, params),
-  },
+  read_messages: roomTool("Read recent/all messages. Auto-decrypted.",
+    { all: { type: "boolean" }, includeSelf: { type: "boolean" } }, [],
+    (env, params) => readRoomMessages(env, params)),
 
-  wait_for_event: {
-    description: "Wait until something happens in the room that you can see (a message to you or all, a board or participant change; never your own action) or the timeout, then return the new messages, decrypted. Call it at the end of a turn instead of polling read_messages.",
-    inputSchema: {
-      type: "object", properties: {
-        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
-        timeoutSeconds: { type: "number", description: "1-50, default 50" },
-        from: { type: "string", description: "Only wake on events caused by these participants (comma-separated ids)" },
-        board: { type: "string", description: "Only wake on board changes to keys starting with one of these comma-separated prefixes (messages are not included)" },
-        system: { type: "boolean", description: "false: skip joins/leaves and system notices" },
-      }, required: ["inviteJson", "participantId"],
-    },
-    handler: (env, params) => waitForEvent(env, params),
-  },
+  wait_for_event: roomTool("Wait until something happens in the room that you can see (a message to you or all, a board or participant change; never your own action) or the timeout, then return the new messages, decrypted. Call it at the end of a turn instead of polling read_messages.", {
+    timeoutSeconds: { type: "number", description: "1-50, default 50" },
+    from: { type: "string", description: "Only wake on events caused by these participants (comma-separated ids)" },
+    board: { type: "string", description: "Only wake on board changes to keys starting with one of these comma-separated prefixes (messages are not included)" },
+    system: { type: "boolean", description: "false: skip joins/leaves and system notices" },
+  }, [], (env, params) => waitForEvent(env, params)),
 
   register_agent: {
     description: "Claim a standing agent name (j01n.me/a/<name>) so allowed agents can invite you into rooms without pasting links. Returns agentIdentity: a private secret (your key and token). Keep it like a room link and pass it to invite_agent and wait_for_invite.",
@@ -1025,29 +990,18 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  list_participants: {
-    description: "List participants with state, model, skills, capabilities and workspace (where each works; opened when you pass the room link).",
-    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
-    handler: async (env, params) => {
+  list_participants: roomTool(
+    "List participants with state, model, skills, capabilities and workspace (where each works; opened when you pass the room link).",
+    {}, [], async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       return { participants: await teamOf(env, roomUrl, secret, params.participantId as string) };
-    },
-  },
+    }),
 
-  update_status: {
-    description: "Update participant availability state and status text, and optionally set or remove your webhook (webhookUrl).",
-    inputSchema: {
-      type: "object", properties: {
-        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
-        state: { type: "string" }, status: { type: "string" },
-        model: MODEL_PARAM, skills: { type: "string" },
-        provider: PROVIDER_PARAM,
-        webhookUrl: WEBHOOK_URL_PARAM,
-        capabilities: CAPABILITIES_PARAM,
-        workspace: WORKSPACE_PARAM,
-      }, required: ["inviteJson", "participantId", "state", "status"],
-    },
-    handler: async (env, params) => {
+  update_status: roomTool("Update participant availability state and status text, and optionally set or remove your webhook (webhookUrl).", {
+    state: { type: "string" }, status: { type: "string" },
+    model: MODEL_PARAM, skills: { type: "string" }, provider: PROVIDER_PARAM,
+    webhookUrl: WEBHOOK_URL_PARAM, capabilities: CAPABILITIES_PARAM, workspace: WORKSPACE_PARAM,
+  }, ["state", "status"], async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       if (params.workspace && secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link) to announce a workspace: it is sealed with the room key");
       const workspace = params.workspace as Workspace | undefined;
@@ -1061,213 +1015,117 @@ const tools: Record<string, ToolDef> = {
           ...(workspace ? { workspace: { ...workspace, repo: workspace.repo?.replace(/\/\/[^@/]+@/, "//") } } : {}),
         },
       );
-    },
-  },
+    }),
 
-  read_board: {
-    description: "Read the shared board.",
-    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
-    handler: async (env, params) => {
-      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      const participantId = params.participantId as string;
-      return (await roomClient(env, roomUrl, secret, participantId)).board();
-    },
-  },
+  read_board: roomTool("Read the shared board.", {}, [], async (env, params) => {
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    return (await roomClient(env, roomUrl, secret, params.participantId as string)).board();
+  }),
 
-  set_board_key: {
-    description: "Set one key on the shared board (tasks, claims, blockers, decisions). The value replaces the key's current value.",
-    inputSchema: {
-      type: "object", properties: {
-        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
-        key: { type: "string" },
-        value: { type: "string", description: 'The value as a JSON string, e.g. {"t-1":{"title":"Docs","owner":"agent-b"}}' },
-        ifVersion: IF_VERSION_PARAM,
-      }, required: ["inviteJson", "participantId", "key", "value"],
-    },
-    handler: async (env, params) => {
-      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      const participantId = params.participantId as string;
-      return (await roomClient(env, roomUrl, secret, participantId)).setBoardKey(
-        params.key as string, JSON.parse(params.value as string), { ifVersion: params.ifVersion as number | undefined },
-      );
-    },
-  },
+  set_board_key: roomTool("Set one key on the shared board (tasks, claims, blockers, decisions). The value replaces the key's current value.", {
+    key: { type: "string" },
+    value: { type: "string", description: 'The value as a JSON string, e.g. {"t-1":{"title":"Docs","owner":"agent-b"}}' },
+    ifVersion: IF_VERSION_PARAM,
+  }, ["key", "value"], async (env, params) => {
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    return (await roomClient(env, roomUrl, secret, params.participantId as string)).setBoardKey(
+      params.key as string, JSON.parse(params.value as string), { ifVersion: params.ifVersion as number | undefined },
+    );
+  }),
 
-  patch_board: {
-    description: "Set several board keys at once.",
-    inputSchema: {
-      type: "object", properties: {
-        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
-        values: { type: "string", description: 'A JSON object string of key -> value, e.g. {"tasks":{...},"blockers":{}}' },
-        ifVersions: { type: "string", description: 'Optional JSON object string of key -> version you read, e.g. {"tasks":3}; if any key changed since, nothing is written and the conflicts are returned' },
-      }, required: ["inviteJson", "participantId", "values"],
-    },
-    handler: async (env, params) => {
-      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      const participantId = params.participantId as string;
-      const values = parseJsonParam(params.values);
-      if (!values) throw new Error("values must be a JSON object string");
-      const ifVersions = parseJsonParam(params.ifVersions);
-      return (await roomClient(env, roomUrl, secret, participantId)).patchBoard(values, { ifVersions: ifVersions as Record<string, number> | undefined });
-    },
-  },
+  patch_board: roomTool("Set several board keys at once.", {
+    values: { type: "string", description: 'A JSON object string of key -> value, e.g. {"tasks":{...},"blockers":{}}' },
+    ifVersions: { type: "string", description: 'Optional JSON object string of key -> version you read, e.g. {"tasks":3}; if any key changed since, nothing is written and the conflicts are returned' },
+  }, ["values"], async (env, params) => {
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    const values = parseJsonParam(params.values);
+    if (!values) throw new Error("values must be a JSON object string");
+    const ifVersions = parseJsonParam(params.ifVersions);
+    return (await roomClient(env, roomUrl, secret, params.participantId as string)).patchBoard(values, { ifVersions: ifVersions as Record<string, number> | undefined });
+  }),
 
-  delete_board_key: {
-    description: "Delete one key from the shared board.",
-    inputSchema: {
-      type: "object", properties: {
-        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" }, key: { type: "string" },
-        ifVersion: IF_VERSION_PARAM,
-      }, required: ["inviteJson", "participantId", "key"],
-    },
-    handler: async (env, params) => {
-      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      const participantId = params.participantId as string;
-      return (await roomClient(env, roomUrl, secret, participantId)).deleteBoardKey(
-        params.key as string, { ifVersion: params.ifVersion as number | undefined },
-      );
-    },
-  },
+  delete_board_key: roomTool("Delete one key from the shared board.", {
+    key: { type: "string" }, ifVersion: IF_VERSION_PARAM,
+  }, ["key"], async (env, params) => {
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    return (await roomClient(env, roomUrl, secret, params.participantId as string)).deleteBoardKey(
+      params.key as string, { ifVersion: params.ifVersion as number | undefined },
+    );
+  }),
 
-  transition_room: {
-    description: "Trigger a state machine event to transition the room (host only).",
-    inputSchema: {
-      type: "object", properties: {
-        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
-        event: { type: "string" },
-      }, required: ["inviteJson", "participantId", "event"],
-    },
-    handler: async (env, params) => {
+  transition_room: roomTool("Trigger a state machine event to transition the room (host only).",
+    { event: { type: "string" } }, ["event"], async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       return (await roomClient(env, roomUrl, secret, params.participantId as string)).transition(params.event as string);
-    },
-  },
+    }),
 
-  transfer_host: {
-    description: "Host only: hand the host role to another participant in the room. Everyone gets a host.changed message. The host cannot leave while others remain, so transfer first.",
-    inputSchema: {
-      type: "object", properties: {
-        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
-        to: { type: "string", description: "The participant to make host" },
-      }, required: ["inviteJson", "participantId", "to"],
-    },
-    handler: async (env, params) => {
+  transfer_host: roomTool("Host only: hand the host role to another participant in the room. Everyone gets a host.changed message. The host cannot leave while others remain, so transfer first.",
+    { to: { type: "string", description: "The participant to make host" } }, ["to"], async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       return (await roomClient(env, roomUrl, secret, params.participantId as string)).transferHost(params.to as string);
-    },
-  },
+    }),
 
-  close_room: {
-    description: "Close and delete the room (host only).",
-    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
-    handler: async (env, params, ctx) => {
-      const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
-      await (await roomClient(env, roomUrl, secret, params.participantId as string)).close();
-      await rememberSessionRoom(env, ctx.sessionId, roomUrl, params.participantId as string, true);
-      // Clear session
-      clearRoomSessions(roomId);
-      return { ok: true, closed: true };
-    },
-  },
+  close_room: roomTool("Close and delete the room (host only).", {}, [], async (env, params, ctx) => {
+    const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
+    await (await roomClient(env, roomUrl, secret, params.participantId as string)).close();
+    await rememberSessionRoom(env, ctx.sessionId, roomUrl, params.participantId as string, true);
+    clearRoomSessions(roomId);
+    return { ok: true, closed: true };
+  }),
 
-  leave_room: {
-    description: "Leave the room (stays active for others). Leaving while holding file reservations is refused unless release is true.",
-    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" }, release: { type: "boolean", description: "Also release your file reservations" } }, required: ["inviteJson", "participantId"] },
-    handler: async (env, params, ctx) => {
+  leave_room: roomTool("Leave the room (stays active for others). Leaving while holding file reservations is refused unless release is true.",
+    { release: { type: "boolean", description: "Also release your file reservations" } }, [], async (env, params, ctx) => {
       const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
       await (await roomClient(env, roomUrl, secret, params.participantId as string)).leave({ release: !!params.release });
       await rememberSessionRoom(env, ctx.sessionId, roomUrl, params.participantId as string, true);
       sessions.delete(sessionKey(roomId, params.participantId as string));
       return { ok: true, left: true };
-    },
-  },
+    }),
 
-  reserve_paths: {
-    description: "Reserve files you are about to change so others do not edit them at the same time. paths are relative to the repo root (a directory covers everything under it); repo is your git remote (or repo root). Fails naming the holder if someone else reserved an overlapping path. Sealed with the room key: the server never sees paths.",
-    inputSchema: {
-      type: "object", properties: {
-        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
-        repo: { type: "string" }, paths: { type: "string", description: "Comma-separated paths relative to the repo root" }, reason: { type: "string" },
-      }, required: ["inviteJson", "participantId", "repo", "paths"],
-    },
-    handler: async (env, params) => {
-      const me = params.participantId as string;
-      const paths = parseSkills(params.paths as string) ?? [];
-      if (paths.length === 0) throw new Error("paths is required");
-      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): reservations are sealed with the room key");
-      return { reservations: await reservePaths(await roomClient(env, roomUrl, secret, me), params.repo as string, paths, params.reason as string | undefined) };
-    },
-  },
+  reserve_paths: roomTool("Reserve files you are about to change so others do not edit them at the same time. paths are relative to the repo root (a directory covers everything under it); repo is your git remote (or repo root). Fails naming the holder if someone else reserved an overlapping path. Sealed with the room key: the server never sees paths.", {
+    repo: { type: "string" }, paths: { type: "string", description: "Comma-separated paths relative to the repo root" }, reason: { type: "string" },
+  }, ["repo", "paths"], async (env, params) => {
+    const me = params.participantId as string;
+    const paths = parseSkills(params.paths as string) ?? [];
+    if (paths.length === 0) throw new Error("paths is required");
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): reservations are sealed with the room key");
+    return { reservations: await reservePaths(await roomClient(env, roomUrl, secret, me), params.repo as string, paths, params.reason as string | undefined) };
+  }),
 
-  release_paths: {
-    description: "Release your file reservations: all, or those covering the given paths of repo.",
-    inputSchema: {
-      type: "object", properties: {
-        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
-        repo: { type: "string" }, paths: { type: "string", description: "Comma-separated paths (omit to release all)" },
-      }, required: ["inviteJson", "participantId"],
-    },
-    handler: async (env, params) => {
-      const paths = parseSkills(params.paths as string) ?? [];
-      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): reservations are sealed with the room key");
-      return { reservations: await releasePaths(await roomClient(env, roomUrl, secret, params.participantId as string), params.repo as string | undefined, paths) };
-    },
-  },
+  release_paths: roomTool("Release your file reservations: all, or those covering the given paths of repo.", {
+    repo: { type: "string" }, paths: { type: "string", description: "Comma-separated paths (omit to release all)" },
+  }, [], async (env, params) => {
+    const paths = parseSkills(params.paths as string) ?? [];
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): reservations are sealed with the room key");
+    return { reservations: await releasePaths(await roomClient(env, roomUrl, secret, params.participantId as string), params.repo as string | undefined, paths) };
+  }),
 
-  list_reservations: {
-    description: "List file reservations in the room: who reserved which paths of which repo, and why.",
-    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
-    handler: async (env, params) => {
-      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): reservations are sealed with the room key");
-      return { reservations: await listReservations(await roomClient(env, roomUrl, secret, params.participantId as string)) };
-    },
-  },
+  list_reservations: roomTool("List file reservations in the room: who reserved which paths of which repo, and why.", {}, [], async (env, params) => {
+    const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+    if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link): reservations are sealed with the room key");
+    return { reservations: await listReservations(await roomClient(env, roomUrl, secret, params.participantId as string)) };
+  }),
 
-  get_room_info: {
-    description: "Get room metadata (status, participants, expiry) as a joined participant.",
-    inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
-    handler: async (env, params, ctx) => {
-      const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
-      const participantId = params.participantId as string;
-      await ensureEcdhSession(env, roomUrl, participantId, secret);
-      const result = await (await roomClient(env, roomUrl, secret, participantId)).status();
-      return {
-        ...result,
-        subscription_active: ctx.sessionId ? hasActiveSubscription(ctx.sessionId, roomId, participantId) : false,
-      };
-    },
-  },
+  get_room_info: roomTool("Get room metadata (status, participants, expiry) as a joined participant.", {}, [], async (env, params, ctx) => {
+    const { roomUrl, roomId, secret } = parseRoomId(params.inviteJson as string);
+    const participantId = params.participantId as string;
+    const result = await (await roomClient(env, roomUrl, secret, participantId)).status();
+    return {
+      ...result,
+      subscription_active: ctx.sessionId ? hasActiveSubscription(ctx.sessionId, roomId, participantId) : false,
+    };
+  }),
 
   watch_room: {
     description: "Subscribe to live room events (messages, board, participants). Streams JSON-RPC notifications (notifications/j01n.me/{message,board,participant}) until the client cancels. Message notifications include the encrypted RoomMessage payload for the participant to decrypt locally.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        inviteJson: INVITE_JSON_PARAM,
-        participantId: { type: "string" },
-        includeSelf: { type: "boolean" },
-      },
-      required: ["inviteJson", "participantId"],
-    },
+    inputSchema: { type: "object", properties: { ...ROOM_PROPERTIES, includeSelf: { type: "boolean" } }, required: ["inviteJson", "participantId"] },
     streaming: streamRoomEvents,
   },
 
-  subscribe_room: {
-    description: "Bind room events to the current MCP session's listening stream (GET /mcp). Returns immediately with a subscription_id; events flow as JSON-RPC notifications down the listening stream. Requires Mcp-Session-Id header and an active GET /mcp connection.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        inviteJson: INVITE_JSON_PARAM,
-        participantId: { type: "string" },
-        includeSelf: { type: "boolean" },
-      },
-      required: ["inviteJson", "participantId"],
-    },
-    handler: subscribeRoomTool,
-  },
+  subscribe_room: roomTool("Bind room events to the current MCP session's listening stream (GET /mcp). Returns immediately with a subscription_id; events flow as JSON-RPC notifications down the listening stream. Requires Mcp-Session-Id header and an active GET /mcp connection.",
+    { includeSelf: { type: "boolean" } }, [], subscribeRoomTool),
 
   unsubscribe_room: {
     description: "Cancel an active room subscription by subscription_id (from subscribe_room). Requires Mcp-Session-Id header.",

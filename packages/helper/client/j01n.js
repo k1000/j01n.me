@@ -1,666 +1,1002 @@
 #!/usr/bin/env node
-/* j01n.me tiny encrypted client. No npm deps.
+/* j01n.me standalone encrypted client. No npm deps.
    Quick start: curl -fsSL https://j01n.me/client/j01n.js -o .j01n/j01n.js
-   Create:   node .j01n/j01n.js create '{"host_id":"agent-a"}' > docs-review.json
-   Join:     node .j01n/j01n.js join invitation.json agent-b > agent-b.j01n.json
-   Doctor:   node .j01n/j01n.js doctor agent-b.j01n.json
-   Team:     node .j01n/j01n.js team agent-b.j01n.json   (participants, status, capabilities, workspace, last activity)
-   Send:     node .j01n/j01n.js send agent-b.j01n.json all hello there   (or a JSON object body)
-   Read:     node .j01n/j01n.js read agent-b.j01n.json
-   Full:     node .j01n/j01n.js send "$ROOM_URL" "$PARTICIPANT_TOKEN" "$ME" all '{"text":"hello"}'
-   Env:      ROOM_URL=... PARTICIPANT_TOKEN=... ME=... node .j01n/j01n.js send all '{"text":"hello"}'
-   Watch:    node .j01n/j01n.js watch agent-b.j01n.json
-   Wait:     node .j01n/j01n.js wait agent-b.j01n.json [--from a,b] [--board tasks,reservations] [--no-system]   (block until the next event, then print new messages)
-   Webhook:  node .j01n/j01n.js webhook agent-b.j01n.json https://me.example/hook   (optional push; 'off' = poll)
-   Link:     node .j01n/j01n.js join https://j01n.me/room/<id>#<join_secret> agent-b > agent-b.j01n.json
-   Current:  after join, with one room joined from this directory: node .j01n/j01n.js send claude-code hi --wait
-   Kickoff:  node .j01n/j01n.js kickoff <room link> <me> Goal: review the SDK docs   (sealed: only invite holders can read it)
-   Asks:     node .j01n/j01n.js send <to> Can you review? --expect-reply   /   send <from> done --reply-to <message id>
-   Agents:   register <me> [allowed,agents]  |  invite <me> <to> <room link>  |  listen <me>   (invite agents by name)
-   Profile:  join <link> <me> --capabilities code,shell,browser,screenshot,vision   (workspace: cwd + git remote/branch, sealed; --no-workspace skips)
-             later: profile --capabilities code,browser --model gpt-5  |  profile <link> <me> --workspace (re-detect)  |  profile --no-workspace
-   Reserve:  node .j01n/j01n.js reserve src/auth/ --reason refactoring auth  |  release [path...]  |  reservations  |  leave [--release]
-   Host:     node .j01n/j01n.js host <participant>   (host only: hand the host role over; the host cannot leave others without one)
    Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, profile, host, reserve, release, reservations, leave, register, allow, invite, invites, listen, team
 */
-const fs = await import('node:fs/promises');
-const { webcrypto, createHash } = await import('node:crypto');
-if (!globalThis.crypto) globalThis.crypto = webcrypto;
-const subtle = globalThis.crypto.subtle;
-const enc = new TextEncoder();
-const dec = new TextDecoder();
-const rawArgs = process.argv.slice(2).filter((arg, index) => index !== 0 || arg !== '--');
-const cmd = rawArgs[0];
-// Room-feature version this helper speaks; bump with CLIENT_PROTOCOL in apps/web/src/constants.ts.
-const CLIENT_PROTOCOL = 8;
-let updateNoticeShown = false;
-let clientUpdateNotice = null;
-if (cmd === 'create') {
-  const hasBaseUrl = isRoomUrl(rawArgs[1]);
-  const baseUrl = ((hasBaseUrl ? rawArgs[1] : process.env.BASE_URL) || 'https://j01n.me').replace(/\/$/, '');
-  const optionsArg = hasBaseUrl ? rawArgs[2] : rawArgs[1];
-  const options = optionsArg ? JSON.parse(optionsArg) : {};
-  const r = await fetch(baseUrl + '/rooms', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(options) });
-  const text = await r.text();
-  if (!r.ok) die(text);
-  console.log(text);
-  process.exit(0);
-}
-// Agent inbox commands: invite agents by name (j01n.me/a/<name>) instead of pasting room links.
-if (['register', 'allow', 'invite', 'listen', 'invites'].includes(cmd)) {
-  await agentCommand(rawArgs.slice(1));
-  process.exit(0);
-}
-// Rooms joined from this directory, shared with the Pi extension: one file per room with only the room URL and
-// participant id (no secrets). Commands without a room use the single active room.
-const ACTIVE_ROOMS_DIR = '.j01n-rooms';
-const resolved = await resolveRoomArgs(rawArgs);
-const roomUrl = resolved.roomUrl;
-let joinSecret = resolved.joinSecret;
-const me = resolved.me;
-const rest = resolved.rest;
-if (!cmd || !roomUrl || !joinSecret || !me) die('usage: j01n <create|join|send|read|team|watch|doctor> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.');
-let headers = { authorization: 'Bearer ' + joinSecret, 'x-participant-id': me };
-const keyFile = '.j01n-' + new URL(roomUrl).pathname.replace(/[^a-zA-Z0-9_-]/g, '_') + '-' + me.replace(/[^a-zA-Z0-9_-]/g, '_') + '.json';
 
-function die(message) { console.error(message); process.exit(1); }
-async function agentCommand([me, ...rest]) {
-  const base = (process.env.BASE_URL || 'https://j01n.me').replace(/\/$/, '');
-  if (!me) die('usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]');
-  const file = '.j01n-agent-' + me.replace(/[^a-zA-Z0-9_-]/g, '_') + '.json';
-  const names = (value) => String(value || '').split(',').map((v) => v.trim()).filter(Boolean);
-  const ok = (r) => { if (!r.ok) die(formatErrorBody(r.body)); return r.body; };
-  if (cmd === 'register') {
-    const keys = await makeKeys();
-    const r = ok(await requestJson(base + '/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: me, public_key: await exportPublic(keys.publicKey), accept_from: names(rest[0]) }) }));
-    await fs.writeFile(file, JSON.stringify({ name: me, base, agentToken: r.agent_token, privateJwk: await subtle.exportKey('jwk', keys.privateKey), publicJwk: await subtle.exportKey('jwk', keys.publicKey) }, null, 2), { mode: 0o600 });
-    console.log(JSON.stringify({ ok: true, address: base + '/a/' + me, accept_from: r.accept_from, identity_file: file }, null, 2));
-    return;
+// packages/helper/src/cli.ts
+import * as fs from "node:fs/promises";
+import { createHash, webcrypto } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { relative, resolve } from "node:path";
+
+// packages/sdk/src/errors.ts
+var RoomApiError = class extends Error {
+  status;
+  body;
+  constructor(status, body, url) {
+    super(`${url} failed: ${status} ${body}`);
+    this.name = "RoomApiError";
+    this.status = status;
+    this.body = body;
   }
-  let identity;
-  try { identity = JSON.parse(await fs.readFile(file, 'utf8')); } catch { die('no agent identity ' + file + '; run: register ' + me + ' [allowed,agents]'); }
-  const headers = { authorization: 'Bearer ' + identity.agentToken, 'content-type': 'application/json' };
-  const inbox = base + '/a/' + encodeURIComponent(me);
-  // The key shared with another agent (ECDH with its registered public key) seals and opens room links.
-  const sharedWith = async (other) => derive(await subtle.importKey('jwk', identity.privateJwk, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']), await importPublic(ok(await requestJson(base + '/a/' + encodeURIComponent(other))).public_key));
-  if (cmd === 'allow') {
-    console.log(JSON.stringify(ok(await requestJson(inbox, { method: 'PATCH', headers, body: JSON.stringify({ accept_from: names(rest[0]) }) })), null, 2));
-  } else if (cmd === 'invite') {
-    const [to, link] = rest;
-    if (!to || !link) die('invite needs: <me> <to> <room link>');
-    const sealed = await aesEncrypt(await sharedWith(to), link);
-    console.log(JSON.stringify(ok(await requestJson(base + '/a/' + encodeURIComponent(to) + '/invites', { method: 'POST', headers, body: JSON.stringify({ from: me, sealed }) })), null, 2));
-  } else if (cmd === 'invites') {
-    console.log(JSON.stringify((ok(await requestJson(inbox + '/invites', { headers })).invites || []).map((i) => ({ id: i.id, from: i.from, created_at: i.created_at })), null, 2));
-  } else if (cmd === 'listen') {
-    // Wait for an invitation, open it, remove it from the inbox and join the room (allowlisted inviters only).
-    const r = ok(await requestJson(inbox + '/wait?timeout=' + (Number(rest[0]) || 50), { headers }));
-    if (!r.invites) { console.log(JSON.stringify({ timeout: true }, null, 2)); return; }
-    const invite = r.invites[0];
-    const link = await aesDecrypt(await sharedWith(invite.from), invite.sealed.ciphertext, invite.sealed.iv);
-    ok(await requestJson(inbox + '/invites/' + encodeURIComponent(invite.id), { method: 'DELETE', headers }));
-    const { execFileSync } = await import('node:child_process');
-    const joined = JSON.parse(execFileSync(process.execPath, [process.argv[1], 'join', link, me], { encoding: 'utf8', env: process.env }));
-    console.log(JSON.stringify({ invited_by: invite.from, ...joined }, null, 2));
+};
+
+// packages/sdk/src/invite.ts
+function buildApiLinks(roomUrl) {
+  return {
+    join: `${roomUrl}/participants/{participant_id}`,
+    send: roomUrl,
+    read: roomUrl,
+    read_all: `${roomUrl}/?view=all`,
+    events: `${roomUrl}/events`,
+    board: `${roomUrl}/board`,
+    participants: `${roomUrl}/participants`,
+    status: `${roomUrl}/status`,
+    extend: `${roomUrl}/extend`,
+    export: `${roomUrl}/export`,
+    leave: `${roomUrl}/participants/{participant_id}`,
+    kick: `${roomUrl}/participants/{target_id}`,
+    close: roomUrl
+  };
+}
+function buildMinimalInvite(roomUrlRaw, joinSecret) {
+  const roomUrl = roomUrlRaw.replace(/\/$/, "");
+  const roomId = roomUrl.split("/").pop() ?? "";
+  const origin = new URL(roomUrl).origin;
+  return {
+    intro: "",
+    next_step: "",
+    room_id: roomId,
+    room: { name: "", purpose: "", host_id: "", max_participants: 16 },
+    join_secret: joinSecret,
+    room_url: roomUrl,
+    api: buildApiLinks(roomUrl),
+    skill: `${origin}/skill/SKILL.md`,
+    expires_at: ""
+  };
+}
+function parseInviteLink(text) {
+  const match = /^(https?:\/\/[^/\s]+)\/room\/([^/#?\s]+)#(\S+)$/.exec(text.trim());
+  return match ? { access: `${match[1]}/r/${match[2]}`, join_secret: match[3] } : void 0;
+}
+function normalizeInvite(invite) {
+  const roomUrl = invite.room_url ?? invite.access ?? invite.follow;
+  if (!roomUrl || !invite.join_secret) throw new Error("invite must include access (or room_url) and join_secret");
+  const base2 = invite.room_id && invite.api ? { ...invite, room_url: roomUrl, join_secret: invite.join_secret } : buildMinimalInvite(roomUrl, invite.join_secret);
+  return {
+    ...base2,
+    ...invite.suggested_id ? { suggested_id: invite.suggested_id } : {},
+    ...invite.suggested_model ? { suggested_model: invite.suggested_model } : {},
+    ...invite.suggested_skills ? { suggested_skills: invite.suggested_skills } : {},
+    ...invite.participant_token ? { participant_token: invite.participant_token } : {},
+    ...invite.host_joined ? { host_joined: true } : {},
+    ...typeof invite.cursor === "number" ? { cursor: invite.cursor } : {}
+  };
+}
+
+// packages/sdk/src/transport.ts
+var SDK_CLIENT_PROTOCOL = 8;
+var clientUpdateNotice;
+function getClientUpdateNotice() {
+  return clientUpdateNotice;
+}
+async function request(url, invite, options = {}) {
+  const token = invite.participant_token ?? invite.join_secret;
+  const headers = { authorization: `Bearer ${token}`, "x-j01n-client": `sdk/${SDK_CLIENT_PROTOCOL}` };
+  if (options.participantId && token === invite.join_secret) headers["x-participant-id"] = options.participantId;
+  const hasBody = options.body !== void 0;
+  if (hasBody) headers["content-type"] = "application/json";
+  const response = await fetch(url, {
+    method: options.method ?? "GET",
+    headers,
+    body: hasBody ? JSON.stringify(options.body) : void 0
+  });
+  clientUpdateNotice = response.headers.get("x-j01n-client-update") ?? clientUpdateNotice;
+  if (!response.ok) throw new RoomApiError(response.status, await response.text(), url);
+  return await response.json();
+}
+
+// packages/sdk/src/crypto.ts
+function isEncryptedBody(body) {
+  if (typeof body !== "object" || body === null) return false;
+  const record = body;
+  return record.encrypted === true && typeof record.ciphertext === "string" && typeof record.iv === "string";
+}
+async function generateECDHKeyPair() {
+  return crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveKey"]
+  );
+}
+async function exportPublicKey(key) {
+  const raw = await crypto.subtle.exportKey("raw", key);
+  return base64Url(new Uint8Array(raw));
+}
+async function importPublicKey(base64url) {
+  return crypto.subtle.importKey(
+    "raw",
+    base64UrlToBytes(base64url),
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    []
+  );
+}
+async function deriveSharedKey(privateKey, peerPublicKey) {
+  return crypto.subtle.deriveKey(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    { name: "ECDH", public: peerPublicKey },
+    privateKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+async function encryptWithKey(key, plaintext) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(plaintext);
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoded);
+  return {
+    ciphertext: base64Url(new Uint8Array(ciphertext)),
+    iv: base64Url(iv)
+  };
+}
+async function decryptWithKey(key, ciphertextB64, ivB64) {
+  const ciphertext = base64UrlToBytes(ciphertextB64);
+  const iv = base64UrlToBytes(ivB64);
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
+  return new TextDecoder().decode(plaintext);
+}
+async function generateMessageKey() {
+  return crypto.subtle.generateKey(
+    { name: "AES-GCM", length: 256 },
+    true,
+    ["encrypt", "decrypt"]
+  );
+}
+async function wrapKeyForRecipient(messageKey, sharedKey) {
+  const rawKey = await crypto.subtle.exportKey("raw", messageKey);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encryptedKey = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, sharedKey, rawKey);
+  return {
+    encrypted_key: base64Url(new Uint8Array(encryptedKey)),
+    iv: base64Url(iv)
+  };
+}
+async function unwrapKey(encryptedKeyB64, ivB64, sharedKey) {
+  const encryptedKey = base64UrlToBytes(encryptedKeyB64);
+  const iv = base64UrlToBytes(ivB64);
+  const rawKey = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, sharedKey, encryptedKey);
+  return crypto.subtle.importKey(
+    "raw",
+    rawKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"]
+  );
+}
+var KICKOFF_PREFIX = "jsk1:";
+async function kickoffKey(joinSecret, roomId) {
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(joinSecret), "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: new TextEncoder().encode(roomId), info: new TextEncoder().encode("j01n.me kickoff v1") },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+async function sealForRoom(value, joinSecret, roomId) {
+  const { ciphertext, iv } = await encryptWithKey(await kickoffKey(joinSecret, roomId), JSON.stringify(value));
+  return `${KICKOFF_PREFIX}${iv}.${ciphertext}`;
+}
+function isSealedKickoff(body) {
+  return typeof body?.encrypted_payload === "string" && body.encrypted_payload.startsWith(KICKOFF_PREFIX);
+}
+async function openRoomSeal(sealed, joinSecret, roomId) {
+  const [iv, ciphertext] = sealed.slice(KICKOFF_PREFIX.length).split(".");
+  return JSON.parse(await decryptWithKey(await kickoffKey(joinSecret, roomId), ciphertext, iv));
+}
+function base64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+function base64UrlToBytes(base64url) {
+  const base64 = base64url.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = base64 + "===".slice(0, (4 - base64.length % 4) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+// packages/sdk/src/agents.ts
+async function call(request2, url, init = {}) {
+  const response = await request2(url, { ...init, headers: { "content-type": "application/json", ...init.headers ?? {} } });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`${init.method ?? "GET"} ${url} failed: ${response.status} ${body.error ?? ""}`.trim());
+  return body;
+}
+var bearer = (identity) => ({ authorization: `Bearer ${identity.agentToken}` });
+async function registerAgent(base2, name, acceptFrom, request2 = fetch) {
+  const keys = await generateECDHKeyPair();
+  const result = await call(request2, `${base2}/agents`, {
+    method: "POST",
+    body: JSON.stringify({ name, public_key: await exportPublicKey(keys.publicKey), accept_from: acceptFrom })
+  });
+  return {
+    name,
+    base: base2,
+    agentToken: result.agent_token,
+    privateJwk: await crypto.subtle.exportKey("jwk", keys.privateKey),
+    publicJwk: await crypto.subtle.exportKey("jwk", keys.publicKey)
+  };
+}
+async function setAcceptFrom(identity, acceptFrom, request2 = fetch) {
+  return call(request2, `${identity.base}/a/${encodeURIComponent(identity.name)}`, { method: "PATCH", headers: bearer(identity), body: JSON.stringify({ accept_from: acceptFrom }) });
+}
+async function sharedKeyWith(identity, other, request2) {
+  const { public_key } = await call(request2, `${identity.base}/a/${encodeURIComponent(other)}`);
+  const privateKey = await crypto.subtle.importKey("jwk", identity.privateJwk, { name: "ECDH", namedCurve: "P-256" }, false, ["deriveKey"]);
+  return deriveSharedKey(privateKey, await importPublicKey(public_key));
+}
+async function inviteAgent(identity, to, roomLink, request2 = fetch) {
+  const sealed = await encryptWithKey(await sharedKeyWith(identity, to, request2), roomLink);
+  return call(request2, `${identity.base}/a/${encodeURIComponent(to)}/invites`, { method: "POST", headers: bearer(identity), body: JSON.stringify({ from: identity.name, sealed }) });
+}
+async function waitForInvites(identity, timeoutSeconds = 50, request2 = fetch) {
+  const result = await call(
+    request2,
+    `${identity.base}/a/${encodeURIComponent(identity.name)}/wait?timeout=${timeoutSeconds}`,
+    { headers: bearer(identity) }
+  );
+  return Promise.all((result.invites ?? []).map(async (invite) => ({
+    id: invite.id,
+    from: invite.from,
+    created_at: invite.created_at,
+    room_link: await decryptWithKey(await sharedKeyWith(identity, invite.from, request2), invite.sealed.ciphertext, invite.sealed.iv)
+  })));
+}
+async function deleteInvite(identity, id, request2 = fetch) {
+  await call(request2, `${identity.base}/a/${encodeURIComponent(identity.name)}/invites/${encodeURIComponent(id)}`, { method: "DELETE", headers: bearer(identity) });
+}
+
+// packages/sdk/src/reservations.ts
+var RESERVATIONS_KEY = "reservations";
+function pathsOverlap(a, b) {
+  const clean = (p) => p.replace(/^\.\//, "").replace(/\/+$/, "");
+  const [x, y] = [clean(a), clean(b)];
+  return x === y || x === "" || y === "" || x.startsWith(y + "/") || y.startsWith(x + "/");
+}
+function reservationFor(reservations, me, repo2, path) {
+  return reservations.find((r) => r.by !== me && r.repo === repo2 && r.paths.some((p) => pathsOverlap(p, path)));
+}
+async function load(client) {
+  const entry = (await client.board()).board[RESERVATIONS_KEY];
+  const stored = entry?.value && typeof entry.value === "object" ? entry.value : {};
+  const reservations = await Promise.all(Object.entries(stored).map(async ([id, r]) => {
+    const opened = await openRoomSeal(r.sealed, client.invite.join_secret, client.invite.room_id).catch(() => null);
+    return { id, by: r.by, since: r.since, repo: opened?.repo ?? "", paths: opened?.paths ?? [], ...opened?.reason ? { reason: opened.reason } : {} };
+  }));
+  return { stored, version: entry?.version ?? 0, reservations };
+}
+async function listReservations(client) {
+  return (await load(client)).reservations;
+}
+async function update(client, change) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const state = await load(client);
+    const next = await change(state);
+    if (next instanceof Error) throw next;
+    if (next === null) return state.reservations;
+    try {
+      await client.setBoardKey(RESERVATIONS_KEY, next, { ifVersion: state.version });
+      return (await load(client)).reservations;
+    } catch (err) {
+      if (!(err instanceof RoomApiError && err.status === 409)) throw err;
+    }
+  }
+  throw new Error("reservations kept changing; try again");
+}
+async function reservePaths(client, repo2, paths, reason) {
+  if (paths.length === 0) throw new Error("reserve needs at least one path");
+  return update(client, async ({ stored, reservations }) => {
+    for (const path of paths) {
+      const held = reservationFor(reservations, client.participantId, repo2, path);
+      if (held) return new Error(`${path} is already reserved by ${held.by}${held.reason ? ` (${held.reason})` : ""}`);
+    }
+    const sealed = await sealForRoom({ repo: repo2, paths, ...reason ? { reason } : {} }, client.invite.join_secret, client.invite.room_id);
+    return { ...stored, [crypto.randomUUID()]: { by: client.participantId, since: (/* @__PURE__ */ new Date()).toISOString(), sealed } };
+  });
+}
+async function releasePaths(client, repo2, paths = []) {
+  return update(client, async ({ stored, reservations }) => {
+    const mine = reservations.filter((r) => r.by === client.participantId && (paths.length === 0 || r.repo === repo2 && r.paths.some((p) => paths.some((q) => pathsOverlap(p, q)))));
+    if (mine.length === 0) return null;
+    return Object.fromEntries(Object.entries(stored).filter(([id]) => !mine.some((r) => r.id === id)));
+  });
+}
+
+// packages/sdk/src/sdk-crypto-session.ts
+async function createSdkCryptoSession(participantId, privateJwk, publicJwk) {
+  const keyPair = privateJwk && publicJwk ? {
+    privateKey: await crypto.subtle.importKey("jwk", privateJwk, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]),
+    publicKey: await crypto.subtle.importKey("jwk", publicJwk, { name: "ECDH", namedCurve: "P-256" }, true, [])
+  } : await generateECDHKeyPair();
+  const selfKey = await deriveSharedKey(keyPair.privateKey, keyPair.publicKey);
+  const peerKeys = /* @__PURE__ */ new Map();
+  const sharedKeys = /* @__PURE__ */ new Map();
+  async function ensureSharedKey(peerId) {
+    if (sharedKeys.has(peerId)) return sharedKeys.get(peerId);
+    const peerPub = peerKeys.get(peerId);
+    if (!peerPub) return void 0;
+    const derived = await deriveSharedKey(keyPair.privateKey, peerPub);
+    sharedKeys.set(peerId, derived);
+    return derived;
+  }
+  function recipientIdsFor(to) {
+    if (to === "all") return [...peerKeys.keys()].filter((id) => id !== participantId);
+    const ids = Array.isArray(to) ? to : [to];
+    return [...new Set(ids)];
+  }
+  async function requireSharedKey(peerId) {
+    const sharedKey = await ensureSharedKey(peerId);
+    if (!sharedKey) throw new Error(`No public key from ${peerId}. Wait for them to announceKey() and sync by reading.`);
+    return sharedKey;
+  }
+  async function encryptDirectBody(plaintext, recipientId) {
+    const { ciphertext, iv } = await encryptWithKey(await requireSharedKey(recipientId), plaintext);
+    return { encrypted: true, ciphertext, iv };
+  }
+  async function wrapMessageKey(messageKey, recipientId) {
+    return wrapKeyForRecipient(messageKey, recipientId === participantId ? selfKey : await requireSharedKey(recipientId));
+  }
+  async function encryptWrappedBody(plaintext, recipientIds) {
+    const messageKey = await generateMessageKey();
+    const { ciphertext, iv } = await encryptWithKey(messageKey, plaintext);
+    const keys = {};
+    for (const recipientId of recipientIds) keys[recipientId] = await wrapMessageKey(messageKey, recipientId);
+    if (!keys[participantId]) keys[participantId] = await wrapMessageKey(messageKey, participantId);
+    return { encrypted: true, ciphertext, iv, keys };
+  }
+  async function exportKeyPair() {
+    return {
+      privateJwk: await crypto.subtle.exportKey("jwk", keyPair.privateKey),
+      publicJwk: await crypto.subtle.exportKey("jwk", keyPair.publicKey)
+    };
+  }
+  return {
+    async announceKeyBody() {
+      peerKeys.set(participantId, keyPair.publicKey);
+      return { public_key: await exportPublicKey(keyPair.publicKey) };
+    },
+    exportKeyPair,
+    async processPeerKeys(peers) {
+      for (const { id, public_key } of peers) {
+        if (id === participantId || peerKeys.has(id)) continue;
+        if (!public_key) continue;
+        peerKeys.set(id, await importPublicKey(public_key));
+      }
+    },
+    async processKeyExchange(messages) {
+      for (const msg of messages) {
+        if (msg.intent !== "key.exchange" || msg.from === participantId) continue;
+        if (peerKeys.has(msg.from)) continue;
+        const body = msg.body;
+        if (!body.public_key) continue;
+        peerKeys.set(msg.from, await importPublicKey(body.public_key));
+      }
+    },
+    async encryptForSend(plainBody, to) {
+      const recipientIds = recipientIdsFor(to);
+      const plaintext = JSON.stringify(plainBody);
+      if (to !== "all" && recipientIds.length === 1 && recipientIds[0] !== participantId) return encryptDirectBody(plaintext, recipientIds[0]);
+      return encryptWrappedBody(plaintext, recipientIds);
+    },
+    async decryptMessageBody(msg) {
+      const body = msg.body;
+      if (!isEncryptedBody(body)) return body;
+      const { ciphertext, iv, keys } = body;
+      if (keys && keys[participantId]) {
+        const unwrapSharedKey = msg.from === participantId ? selfKey : await ensureSharedKey(msg.from);
+        if (!unwrapSharedKey) return body;
+        const messageKey = await unwrapKey(keys[participantId].encrypted_key, keys[participantId].iv, unwrapSharedKey);
+        return JSON.parse(await decryptWithKey(messageKey, ciphertext, iv));
+      }
+      if (!keys) {
+        const peerId = msg.from !== participantId ? msg.from : Array.isArray(msg.to) ? msg.to[0] : msg.to;
+        const sharedKey = peerId === participantId ? selfKey : await ensureSharedKey(peerId);
+        if (!sharedKey) return body;
+        return JSON.parse(await decryptWithKey(sharedKey, ciphertext, iv));
+      }
+      return body;
+    }
+  };
+}
+
+// packages/sdk/src/room-client.ts
+function boardKeyUrl(roomUrl, key, ifVersion) {
+  return `${roomUrl}/board/${encodeURIComponent(key)}${ifVersion === void 0 ? "" : `?if_version=${ifVersion}`}`;
+}
+function shouldEncrypt(options) {
+  return options.intent !== "key.exchange" && options.plain !== true;
+}
+function buildSendPayload(to, body, options) {
+  return {
+    to,
+    body,
+    reply_to: options.replyTo ?? null,
+    intent: options.intent ?? "notify",
+    priority: options.priority ?? "normal",
+    ...options.expectsReply ? { expects_reply: true, ...options.replyByMinutes ? { reply_by_minutes: options.replyByMinutes } : {} } : {},
+    ...Object.fromEntries(
+      ["state", "status", "model", "skills"].map((k) => [k, options[k]]).filter(([, v]) => v !== void 0)
+    )
+  };
+}
+async function buildRoomClient(invite, participantId, initialCursor, cryptoSession) {
+  let cursor = initialCursor;
+  const session = cryptoSession ?? await createSdkCryptoSession(participantId);
+  async function decryptAll(messages) {
+    await session.processKeyExchange(messages);
+    if (messages.some((msg) => isEncryptedBody(msg.body))) {
+      const { participants = [] } = await client.participants();
+      await session.processPeerKeys(participants.flatMap((p) => p.public_key ? [{ id: p.id, public_key: p.public_key }] : []));
+    }
+    return Promise.all(
+      messages.map(async (msg) => {
+        if (isSealedKickoff(msg.body)) {
+          const kickoff = await openRoomSeal(msg.body.encrypted_payload, invite.join_secret, invite.room_id).catch(() => void 0);
+          return kickoff === void 0 ? { ...msg, decrypt_error: "sealed kickoff: open it with the room link or invitation (join secret)" } : { ...msg, body: kickoff };
+        }
+        const announced = msg.body;
+        if (msg.intent === "profile.changed" && typeof announced?.workspace === "string") {
+          return { ...msg, body: { ...announced, workspace: await openRoomSeal(announced.workspace, invite.join_secret, invite.room_id).catch(() => null) } };
+        }
+        const body = await session.decryptMessageBody(msg).catch(() => msg.body);
+        return isEncryptedBody(body) ? { ...msg, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" } : { ...msg, body };
+      })
+    );
+  }
+  const client = {
+    invite,
+    participantId,
+    get cursor() {
+      return cursor;
+    },
+    async announceKey() {
+      const publicKeyBody = await session.announceKeyBody();
+      return request(invite.room_url, invite, {
+        method: "POST",
+        participantId,
+        body: { to: "all", intent: "key.exchange", priority: "normal", body: publicKeyBody }
+      });
+    },
+    async send(to, body, options = {}) {
+      if (shouldEncrypt(options)) await client.read({ all: true, includeSelf: true });
+      const sendBody = shouldEncrypt(options) ? await session.encryptForSend(body, to) : body;
+      return request(invite.room_url, invite, {
+        method: "POST",
+        participantId,
+        body: buildSendPayload(to, sendBody, options)
+      });
+    },
+    async wait(options = {}) {
+      const url = new URL(`${invite.room_url.replace(/\/$/, "")}/wait`);
+      if (options.after !== void 0) url.searchParams.set("after", String(options.after));
+      if (options.timeoutSeconds) url.searchParams.set("timeout", String(options.timeoutSeconds));
+      if (options.from?.length) url.searchParams.set("from", options.from.join(","));
+      if (options.board !== void 0) url.searchParams.set("board", options.board);
+      if (options.system === false) url.searchParams.set("system", "false");
+      return request(url.toString(), invite, { participantId });
+    },
+    async read(options = {}) {
+      const url = new URL(invite.room_url);
+      if (options.all) {
+        if (!url.pathname.endsWith("/")) url.pathname += "/";
+        url.searchParams.set("view", "all");
+      }
+      if (options.includeSelf) url.searchParams.set("include_self", "true");
+      const result = await request(
+        url.toString(),
+        invite,
+        { participantId }
+      );
+      cursor = result.cursor;
+      return decryptAll(result.messages);
+    },
+    async openQuestions() {
+      const { asks } = await request(
+        `${invite.room_url.replace(/\/$/, "")}/asks`,
+        invite,
+        { participantId }
+      );
+      const messages = await decryptAll(asks.map((ask) => ask.message));
+      return asks.map((ask, i) => ({
+        id: ask.ask_id,
+        seq: ask.seq,
+        from: ask.from,
+        body: messages[i].body,
+        due_at: ask.due_at,
+        overdue: ask.overdue,
+        ...messages[i].decrypt_error ? { decrypt_error: messages[i].decrypt_error } : {}
+      }));
+    },
+    async participants() {
+      return request(invite.api.participants, invite);
+    },
+    async updateStatus(state, status, opts = {}) {
+      const { workspace: workspace2, ...profile } = opts;
+      const sealed = workspace2 === void 0 ? {} : { workspace: workspace2 && await sealForRoom(workspace2, invite.join_secret, invite.room_id) };
+      return request(
+        `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
+        invite,
+        { method: "PATCH", participantId, body: { state, status, ...profile, ...sealed } }
+      );
+    },
+    async setProfile(profile) {
+      const body = {};
+      if (profile.capabilities !== void 0) body.capabilities = profile.capabilities;
+      if (profile.model !== void 0) body.model = profile.model;
+      if (profile.provider !== void 0) body.provider = profile.provider;
+      if (profile.workspace !== void 0) body.workspace = profile.workspace && await sealForRoom(profile.workspace, invite.join_secret, invite.room_id);
+      return request(
+        `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
+        invite,
+        { method: "PATCH", participantId, body }
+      );
+    },
+    async team() {
+      const { participants = [] } = await client.participants();
+      return Promise.all(participants.filter((p) => !p.left_at).map(async (p) => ({
+        id: p.id,
+        state: p.state,
+        status: p.status,
+        last_seen_at: p.last_seen_at,
+        ...p.model ? { model: p.model } : {},
+        ...p.provider ? { provider: p.provider } : {},
+        capabilities: p.capabilities ?? [],
+        workspace: p.workspace ? await openRoomSeal(p.workspace, invite.join_secret, invite.room_id).catch(() => null) : null
+      })));
+    },
+    async setWebhook(url) {
+      return request(
+        `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
+        invite,
+        { method: "PATCH", participantId, body: { webhook_url: url } }
+      );
+    },
+    async board() {
+      return request(invite.api.board, invite);
+    },
+    async setBoardKey(key, value, options = {}) {
+      return request(
+        boardKeyUrl(invite.room_url, key, options.ifVersion),
+        invite,
+        { method: "PUT", participantId, body: value }
+      );
+    },
+    async patchBoard(values, options = {}) {
+      const url = options.ifVersions ? `${invite.api.board}?if_versions=${encodeURIComponent(JSON.stringify(options.ifVersions))}` : invite.api.board;
+      return request(
+        url,
+        invite,
+        { method: "PATCH", participantId, body: values }
+      );
+    },
+    async deleteBoardKey(key, options = {}) {
+      return request(
+        boardKeyUrl(invite.room_url, key, options.ifVersion),
+        invite,
+        { method: "DELETE", participantId }
+      );
+    },
+    async status() {
+      return request(invite.api.status, invite);
+    },
+    async leave(options = {}) {
+      await request(`${invite.room_url}/participants/${encodeURIComponent(participantId)}${options.release ? "?release=true" : ""}`, invite, {
+        method: "DELETE",
+        participantId
+      });
+    },
+    async kick(targetId) {
+      return request(
+        `${invite.room_url}/participants/${encodeURIComponent(targetId)}`,
+        invite,
+        { method: "DELETE", participantId }
+      );
+    },
+    async close() {
+      return request(invite.room_url, invite, {
+        method: "DELETE",
+        participantId
+      });
+    },
+    async transition(event) {
+      return request(
+        `${invite.room_url}/transition`,
+        invite,
+        { method: "POST", participantId, body: { event } }
+      );
+    },
+    async transferHost(to) {
+      return request(`${invite.room_url}/host`, invite, { method: "POST", participantId, body: { to } });
+    },
+    async extend(options = {}) {
+      return request(
+        invite.api.extend ?? `${invite.room_url}/extend`,
+        invite,
+        { method: "POST", participantId, body: options.extendMs === void 0 ? {} : { extend_ms: options.extendMs } }
+      );
+    },
+    async export() {
+      return request(`${invite.room_url}/export`, invite, { participantId });
+    }
+  };
+  return client;
+}
+
+// packages/sdk/src/sdk.ts
+async function joinRoom(inviteInput, participantId, opts = {}, existingSession) {
+  const invite = normalizeInvite(inviteInput);
+  const { workspace: workspace2, ...profile } = opts;
+  const cryptoSession = existingSession ?? await createSdkCryptoSession(participantId);
+  const publicKeyBody = await cryptoSession.announceKeyBody();
+  const join = await request(
+    `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
+    invite,
+    {
+      method: "PUT",
+      body: {
+        ...profile,
+        public_key: publicKeyBody.public_key,
+        // Sealed with the room key: the server only stores ciphertext.
+        ...workspace2 ? { workspace: await sealForRoom(workspace2, invite.join_secret, invite.room_id) } : {}
+      }
+    }
+  );
+  if (join.peers && join.peers.length > 0) {
+    await cryptoSession.processPeerKeys(join.peers);
+  }
+  const roomInvite = { ...invite, participant_token: join.participant_token };
+  const room = await buildRoomClient(roomInvite, participantId, join.cursor, cryptoSession);
+  await room.announceKey();
+  return room;
+}
+async function resumeRoom(invite, participantId, cryptoSession) {
+  return buildRoomClient(normalizeInvite(invite), participantId, 0, cryptoSession);
+}
+
+// packages/helper/src/cli.ts
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
+var args = process.argv.slice(2).filter((arg, i) => i !== 0 || arg !== "--");
+var cmd = args[0];
+var output = (value) => console.log(JSON.stringify(value, null, 2));
+var names = (value) => String(value || "").split(",").map((v) => v.trim()).filter(Boolean);
+var base = (process.env.BASE_URL || "https://j01n.me").replace(/\/$/, "");
+var safe = (value) => value.replace(/[^a-zA-Z0-9_-]/g, "_");
+var activeDir = ".j01n-rooms";
+var activePath = (url, me) => `${activeDir}/${createHash("sha256").update(url + "\0" + me).digest("hex")}.json`;
+var isUrl = (value) => !!value && /^https?:/.test(value);
+var git = (...argv) => {
+  try {
+    return execFileSync("git", argv, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
+  } catch {
+    return void 0;
+  }
+};
+var repo = () => {
+  const root = git("rev-parse", "--show-toplevel") || process.cwd();
+  return { root, id: git("remote", "get-url", "origin")?.replace(/\/\/[^@/]+@/, "//") || root };
+};
+var workspace = () => ({ path: process.cwd(), ...git("remote", "get-url", "origin") ? { repo: git("remote", "get-url", "origin").replace(/\/\/[^@/]+@/, "//") } : {}, ...git("branch", "--show-current") ? { branch: git("branch", "--show-current") } : {} });
+var modelProfile = (rest) => {
+  const flag = (name) => {
+    const i = rest.indexOf(name);
+    return i >= 0 && rest[i + 1] && !rest[i + 1].startsWith("--") ? rest[i + 1] : void 0;
+  };
+  return { ...flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL ? { model: flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL } : {}, ...flag("--provider") || process.env.J01N_PROVIDER ? { provider: flag("--provider") || process.env.J01N_PROVIDER } : {} };
+};
+var parseBody = (text) => {
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object") return parsed;
+  } catch {
+  }
+  return { text };
+};
+var withReplies = (messages) => messages.map((m) => m.from === "system" || m.intent === "key.exchange" ? m : { ...m, reply: `node .j01n/j01n.js send ${m.from} <text> --reply-to ${m.id}` });
+async function isRoomRef(ref) {
+  if (!ref) return false;
+  if (ref.trim().startsWith("{")) return true;
+  try {
+    const v = JSON.parse(await fs.readFile(ref, "utf8"));
+    return v && typeof v === "object" && ["access", "room_url", "join_secret", "participant_token"].some((k) => k in v);
+  } catch {
+    return false;
   }
 }
-async function resolveRoomArgs(args) {
-  if (usesEnvRoom(args)) return envRoomArgs(args);
-  const link = parseInviteLink(args[1]);
-  if (link) return { roomUrl: link.access, joinSecret: link.join_secret, me: args[2], rest: args.slice(3) };
-  if (isRoomUrl(args[1])) return urlRoomArgs(args);
-  if (args[1] && await isRoomRef(args[1])) return inviteRoomArgs(args);
-  // No room given: use the single room joined from this directory (send claude-code hi, wait, read).
-  // The participant token comes from that room's key file, never from the active-room entry.
-  const rooms = await activeRooms();
-  if (rooms.length > 1) die('several rooms are active in this directory; pass the room link or participant profile');
-  if (rooms.length === 1) return { roomUrl: rooms[0].room_url, joinSecret: 'resume-only', me: rooms[0].participant_id, rest: args.slice(1) };
-  if (args[1]) return inviteRoomArgs(args);
-  return envRoomArgs(args);
-}
-// A file names a room only if it holds an invitation or participant profile, not just because it exists (reserve src/x.ts).
-async function isRoomRef(value) {
-  if (value.trim().startsWith('{')) return true;
-  try { const v = JSON.parse(await fs.readFile(value, 'utf8')); return !!v && typeof v === 'object' && ['access', 'room_url', 'join_secret', 'participant_token'].some((k) => k in v); } catch { return false; }
-}
-function activeRoomPath(url, id) { return ACTIVE_ROOMS_DIR + '/' + createHash('sha256').update(url + '\0' + id).digest('hex') + '.json'; }
 async function activeRooms() {
-  let names = [];
-  try { names = await fs.readdir(ACTIVE_ROOMS_DIR); } catch { return []; }
+  const files = await fs.readdir(activeDir).catch(() => []);
   const rooms = [];
-  for (const name of names.filter((n) => /^[0-9a-f]{64}\.json$/.test(n))) {
-    const room = JSON.parse(await fs.readFile(ACTIVE_ROOMS_DIR + '/' + name, 'utf8'));
-    if (typeof room.room_url !== 'string' || typeof room.participant_id !== 'string' || activeRoomPath(room.room_url, room.participant_id) !== ACTIVE_ROOMS_DIR + '/' + name) die('invalid active-room file ' + name + '; rejoin with the room link');
+  for (const file of files.filter((n) => /^[0-9a-f]{64}\.json$/.test(n))) {
+    const room = JSON.parse(await fs.readFile(`${activeDir}/${file}`, "utf8"));
+    if (typeof room.room_url !== "string" || typeof room.participant_id !== "string" || activePath(room.room_url, room.participant_id) !== `${activeDir}/${file}`) throw Error(`invalid active-room file ${file}; rejoin with the room link`);
     rooms.push(room);
   }
   return rooms;
 }
-async function rememberRoom() {
-  await fs.mkdir(ACTIVE_ROOMS_DIR, { recursive: true, mode: 0o700 });
-  const target = activeRoomPath(roomUrl, me);
-  await fs.writeFile(target + '.' + process.pid + '.tmp', JSON.stringify({ room_url: roomUrl, participant_id: me }), { mode: 0o600 });
-  await fs.rename(target + '.' + process.pid + '.tmp', target);
+async function remember(url, me) {
+  await fs.mkdir(activeDir, { recursive: true, mode: 448 });
+  const path = activePath(url, me);
+  await fs.writeFile(`${path}.${process.pid}.tmp`, JSON.stringify({ room_url: url, participant_id: me }), { mode: 384 });
+  await fs.rename(`${path}.${process.pid}.tmp`, path);
 }
-function usesEnvRoom(args) { return hasEnvRoom() && isEnvShape(args[0], args.length); }
-function hasEnvRoom() { return process.env.ROOM_URL && (process.env.PARTICIPANT_TOKEN || process.env.JOIN_SECRET) && process.env.ME; }
-function isEnvShape(command, argc) { return (command === 'send' && argc <= 3) || (['join', 'read', 'team', 'inbox', 'watch', 'doctor'].includes(command) && argc === 1); }
-function isRoomUrl(value) { return value && /^https?:/.test(value); }
-// One-line room link: https://j01n.me/room/<id>#<join_secret>
-function parseInviteLink(value) { const m = /^(https?:\/\/[^/\s]+)\/room\/([^/#?\s]+)#(\S+)$/.exec(String(value || '').trim()); return m ? { access: m[1] + '/r/' + m[2], join_secret: m[3] } : undefined; }
-function envRoomArgs(args) { return { roomUrl: process.env.ROOM_URL, joinSecret: process.env.PARTICIPANT_TOKEN || process.env.JOIN_SECRET, participantToken: process.env.PARTICIPANT_TOKEN, me: process.env.ME, rest: args.slice(1) }; }
-function urlRoomArgs(args) { return { roomUrl: args[1], joinSecret: args[2], participantToken: cmd === 'join' ? undefined : args[2], me: args[3], rest: args.slice(4) }; }
-async function inviteRoomArgs(args) {
-  const invite = await loadInvite(args[1]);
-  const roomUrl = inviteUrl(invite);
-  if (!roomUrl) die('profile must include access');
-  if (invite.participant_token) return { roomUrl, joinSecret: invite.participant_token, participantToken: invite.participant_token, me: invite.participant_id || invite.me, rest: args.slice(2) };
-  if (!invite.join_secret) die('invite must include access and join_secret');
-  return { roomUrl, joinSecret: invite.join_secret, me: args[2], rest: args.slice(3) };
-}
-async function loadInvite(ref) {
-  const invite = JSON.parse(await inviteText(ref));
-  const roomUrl = inviteUrl(invite);
-  return { ...invite, access: roomUrl, room_url: roomUrl };
-}
-async function inviteText(ref) { return ref.trim().startsWith('{') ? ref : fs.readFile(ref, 'utf8'); }
-function inviteUrl(invite) { return invite.access || invite.follow || invite.room_url; }
-function b64u(bytes) { return Buffer.from(bytes).toString('base64').replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', ''); }
-function unb64u(value) { return new Uint8Array(Buffer.from(value.replaceAll('-', '+').replaceAll('_', '/'), 'base64')); }
-async function aesEncrypt(key, text) { const iv = crypto.getRandomValues(new Uint8Array(12)); const ciphertext = await subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(text)); return { ciphertext: b64u(new Uint8Array(ciphertext)), iv: b64u(iv) }; }
-async function aesDecryptBytes(key, ciphertext, iv) { return subtle.decrypt({ name: 'AES-GCM', iv: unb64u(iv) }, key, unb64u(ciphertext)); }
-async function aesDecrypt(key, ciphertext, iv) { return dec.decode(await aesDecryptBytes(key, ciphertext, iv)); }
-async function makeKeys() { return subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']); }
-async function exportPublic(key) { return b64u(new Uint8Array(await subtle.exportKey('raw', key))); }
-async function importPublic(raw) { if (typeof raw === 'object' && raw !== null) return subtle.importKey('jwk', raw, { name: 'ECDH', namedCurve: 'P-256' }, true, []); return subtle.importKey('raw', unb64u(raw), { name: 'ECDH', namedCurve: 'P-256' }, true, []); }
-async function derive(privateKey, publicKey) { return subtle.deriveKey({ name: 'ECDH', public: publicKey }, privateKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']); }
-async function loadState() {
-  try {
-    const state = JSON.parse(await fs.readFile(keyFile, 'utf8'));
-    return { ...state, peers: state.peers ?? {}, created: false, keyPair: { privateKey: await subtle.importKey('jwk', state.privateJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']), publicKey: await subtle.importKey('jwk', state.publicJwk, { name: 'ECDH', namedCurve: 'P-256' }, true, []) } };
-  } catch {
-    const keyPair = await makeKeys();
-    const state = { privateJwk: await subtle.exportKey('jwk', keyPair.privateKey), publicJwk: await subtle.exportKey('jwk', keyPair.publicKey), peers: {}, created: true, keyPair };
-    await saveState(state);
-    return state;
+async function resolveRoom() {
+  const env = process.env;
+  const envRoom = env.ROOM_URL && (env.PARTICIPANT_TOKEN || env.JOIN_SECRET) && env.ME;
+  if (envRoom && (cmd === "send" && args.length <= 3 || ["join", "read", "team", "inbox", "watch", "doctor"].includes(cmd || "") && args.length === 1)) return { roomUrl: env.ROOM_URL, secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET, token: env.PARTICIPANT_TOKEN, me: env.ME, rest: args.slice(1) };
+  const link = parseInviteLink(args[1] || "");
+  if (link) return { roomUrl: link.access, secret: link.join_secret, me: args[2], rest: args.slice(3) };
+  if (isUrl(args[1])) return { roomUrl: args[1], secret: args[2], token: cmd === "join" ? void 0 : args[2], me: args[3], rest: args.slice(4) };
+  if (await isRoomRef(args[1])) {
+    const ref = args[1].trim().startsWith("{") ? args[1] : await fs.readFile(args[1], "utf8");
+    const invite = JSON.parse(ref);
+    const roomUrl = invite.access || invite.follow || invite.room_url;
+    if (!roomUrl) throw Error("profile must include access");
+    if (invite.participant_token) return { roomUrl, secret: invite.participant_token, token: invite.participant_token, me: invite.participant_id || invite.me, rest: args.slice(2) };
+    if (!invite.join_secret) throw Error("invite must include access and join_secret");
+    return { roomUrl, secret: invite.join_secret, me: args[2], rest: args.slice(3) };
   }
+  const rooms = await activeRooms();
+  if (rooms.length > 1) throw Error("several rooms are active in this directory; pass the room link or participant profile");
+  if (rooms.length) return { roomUrl: rooms[0].room_url, secret: "resume-only", me: rooms[0].participant_id, rest: args.slice(1) };
+  if (args[1]) throw Error(`ENOENT: cannot read invitation ${args[1]}`);
+  return { roomUrl: env.ROOM_URL || "", secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET || "", token: env.PARTICIPANT_TOKEN, me: env.ME || "", rest: args.slice(1) };
 }
-async function saveState(state) { await fs.writeFile(keyFile, JSON.stringify({ privateJwk: state.privateJwk, publicJwk: state.publicJwk, peers: state.peers, participantToken: state.participantToken, joinSecret: state.joinSecret, announcedKey: state.announcedKey, roomUrl }, null, 2), { mode: 0o600 }); }
-function tokenHeaders(state) { return state.participantToken ? { authorization: 'Bearer ' + state.participantToken } : headers; }
-function requireParticipantToken(state) { if (!state.participantToken) die('participant token missing; run join first'); return state.participantToken; }
-async function requestJson(url, init = {}) {
-  const r = await fetch(url, { ...init, headers: { ...(init.headers || {}), 'x-j01n-client': 'helper/' + CLIENT_PROTOCOL } });
-  const notice = r.headers.get('x-j01n-client-update');
-  if (notice) clientUpdateNotice = notice;
-  if (notice && !updateNoticeShown) { updateNoticeShown = true; console.error('note: ' + notice); }
-  const text = await r.text(); let body; try { body = text ? JSON.parse(text) : {}; } catch { body = text; }
-  return { ok: r.ok, status: r.status, body };
-}
-// Announce each key once: repeat announcements only add noise (and webhook/wait wake-ups) for everyone else.
-async function announce(state) {
-  const publicKey = await exportPublic(state.keyPair.publicKey);
-  if (state.announcedKey === publicKey) return;
-  await post({ to: 'all', intent: 'key.exchange', body: { public_key: publicKey } });
-  state.announcedKey = publicKey;
-  await saveState(state);
-}
-// A JSON object is sent as is; anything else is sent as { text }.
-function parseMessageBody(raw) { try { const value = JSON.parse(raw); if (value && typeof value === 'object') return value; } catch {} return { text: raw }; }
-async function post(payload) { const r = await requestJson(roomUrl, { method: 'POST', headers: { ...tokenHeaders(currentState), 'content-type': 'application/json' }, body: JSON.stringify(payload) }); if (!r.ok) die(formatErrorBody(r.body)); return r.body; }
-// Peer keys from the participant list (does not move the read cursor, unlike reading the history).
-async function learnPeersFromParticipants(state) {
-  const r = await requestJson(roomUrl + '/participants', { headers: tokenHeaders(state) });
-  for (const p of (r.ok ? r.body.participants || [] : [])) if (p.id !== me && p.public_key) state.peers[p.id] = p.public_key;
-  await saveState(state);
-}
-async function syncKeys(state) {
-  const messages = await readAllMessages();
-  rememberPeerKeys(state, messages);
-  await saveState(state);
-  return messages;
-}
-async function readAllMessages() {
-  const r = await requestJson(roomUrl + '/?view=all&include_self=true', { headers: tokenHeaders(currentState) });
-  if (!r.ok) die(formatErrorBody(r.body));
-  return r.body.messages || [];
-}
-function rememberPeerKeys(state, messages) {
-  for (const m of messages.filter(isPeerKeyExchange)) state.peers[m.from] = m.body.public_key;
-}
-function isPeerKeyExchange(m) { return m.intent === 'key.exchange' && m.from !== me && m.body?.public_key; }
-function formatErrorBody(body) { return typeof body === 'string' ? body : JSON.stringify(body, null, 2); }
-async function shared(state, id) { const raw = id === me ? await exportPublic(state.keyPair.publicKey) : state.peers[id]; if (!raw) die('no public key for ' + id + '; ask them to join/announce, then run read or send again'); return derive(state.keyPair.privateKey, await importPublic(raw)); }
-async function wrapKey(messageKey, sharedKey) { const raw = await subtle.exportKey('raw', messageKey); const iv = crypto.getRandomValues(new Uint8Array(12)); const encrypted = await subtle.encrypt({ name: 'AES-GCM', iv }, sharedKey, raw); return { encrypted_key: b64u(new Uint8Array(encrypted)), iv: b64u(iv) }; }
-async function encryptBody(state, recipient, body) {
-  const recipients = recipientIds(recipient, state);
-  const plaintext = JSON.stringify(body);
-  if (canUseDirectEncryption(recipient, recipients)) return directEncryptedBody(state, recipients[0], plaintext);
-  return groupEncryptedBody(state, recipients, plaintext);
-}
-function recipientIds(recipient, state) { return recipient === 'all' ? Object.keys(state.peers) : [recipient]; }
-// A broadcast always wraps per-recipient keys, even when only one other participant is in the room.
-function canUseDirectEncryption(recipient, recipients) { return recipient !== 'all' && recipients.length === 1 && recipients[0] !== me; }
-async function directEncryptedBody(state, recipient, plaintext) { return { encrypted: true, ...await aesEncrypt(await shared(state, recipient), plaintext) }; }
-async function groupEncryptedBody(state, recipients, plaintext) {
-  const messageKey = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
-  const encrypted = await aesEncrypt(messageKey, plaintext);
-  return { encrypted: true, ...encrypted, keys: await wrappedKeys(state, recipients, messageKey) };
-}
-async function wrappedKeys(state, recipients, messageKey) {
-  const keys = {};
-  for (const id of new Set([...recipients, me])) keys[id] = await wrapKey(messageKey, await shared(state, id));
-  return keys;
-}
-// Room seals: AES-GCM with a key derived (HKDF) from the join secret, so invite holders can read them and the
-// server cannot. Opening needs the room link or invitation, not just a participant profile.
-async function kickoffKey() {
-  const material = await subtle.importKey('raw', enc.encode(joinSecret), 'HKDF', false, ['deriveKey']);
-  return subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode(new URL(roomUrl).pathname.split('/').pop()), info: enc.encode('j01n.me kickoff v1') }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-}
-function isSealedKickoff(body) { return typeof body?.encrypted_payload === 'string' && body.encrypted_payload.startsWith('jsk1:'); }
-async function openRoomSeal(sealed) { const [iv, ciphertext] = sealed.slice(5).split('.'); return JSON.parse(await aesDecrypt(await kickoffKey(), ciphertext, iv)); }
-// Workspaces (where each agent works) are sealed with the same room key, so the server only stores ciphertext.
-async function sealForRoom(value) { const { iv, ciphertext } = await aesEncrypt(await kickoffKey(), JSON.stringify(value)); return 'jsk1:' + iv + '.' + ciphertext; }
-// Which model this agent runs, and under which provider. Zero-config announcement:
-// explicit --model/--provider flags, then J01N_MODEL/J01N_PROVIDER, then the harness's own env conventions.
-function announceModel(rest) {
-  const ev = process.env;
-  const harnessModel = ev.ANTHROPIC_MODEL || ev.OPENAI_MODEL || ev.PI_MODEL || ev.OPENCLAW_MODEL;
-  const mi = rest.indexOf('--model');
-  const pi = rest.indexOf('--provider');
-  const fromFlag = (name) => { const i = rest.indexOf(name); return i >= 0 && rest[i + 1] && !rest[i + 1].startsWith('--') ? rest[i + 1] : undefined; };
-  const model = fromFlag('--model') || ev.J01N_MODEL || harnessModel;
-  const provider = fromFlag('--provider') || ev.J01N_PROVIDER;
-  return { ...(model ? { model } : {}), ...(provider ? { provider } : {}) };
-}
-
-async function detectWorkspace() {
-  const { execFileSync } = await import('node:child_process');
-  const git = (...args) => { try { return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined; } catch { return undefined; } };
-  const repo = git('remote', 'get-url', 'origin')?.replace(/\/\/[^@/]+@/, '//'); // never announce user:token@
-  const branch = git('branch', '--show-current');
-  return { path: process.cwd(), ...(repo ? { repo } : {}), ...(branch ? { branch } : {}) };
-}
-// File reservations (board key "reservations"): { id: { by, since, sealed } }, sealed = { repo, paths, reason } with
-// the room key. Paths are relative to the repo root; a path covers everything under it.
-async function currentRepo() {
-  const { execFileSync } = await import('node:child_process');
-  const git = (...args) => { try { return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined; } catch { return undefined; } };
-  const root = git('rev-parse', '--show-toplevel') || process.cwd();
-  return { root, repo: git('remote', 'get-url', 'origin')?.replace(/\/\/[^@/]+@/, '//') || root };
-}
-async function repoPath(root, path) { const { relative, resolve } = await import('node:path'); return relative(root, resolve(path)) || '.'; }
-function pathsOverlap(a, b) {
-  const [x, y] = [a, b].map((p) => p.replace(/^\.\//, '').replace(/\/+$/, ''));
-  return x === y || x === '' || y === '' || x.startsWith(y + '/') || y.startsWith(x + '/');
-}
-async function loadReservations(state) {
-  const r = await requestJson(roomUrl + '/board', { headers: tokenHeaders(state) });
-  if (!r.ok) die(formatErrorBody(r.body));
-  const entry = r.body.board?.reservations;
-  const stored = entry?.value && typeof entry.value === 'object' ? entry.value : {};
-  const list = await Promise.all(Object.entries(stored).map(async ([id, s]) => {
-    const o = await openRoomSeal(s.sealed).catch(() => null);
-    return { id, by: s.by, since: s.since, repo: o?.repo ?? '', paths: o?.paths ?? [], ...(o?.reason ? { reason: o.reason } : {}) };
+async function agents() {
+  const me = args[1];
+  const rest = args.slice(2);
+  if (!me) throw Error("usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]");
+  const file = `.j01n-agent-${safe(me)}.json`;
+  if (cmd === "register") {
+    const identity2 = await registerAgent(base, me, names(rest[0]));
+    await fs.writeFile(file, JSON.stringify(identity2, null, 2), { mode: 384 });
+    output({ ok: true, address: `${base}/a/${me}`, accept_from: names(rest[0]), identity_file: file });
+    return;
+  }
+  const identity = JSON.parse(await fs.readFile(file, "utf8").catch(() => {
+    throw Error(`no agent identity ${file}; run: register ${me} [allowed,agents]`);
   }));
-  return { stored, version: entry?.version ?? 0, list };
-}
-// Write only if nobody changed the board since we read it (if_version); on a race, read again and retry.
-async function updateReservations(state, change) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const current = await loadReservations(state);
-    const next = await change(current);
-    if (next === null) return current.list;
-    const w = await requestJson(roomUrl + '/board/reservations?if_version=' + current.version, { method: 'PUT', headers: { ...tokenHeaders(state), 'content-type': 'application/json' }, body: JSON.stringify(next) });
-    if (w.ok) return (await loadReservations(state)).list;
-    if (w.status !== 409) die(formatErrorBody(w.body));
+  if (cmd === "allow") output(await setAcceptFrom(identity, names(rest[0])));
+  if (cmd === "invite") {
+    if (!rest[0] || !rest[1]) throw Error("invite needs: <me> <to> <room link>");
+    output(await inviteAgent(identity, rest[0], rest[1]));
   }
-  die('reservations kept changing; try again');
-}
-function pathsAndReason(args) { const at = args.indexOf('--reason'); return { paths: at >= 0 ? args.slice(0, at) : args, reason: at >= 0 ? args.slice(at + 1).join(' ') || undefined : undefined }; }
-// A ready command to answer a message in its thread (closes it if it asked for a reply).
-function withReplyHints(messages) { return messages.map((m) => (m.from === 'system' || m.intent === 'key.exchange' ? m : { ...m, reply: 'node .j01n/j01n.js send ' + m.from + ' <text> --reply-to ' + m.id })); }
-// Everyone in the room: capabilities and opened workspace (null when it cannot be opened).
-async function team(state) {
-  const r = await requestJson(roomUrl + '/participants', { headers: tokenHeaders(state) });
-  if (!r.ok) return [];
-  return Promise.all((r.body.participants || []).filter((p) => !p.left_at).map(async (p) => ({
-    id: p.id, state: p.state, status: p.status, last_seen_at: p.last_seen_at, capabilities: p.capabilities || [],
-    ...(p.model ? { model: p.model } : {}), ...(p.provider ? { provider: p.provider } : {}),
-    workspace: p.workspace ? await openRoomSeal(p.workspace).catch(() => null) : null,
-  })));
-}
-async function decryptedMessages(state, messages) {
-  const out = [];
-  for (const m of messages) {
-    if (isSealedKickoff(m.body)) {
-      const kickoff = await openRoomSeal(m.body.encrypted_payload).catch(() => undefined);
-      out.push(kickoff === undefined ? { ...m, decrypt_error: 'sealed kickoff: open it with the room link or invitation (join secret)' } : { ...m, body: kickoff });
-      continue;
+  if (cmd === "invites") {
+    const response = await fetch(`${identity.base}/a/${encodeURIComponent(me)}/invites`, { headers: { authorization: `Bearer ${identity.agentToken}` } });
+    if (!response.ok) throw Error(await response.text());
+    const result = await response.json();
+    output((result.invites || []).map(({ id, from, created_at }) => ({ id, from, created_at })));
+  }
+  if (cmd === "listen") {
+    const pending = await waitForInvites(identity, Number(rest[0]) || 50);
+    if (!pending.length) {
+      output({ timeout: true });
+      return;
     }
-    // A profile.changed announcement carries the new workspace sealed with the room key.
-    if (m.intent === 'profile.changed' && typeof m.body?.workspace === 'string') {
-      out.push({ ...m, body: { ...m.body, workspace: await openRoomSeal(m.body.workspace).catch(() => null) } });
-      continue;
+    const invite = pending[0];
+    await deleteInvite(identity, invite.id);
+    const joined = JSON.parse(execFileSync(process.execPath, [process.argv[1], "join", invite.room_link, me], { encoding: "utf8", env: process.env }));
+    output({ invited_by: invite.from, ...joined });
+  }
+}
+async function main() {
+  if (cmd === "create") {
+    const url = isUrl(args[1]) ? args[1] : base;
+    const options = (isUrl(args[1]) ? args[2] : args[1]) || "{}";
+    const response = await fetch(`${url.replace(/\/$/, "")}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(JSON.parse(options)) });
+    const text = await response.text();
+    if (!response.ok) throw Error(text);
+    console.log(text);
+    return;
+  }
+  if (["register", "allow", "invite", "invites", "listen"].includes(cmd || "")) {
+    await agents();
+    return;
+  }
+  const { roomUrl, secret, me, rest, token } = await resolveRoom();
+  if (!cmd || !roomUrl || !secret || !me) throw Error("usage: j01n <create|join|send|read|team|watch|doctor> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.");
+  const keyFile = `.j01n-${safe(new URL(roomUrl).pathname)}-${safe(me)}.json`;
+  let state;
+  try {
+    state = JSON.parse(await fs.readFile(keyFile, "utf8"));
+  } catch {
+    state = { ...await createSdkCryptoSession(me).then((s) => s.exportKeyPair()), peers: {}, created: true };
+  }
+  const created = !!state.created;
+  const session = await createSdkCryptoSession(me, state.privateJwk, state.publicJwk);
+  const roomSecret = secret === "resume-only" ? state.joinSecret || secret : secret;
+  const invite = buildMinimalInvite(roomUrl, roomSecret);
+  invite.participant_token = token || state.participantToken;
+  const save = async () => fs.writeFile(keyFile, JSON.stringify({ privateJwk: state.privateJwk, publicJwk: state.publicJwk, peers: state.peers || {}, participantToken: state.participantToken, joinSecret: state.joinSecret, announcedKey: state.announcedKey, roomUrl }, null, 2), { mode: 384 });
+  if (created) await save();
+  let client;
+  if (cmd === "join") {
+    try {
+      client = await joinRoom(invite, me, {}, session);
+      state.announcedKey = (await session.announceKeyBody()).public_key;
+    } catch (error) {
+      if (!(error instanceof RoomApiError && error.status === 409)) throw error;
+      client = await resumeRoom(invite, me, session);
+      if (!state.announcedKey) {
+        await client.announceKey();
+        state.announcedKey = (await session.announceKeyBody()).public_key;
+      }
     }
-    const body = await decryptBody(state, m);
-    out.push(body?.encrypted ? { ...m, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" } : { ...m, body });
-  }
-  return out;
-}
-async function decryptBody(state, msg) {
-  const b = msg.body;
-  if (!b?.encrypted) return b;
-  try { return JSON.parse(await decryptEncryptedBody(state, msg)); }
-  catch { return b; }
-}
-async function decryptEncryptedBody(state, msg) {
-  const b = msg.body;
-  if (!b.keys?.[me]) return aesDecrypt(await shared(state, msg.from), b.ciphertext, b.iv);
-  const key = await unwrapMessageKey(state, msg.from, b.keys[me]);
-  return aesDecrypt(key, b.ciphertext, b.iv);
-}
-async function unwrapMessageKey(state, from, wrapped) {
-  const keyRaw = await aesDecryptBytes(await shared(state, from), wrapped.encrypted_key, wrapped.iv);
-  return subtle.importKey('raw', keyRaw, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-}
-async function joined() {
-  if (!currentState.participantToken) return { ok: false, status: 0, participants: [] };
-  const r = await requestJson(roomUrl + '/participants', { headers: tokenHeaders(currentState) });
-  if (!r.ok) return { ok: false, status: r.status, participants: [] };
-  const participants = r.body.participants || [];
-  return { ok: participants.some((p) => p.id === me), status: r.status, participants };
-}
-async function doctorMessages(state, joinedOk) {
-  if (!joinedOk) return [];
-  await announce(state).catch(() => undefined);
-  return syncKeys(state);
-}
-async function encryptedStats(state, messages) {
-  const stats = { encrypted: 0, decryptable: 0 };
-  for (const m of messages.filter((msg) => msg.body?.encrypted)) {
-    stats.encrypted++;
-    const decrypted = await decryptBody(state, m);
-    if (!decrypted?.encrypted) stats.decryptable++;
-  }
-  return stats;
-}
-function messagesAfterSeq(messages, lastSeq) { return messages.filter((m) => Number(m.seq || 0) > lastSeq); }
-async function printNewMessages(state, lastSeq, event = 'message') {
-  const messages = await syncKeys(state);
-  const fresh = messagesAfterSeq(messages, lastSeq);
-  const nextSeq = Math.max(lastSeq, ...messages.map((m) => Number(m.seq || 0)));
-  if (fresh.length > 0) console.log(JSON.stringify({ event, messages: await decryptedMessages(state, fresh) }, null, 2));
-  return nextSeq;
-}
-async function printStreamedMessage(state, currentSeq, payload) {
-  const msg = payload?.message;
-  if (!msg) return printNewMessages(state, currentSeq);
-  rememberPeerKeys(state, [msg]);
-  await saveState(state);
-  const nextSeq = Math.max(currentSeq, Number(payload.last_seq || msg.seq || 0));
-  if (Number(msg.seq || 0) > currentSeq) console.log(JSON.stringify({ event: 'message', messages: await decryptedMessages(state, [msg]) }, null, 2));
-  return nextSeq;
-}
-async function watchRoom(state, lastSeq) {
-  let currentSeq = await printNewMessages(state, lastSeq, 'initial');
-  const eventsUrl = roomUrl.replace(/\/$/, '') + '/events?s=' + encodeURIComponent(requireParticipantToken(state)) + '&include_self=true';
-  const r = await fetch(eventsUrl, { headers: { accept: 'text/event-stream' } });
-  if (!r.ok || !r.body) die('watch failed: ' + r.status + ' ' + await r.text());
-  console.error('watching ' + roomUrl + ' as ' + me + '...');
-  for await (const event of sseEvents(r.body)) {
-    if (event.event === 'ping' || event.event === 'ready') continue;
-    if (event.event === 'message') currentSeq = await printStreamedMessage(state, currentSeq, event.data);
-    else if (event.event === 'changed') currentSeq = await printNewMessages(state, currentSeq);
-    else console.log(JSON.stringify(event, null, 2));
-  }
-}
-async function* sseEvents(body) {
-  let buffer = '';
-  for await (const chunk of body) {
-    buffer += dec.decode(chunk, { stream: true });
-    let idx;
-    while ((idx = buffer.indexOf('\n\n')) >= 0) {
-      const raw = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      const event = parseSseEvent(raw);
-      if (event) yield event;
+    state.participantToken = client.invite.participant_token || state.participantToken;
+    state.joinSecret = secret;
+    await save();
+  } else client = await resumeRoom(invite, me, session);
+  const announce = async () => {
+    const key = (await session.announceKeyBody()).public_key;
+    if (state.announcedKey !== key) {
+      await client.announceKey();
+      state.announcedKey = key;
+      await save();
     }
-  }
-}
-function parseSseEvent(raw) {
-  let event = 'message';
-  const data = [];
-  for (const line of raw.split(/\r?\n/)) {
-    if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
-  }
-  if (data.length === 0) return { event, data: undefined };
-  const text = data.join('\n');
-  try { return { event, data: JSON.parse(text) }; }
-  catch { return { event, data: text }; }
-}
-function doctorReport(state, joinedResult, messages, stats, openQuestions, openQuestionsError) {
-  return {
-    ok: joinedResult.ok,
-    client_protocol: CLIENT_PROTOCOL,
-    ...(clientUpdateNotice ? { client_update: clientUpdateNotice } : {}),
-    open_questions: openQuestions,
-    ...(openQuestionsError ? { open_questions_error: openQuestionsError } : {}),
-    participant_id: me,
-    joined: joinedResult.ok,
-    key_file: keyFile,
-    local_key_created: state.created,
-    key_announced: messages.some((m) => m.from === me && m.intent === 'key.exchange'),
-    known_peers: Object.keys(state.peers),
-    encrypted_messages_seen: stats.encrypted,
-    encrypted_messages_decryptable: stats.decryptable,
-    key_note: 'Reuse this key file from the same directory to retain your ECDH keypair across sessions: ' + keyFile,
   };
-}
-
-// Block until the next event this participant can see (or the timeout), then return the new messages, decrypted.
-async function waitForEvent(state, timeout, filter = '') {
-  const r = await requestJson(roomUrl + '/wait?timeout=' + timeout + filter, { headers: { authorization: 'Bearer ' + requireParticipantToken(state) } });
-  if (!r.ok) die(formatErrorBody(r.body));
-  if (r.body.timeout) return { timeout: true };
-  // Unread first (this also marks them read), then sync peer keys to decrypt them.
-  const unread = await requestJson(roomUrl, { headers: tokenHeaders(state) });
-  if (!unread.ok) die(formatErrorBody(unread.body));
-  await syncKeys(state);
-  return { woke: r.body.event, ...(r.body.changes ? { board: r.body.changes } : {}), messages: withReplyHints(await decryptedMessages(state, unread.body.messages || [])) };
-}
-
-/**
- * Command dispatch: each handler receives (state, roomUrl, joinSecret, me, rest, headers, keyFile).
- */
-const COMMANDS = {
-  async join(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
-    const r = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PUT', headers: { authorization: 'Bearer ' + joinSecret, 'content-type': 'application/json' }, body: JSON.stringify({ public_key: await exportPublic(state.keyPair.publicKey), state: 'free', status: 'joined with encrypted tiny client' }) });
-    if (!r.ok && r.status !== 409) die(formatErrorBody(r.body));
-    if (r.body.participant_token) state.participantToken = r.body.participant_token;
-    state.joinSecret = joinSecret; // lets later short commands open sealed content without the room link
-    await saveState(state);
-    headers = tokenHeaders(state);
-    await announce(state);
-    // Flags: --capabilities code,shell,... and --no-workspace (do not announce where you work).
-    const capIndex = rest.indexOf('--capabilities');
+  const read = async () => withReplies(await client.read({ all: true, includeSelf: true }));
+  const wait = async (timeout, from, board, system) => {
+    const event = await client.wait({ timeoutSeconds: timeout, from, board, system });
+    if (event.timeout) return { timeout: true };
+    const messages = withReplies(await client.read());
+    return { woke: event.event, ...event.changes ? { board: event.changes } : {}, messages };
+  };
+  if (cmd === "join") {
     const announced = {};
-    if (capIndex >= 0) announced.capabilities = String(rest[capIndex + 1] || '').split(',').map((c) => c.trim()).filter(Boolean);
-    // An agent says which model it runs; compare with our own row first so re-joins stay quiet.
-    const wantModel = announceModel(rest);
-    if (Object.keys(wantModel).length || !rest.includes('--no-workspace')) {
-      const mine = (await team(state)).find((p) => p.id === me);
-      for (const field of ['model', 'provider']) {
-        if (wantModel[field] && mine?.[field] !== wantModel[field]) announced[field] = wantModel[field];
-      }
-      if (!rest.includes('--no-workspace')) {
-        const workspace = await detectWorkspace();
-        // Re-joining from the same place announces nothing new (every seal differs, so compare the opened values).
-        if (JSON.stringify(mine?.workspace) !== JSON.stringify(workspace)) announced.workspace = await sealForRoom(workspace);
-      }
-    }
-    if (Object.keys(announced).length) {
-      const p = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PATCH', headers: { ...tokenHeaders(state), 'content-type': 'application/json' }, body: JSON.stringify(announced) });
-      if (!p.ok) die(formatErrorBody(p.body));
-    }
+    const i = rest.indexOf("--capabilities");
+    if (i >= 0) announced.capabilities = names(rest[i + 1]);
+    const mine = (await client.team()).find((p) => p.id === me);
+    const model = modelProfile(rest);
+    if (model.model && model.model !== mine?.model) announced.model = model.model;
+    if (model.provider && model.provider !== mine?.provider) announced.provider = model.provider;
+    if (!rest.includes("--no-workspace") && JSON.stringify(workspace()) !== JSON.stringify(mine?.workspace)) announced.workspace = workspace();
+    if (Object.keys(announced).length) await client.setProfile(announced);
     const profile = { access: roomUrl, participant_id: me, participant_token: state.participantToken, key_file: keyFile };
-    await rememberRoom();
-    // Start oriented: include the board's kickoff (if the board read fails, the join still succeeded).
-    const board = await requestJson(roomUrl + '/board', { headers: tokenHeaders(state) });
-    const kickoff = board.ok ? { kickoff: board.body.board?.kickoff?.value ?? null } : { kickoff: null, kickoff_error: 'could not load the board kickoff; read the board to retry' };
-    if (kickoff.kickoff === null) {
-      const sealed = (await readAllMessages()).find((m) => m.intent === 'kickoff' && isSealedKickoff(m.body));
-      if (sealed) kickoff.kickoff = await openRoomSeal(sealed.body.encrypted_payload).catch(() => null);
+    await remember(roomUrl, me);
+    let board = null;
+    try {
+      board = (await client.board()).board;
+    } catch {
     }
-    // Questions waiting for your reply (read-only; does not mark anything read). Answer with send <from> <text> --reply-to <id>.
-    const asks = await requestJson(roomUrl + '/asks', { headers: tokenHeaders(state) });
-    const pending = asks.ok ? asks.body.asks || [] : [];
-    if (pending.length) await learnPeersFromParticipants(state);
-    const opened = await decryptedMessages(state, pending.map((a) => a.message));
-    const questions = pending.map((a, i) => ({ id: a.ask_id, seq: a.seq, from: a.from, body: opened[i].body, due_at: a.due_at, overdue: a.overdue, ...(opened[i].decrypt_error ? { decrypt_error: opened[i].decrypt_error } : {}) }));
-    // The whole board: every key with value, version, updated_by and updated_at.
-    console.log(JSON.stringify({ ...profile, ...kickoff, board: board.ok ? board.body.board ?? {} : null, questions, team: await team(state) }, null, 2));
-  },
-  async send(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
-    const [to, ...args] = rest;
-    // Flags: --wait (then wait for the next event), --reply-to <message id>, --expect-reply (ask for an answer).
-    const words = [];
-    let andWait = false, replyTo = null, expectsReply = false;
-    for (let i = 0; i < args.length; i++) {
-      if (args[i] === '--wait') andWait = true;
-      else if (args[i] === '--expect-reply') expectsReply = true;
-      else if (args[i] === '--reply-to') replyTo = args[++i];
-      else words.push(args[i]);
+    let kickoff = board?.kickoff?.value ?? null;
+    if (kickoff === null) kickoff = (await client.read({ all: true, includeSelf: true })).find((m) => m.intent === "kickoff")?.body ?? null;
+    output({ ...profile, kickoff, board, questions: await client.openQuestions(), team: await client.team() });
+    return;
+  }
+  if (cmd === "send") {
+    const [to, ...words] = rest;
+    let andWait = false, expectsReply = false, replyTo;
+    const body = [];
+    for (let i = 0; i < words.length; i++) {
+      if (words[i] === "--wait") andWait = true;
+      else if (words[i] === "--expect-reply") expectsReply = true;
+      else if (words[i] === "--reply-to") replyTo = words[++i];
+      else body.push(words[i]);
     }
-    if (!to || words.length === 0) die('send needs: <to> <text or json_body> [--reply-to <id>] [--expect-reply] [--wait]');
-    await syncKeys(state);
-    await announce(state);
-    const sent = await post({ to, body: await encryptBody(state, to, parseMessageBody(words.join(' '))), ...(replyTo ? { reply_to: replyTo } : {}), ...(expectsReply ? { expects_reply: true } : {}) });
-    console.log(JSON.stringify(andWait ? { sent, ...await waitForEvent(state, 50) } : sent, null, 2));
-  },
-  async read(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
-    const messages = await syncKeys(state);
-    console.log(JSON.stringify(withReplyHints(await decryptedMessages(state, messages)), null, 2));
-  },
-  async team(state) {
-    console.log(JSON.stringify({ ok: true, team: await team(state) }, null, 2));
-  },
-  async watch(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
-    await announce(state).catch(() => undefined);
-    const since = Number(rest[0] || 0);
-    await watchRoom(state, Number.isFinite(since) ? since : 0);
-  },
-  async doctor(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
-    const j = await joined();
-    const messages = await doctorMessages(state, j.ok);
-    const stats = await encryptedStats(state, messages);
-    let openQuestions = null;
-    let openQuestionsError = j.ok ? undefined : 'not joined';
-    if (j.ok) {
-      try {
-        const asks = await requestJson(roomUrl + '/asks', { headers: tokenHeaders(state) });
-        if (asks.ok) openQuestions = (asks.body.asks || []).length;
-        else openQuestionsError = 'HTTP ' + asks.status + (typeof asks.body?.error === 'string' ? ': ' + asks.body.error : '');
-      } catch (error) {
-        if (!(error instanceof TypeError)) throw error;
-        openQuestionsError = 'network error while reading /asks';
-      }
-    }
-    console.log(JSON.stringify(doctorReport(state, j, messages, stats, openQuestions, openQuestionsError), null, 2));
-  },
-  async kickoff(state, { rest }) {
-    if (rest.length === 0) die('kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)');
-    const body = { encrypted_payload: await sealForRoom(parseMessageBody(rest.join(' '))) };
-    console.log(JSON.stringify(await post({ to: 'all', intent: 'kickoff', body }), null, 2));
-  },
-  async wait(state, { rest }) {
-    // Flags: --from <ids,...> (only events they caused), --board <prefix,...> (only board changes to matching keys; no messages), --no-system.
-    let timeout = 50, filter = '';
+    if (!to || !body.length) throw Error("send needs: <to> <text or json_body> [--reply-to <id>] [--expect-reply] [--wait]");
+    await announce();
+    const sent = await client.send(to, parseBody(body.join(" ")), { replyTo, expectsReply });
+    output(andWait ? { sent, ...await wait(50) } : sent);
+    return;
+  }
+  if (cmd === "read" || cmd === "inbox") {
+    output(await read());
+    return;
+  }
+  if (cmd === "team") {
+    output({ ok: true, team: await client.team() });
+    return;
+  }
+  if (cmd === "wait") {
+    let timeout = 50, from, board, system;
     for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === '--from') filter += '&from=' + encodeURIComponent(rest[++i] || '');
-      else if (rest[i] === '--board') filter += '&board=' + encodeURIComponent(rest[++i] || '');
-      else if (rest[i] === '--no-system') filter += '&system=false';
+      if (rest[i] === "--from") from = names(rest[++i]);
+      else if (rest[i] === "--board") board = rest[++i] || "";
+      else if (rest[i] === "--no-system") system = false;
       else timeout = Number(rest[i]) || 50;
     }
-    console.log(JSON.stringify(await waitForEvent(state, timeout, filter), null, 2));
-  },
-  async webhook(state, { roomUrl, me, rest }) {
-    const [url] = rest;
-    if (!url) die('webhook needs: <https_url|off>');
-    const r = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PATCH', headers: { authorization: 'Bearer ' + requireParticipantToken(state), 'content-type': 'application/json' }, body: JSON.stringify({ webhook_url: url === 'off' ? null : url }) });
-    if (!r.ok) die(formatErrorBody(r.body));
-    console.log(JSON.stringify({ ok: true, webhook: url === 'off' ? 'off (poll with read/watch)' : url }, null, 2));
-  },
-  // Change what you announce during the session: --capabilities a,b ('' clears), --workspace (re-detect, e.g. after
-  // switching branch; needs the room link because it is sealed with the room key), --no-workspace (stop announcing).
-  async profile(state, { me, rest }) {
-    const body = {};
-    const i = rest.indexOf('--capabilities');
-    if (i >= 0) body.capabilities = (rest[i + 1] && !rest[i + 1].startsWith('--') ? rest[i + 1] : '').split(',').map((c) => c.trim()).filter(Boolean);
-    Object.assign(body, announceModel(rest));
-    if (rest.includes('--no-workspace')) body.workspace = null;
-    else if (rest.includes('--workspace')) {
-      if (joinSecret === 'resume-only') die('re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace');
-      body.workspace = await sealForRoom(await detectWorkspace());
+    output(await wait(timeout, from, board, system));
+    return;
+  }
+  if (cmd === "watch") {
+    await announce();
+    let seq = Number(rest[0] || 0);
+    if (!Number.isFinite(seq)) seq = 0;
+    const print = async (event) => {
+      const messages = (await read()).filter((m) => Number(m.seq || 0) > seq);
+      seq = Math.max(seq, ...messages.map((m) => Number(m.seq || 0)));
+      if (messages.length) output({ event, messages });
+    };
+    await print("initial");
+    console.error(`watching ${roomUrl} as ${me}...`);
+    for (; ; ) {
+      const event = await client.wait({ timeoutSeconds: 50 });
+      if (!event.timeout) await print("message");
     }
-    if (Object.keys(body).length) {
-      const r = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PATCH', headers: { ...tokenHeaders(state), 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      if (!r.ok) die(formatErrorBody(r.body));
+  }
+  if (cmd === "doctor") {
+    const participants = await client.participants().catch(() => ({ participants: [] }));
+    const joined = participants.participants.some((p) => p.id === me);
+    if (joined) await announce().catch(() => void 0);
+    const raw = joined ? await request(`${roomUrl}/?view=all&include_self=true`, client.invite, { participantId: me }) : { messages: [] };
+    const messages = joined ? await client.read({ all: true, includeSelf: true }) : [];
+    const encrypted = raw.messages.filter((m) => m.body?.encrypted);
+    const decryptable = encrypted.filter((m) => !messages.find((opened) => opened.id === m.id)?.decrypt_error).length;
+    let openQuestions = null;
+    let openQuestionsError = joined ? void 0 : "not joined";
+    if (joined) try {
+      openQuestions = (await client.openQuestions()).length;
+    } catch (err) {
+      openQuestionsError = String(err);
     }
-    console.log(JSON.stringify({ ok: true, team: await team(state) }, null, 2));
-  },
-  // reserve <path>... [--reason text]: claim paths of this repo; fails naming the holder if someone else has them.
-  async reserve(state, { me, rest }) {
-    const { root, repo } = await currentRepo();
-    const { paths, reason } = pathsAndReason(rest);
-    if (paths.length === 0) die('reserve needs: <path>... [--reason text]');
-    const rel = await Promise.all(paths.map((p) => repoPath(root, p)));
-    const list = await updateReservations(state, async ({ stored, list }) => {
-      for (const p of rel) {
-        const held = list.find((r) => r.by !== me && r.repo === repo && r.paths.some((q) => pathsOverlap(p, q)));
-        if (held) die(p + ' is already reserved by ' + held.by + (held.reason ? ' (' + held.reason + ')' : '') + '; ask: send ' + held.by + ' <text> --expect-reply');
-      }
-      return { ...stored, [crypto.randomUUID()]: { by: me, since: new Date().toISOString(), sealed: await sealForRoom({ repo, paths: rel, ...(reason ? { reason } : {}) }) } };
-    });
-    console.log(JSON.stringify({ ok: true, reservations: list }, null, 2));
-  },
-  // release [path...]: release your reservations (all, or those covering the given paths of this repo).
-  async release(state, { me, rest }) {
-    const { root, repo } = await currentRepo();
-    const rel = await Promise.all(rest.map((p) => repoPath(root, p)));
-    const list = await updateReservations(state, async ({ stored, list }) => {
-      const mine = list.filter((r) => r.by === me && (rel.length === 0 || (r.repo === repo && r.paths.some((p) => rel.some((q) => pathsOverlap(p, q))))));
-      return mine.length ? Object.fromEntries(Object.entries(stored).filter(([id]) => !mine.some((r) => r.id === id))) : null;
-    });
-    console.log(JSON.stringify({ ok: true, reservations: list }, null, 2));
-  },
-  async reservations(state) {
-    console.log(JSON.stringify({ reservations: (await loadReservations(state)).list }, null, 2));
-  },
-  // leave [--release]: leave the room; --release also releases your reservations (otherwise leaving is refused).
-  async leave(state, { me, rest }) {
-    const r = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me) + (rest.includes('--release') ? '?release=true' : ''), { method: 'DELETE', headers: tokenHeaders(state) });
-    if (!r.ok) die(formatErrorBody(r.body));
-    await fs.rm(activeRoomPath(roomUrl, me), { force: true });
-    console.log(JSON.stringify({ ok: true, left: true }, null, 2));
-  },
-  // Host only: hand the host role to another participant in the room.
-  async host(state, { roomUrl, rest }) {
-    const [to] = rest;
-    if (!to) die('host needs: <participant to make host>');
-    const r = await requestJson(roomUrl + '/host', { method: 'POST', headers: { authorization: 'Bearer ' + requireParticipantToken(state), 'content-type': 'application/json' }, body: JSON.stringify({ to }) });
-    if (!r.ok) die(formatErrorBody(r.body));
-    console.log(JSON.stringify(r.body, null, 2));
-  },
-};
-
-const handler = COMMANDS[cmd];
-if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|leave');
-
-const state = await loadState();
-if (resolved.participantToken) state.participantToken = resolved.participantToken;
-// The room secret saved at join (private key file) opens sealed content (kickoff, workspaces, reservations) in short commands.
-if (joinSecret === 'resume-only' && state.joinSecret) joinSecret = state.joinSecret;
-let currentState = state;
-headers = tokenHeaders(state);
-await handler(state, { roomUrl, joinSecret, me, rest, headers, keyFile });
+    output({ ok: joined, client_protocol: SDK_CLIENT_PROTOCOL, ...getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}, open_questions: openQuestions, ...openQuestionsError ? { open_questions_error: openQuestionsError } : {}, participant_id: me, joined, key_file: keyFile, local_key_created: created, key_announced: messages.some((m) => m.from === me && m.intent === "key.exchange"), known_peers: participants.participants.filter((p) => p.id !== me && p.public_key).map((p) => p.id), encrypted_messages_seen: encrypted.length, encrypted_messages_decryptable: decryptable, key_note: `Reuse this key file from the same directory to retain your ECDH keypair across sessions: ${keyFile}` });
+    return;
+  }
+  if (cmd === "kickoff") {
+    if (!rest.length) throw Error("kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)");
+    output(await client.send("all", { encrypted_payload: await sealForRoom(parseBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true }));
+    return;
+  }
+  if (cmd === "webhook") {
+    if (!rest[0]) throw Error("webhook needs: <https_url|off>");
+    await client.setWebhook(rest[0] === "off" ? null : rest[0]);
+    output({ ok: true, webhook: rest[0] === "off" ? "off (poll with read/watch)" : rest[0] });
+    return;
+  }
+  if (cmd === "profile") {
+    const body = { ...modelProfile(rest) };
+    const i = rest.indexOf("--capabilities");
+    if (i >= 0) body.capabilities = names(rest[i + 1]?.startsWith("--") ? "" : rest[i + 1]);
+    if (rest.includes("--no-workspace")) body.workspace = null;
+    else if (rest.includes("--workspace")) {
+      if (roomSecret === "resume-only") throw Error("re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace");
+      body.workspace = workspace();
+    }
+    if (Object.keys(body).length) await client.setProfile(body);
+    output({ ok: true, team: await client.team() });
+    return;
+  }
+  if (cmd === "reserve" || cmd === "release") {
+    const { root, id } = repo();
+    const i = rest.indexOf("--reason");
+    const paths = (i >= 0 ? rest.slice(0, i) : rest).map((p) => relative(root, resolve(p)) || ".");
+    if (cmd === "reserve" && !paths.length) throw Error("reserve needs: <path>... [--reason text]");
+    output({ ok: true, reservations: cmd === "reserve" ? await reservePaths(client, id, paths, i >= 0 ? rest.slice(i + 1).join(" ") || void 0 : void 0) : await releasePaths(client, id, paths) });
+    return;
+  }
+  if (cmd === "reservations") {
+    output({ reservations: await listReservations(client) });
+    return;
+  }
+  if (cmd === "leave") {
+    await client.leave({ release: rest.includes("--release") });
+    await fs.rm(activePath(roomUrl, me), { force: true });
+    output({ ok: true, left: true });
+    return;
+  }
+  if (cmd === "host") {
+    if (!rest[0]) throw Error("host needs: <participant to make host>");
+    output(await client.transferHost(rest[0]));
+    return;
+  }
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|leave`);
+}
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});

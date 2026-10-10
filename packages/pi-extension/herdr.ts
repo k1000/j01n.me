@@ -8,6 +8,24 @@ export interface HerdrPeer {
   agent_status: string;
 }
 
+export interface HerdrRepoAgent extends HerdrPeer {
+  cwd: string;
+  name?: string;
+  workspace_id: string;
+}
+
+/** Unlike herdr_agents, inspect all workspaces so separate worktrees are visible. */
+export function listHerdrRepoAgents(env: Record<string, string | undefined> = process.env, run: RunHerdr = execFileSync): HerdrRepoAgent[] {
+  if (env.HERDR_ENV !== "1" || !env.HERDR_WORKSPACE_ID || !env.HERDR_PANE_ID) throw new Error("invite_repo_agents requires a Herdr-managed pane");
+  const output = JSON.parse(run("herdr", ["agent", "list"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] })) as {
+    result?: { agents?: HerdrRepoAgent[] };
+  };
+  if (!Array.isArray(output.result?.agents)) throw new Error("Herdr did not return an agent list");
+  return output.result.agents.filter((peer) => peer.pane_id !== env.HERDR_PANE_ID &&
+    typeof peer.pane_id === "string" && typeof peer.agent === "string" && peer.agent.length > 0 &&
+    typeof peer.cwd === "string" && typeof peer.workspace_id === "string" && typeof peer.agent_status === "string");
+}
+
 /** Only the caller's workspace is in scope; pane IDs disambiguate repeated agent labels. */
 export function listHerdrPeers(env: Record<string, string | undefined> = process.env, run: RunHerdr = execFileSync): HerdrPeer[] {
   if (env.HERDR_ENV !== "1" || !env.HERDR_WORKSPACE_ID || !env.HERDR_PANE_ID) {

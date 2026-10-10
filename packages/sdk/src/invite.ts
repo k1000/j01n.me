@@ -64,6 +64,7 @@ export function normalizeInvite(invite: RoomAccess): Invite {
     ...(invite.suggested_model ? { suggested_model: invite.suggested_model } : {}),
     ...(invite.suggested_skills ? { suggested_skills: invite.suggested_skills } : {}),
     ...(invite.participant_token ? { participant_token: invite.participant_token } : {}),
+    ...(invite.transportFetch ? { transportFetch: invite.transportFetch } : {}),
     ...(invite.host_joined ? { host_joined: true } : {}),
     ...(typeof invite.cursor === "number" ? { cursor: invite.cursor } : {}),
   };

@@ -77,7 +77,7 @@ export async function createRoomAndJoin(
 export async function joinRoom(
   inviteInput: RoomAccess,
   participantId: string,
-  opts: { model?: string; provider?: string; skills?: string[]; webhook_url?: string; capabilities?: string[]; workspace?: Workspace } = {},
+  opts: { model?: string; provider?: string; skills?: string[]; webhook_url?: string | null; capabilities?: string[]; workspace?: Workspace; state?: "free" | "busy"; status?: string } = {},
   existingSession?: SdkCryptoSession,
 ): Promise<RoomClient> {
   const invite = normalizeInvite(inviteInput);

@@ -68,7 +68,7 @@ const SHARED_STYLES = `
   .field-row .field { grid-template-columns: minmax(0, max-content) minmax(8rem, 1fr); margin-bottom: 0.85rem; }
   @media (max-width: 720px) { .field, .field-row .field { grid-template-columns: 1fr; gap: 0.35rem; } .field-row { grid-template-columns: 1fr; gap: 0; } }
   input, textarea, select { width: 100%; box-sizing: border-box; border: 2px solid color-mix(in srgb, currentColor 38%, transparent); border-radius: 0; padding: 0.7rem; background: Canvas; color: CanvasText; font: inherit; }
-  fieldset.template-selector { border: none; padding: 0; margin: 0 0 1rem; }
+  fieldset.template-selector { display: block; min-width: 0; border: none; padding: 0; margin: 0 0 1rem; }
   fieldset.template-selector legend { font-size: 0.95rem; opacity: 0.72; margin-bottom: 0.5rem; }
   .radio { display: flex; align-items: center; gap: 0.5rem; font-size: 0.95rem; cursor: pointer; }
   .radio input[type="radio"] { width: auto; margin: 0; accent-color: var(--highlight); }

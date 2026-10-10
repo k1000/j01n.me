@@ -81,6 +81,13 @@ describe("homePage", () => {
     expect(html).toContain("Save this safely and use it to invite bots & humans.");
   });
 
+  it("stacks board template choices in the create-room dialog", () => {
+    const html = homePage();
+
+    expect(html).toContain('<fieldset class="field template-selector">');
+    expect(html).toMatch(/fieldset\.template-selector\s*\{[^}]*display:\s*block/);
+  });
+
   it("keeps the shared page head and footer", () => {
     const html = homePage();
 

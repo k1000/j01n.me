@@ -11,6 +11,17 @@ const me = { participantId: "pi-agent", invite: { room_id: "room-1" } } as unkno
 const message = (from: string, text: string, extra: Partial<RoomMessage> = {}) =>
   ({ id: `id-${from}`, seq: 1, from, to: "all", intent: "notify", body: { text }, ...extra }) as RoomMessage;
 
+describe("modelPatchFor", () => {
+  it("announces a new model once and stays quiet when the room row already matches", async () => {
+    const { modelPatchFor } = await import("../live");
+    expect(modelPatchFor({ model: "qwen3.8-flash" }, undefined)).toEqual({ model: "qwen3.8-flash" });
+    expect(modelPatchFor({ model: "qwen3.8-flash", provider: "token-plan" }, { model: "qwen3.8-flash", provider: "token-plan" })).toBeUndefined();
+    expect(modelPatchFor({ model: "qwen3.8-flash", provider: "token-plan" }, { model: "qwen3.8-flash" })).toEqual({ model: "qwen3.8-flash", provider: "token-plan" });
+    expect(modelPatchFor({}, undefined)).toBeUndefined();
+    expect(modelPatchFor({ model: "x" }, { model: "x" })).toBeUndefined();
+  });
+});
+
 describe("pi live mode", () => {
   const originalCwd = process.cwd();
   afterEach(() => {

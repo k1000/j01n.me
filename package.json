@@ -5,9 +5,14 @@
   "license": "Apache-2.0",
   "packageManager": "pnpm@11.2.2",
   "type": "module",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "pi": {
-    "extensions": ["./packages/pi-extension/index.ts"]
+    "extensions": [
+      "./packages/pi-extension/index.ts"
+    ]
   },
   "scripts": {
     "dev": "wrangler dev --config apps/web/wrangler.jsonc",
@@ -16,6 +21,7 @@
     "check": "pnpm check:generated && pnpm typecheck && pnpm test",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:ui": "playwright test",
     "test:lifecycle": "vitest run apps/web/test/room-lifecycle.test.ts apps/web/test/board.test.ts",
     "test:crypto": "vitest run apps/web/test/crypto-primitives.test.ts apps/web/test/sdk-crypto-session.test.ts",
     "test:pages": "vitest run apps/web/test/pages.test.ts apps/web/test/invite.test.ts",
@@ -25,7 +31,11 @@
     "check:generated": "node scripts/generate-client-script.mjs --check && node scripts/generate-assets.mjs --check"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "workerd", "sharp"]
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "workerd",
+      "sharp"
+    ]
   },
   "dependencies": {
     "@cfworker/json-schema": "^4.1.1",
@@ -33,8 +43,10 @@
     "marked": "^18.0.4"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.10.2",
     "@cloudflare/vitest-pool-workers": "^0.6.0",
     "@cloudflare/workers-types": "^4.20260523.0",
+    "@playwright/test": "1.58.2",
     "tsx": "^4.22.3",
     "typescript": "^5.8.0",
     "vitest": "^2.1.9",

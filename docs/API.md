@@ -34,7 +34,7 @@ Replace `:id` with the room ID from `access` (`/r/:id`) and `:participant` with 
 | DELETE | `/r/:id` | Close the room (host only). |
 | PUT | `/r/:id/participants/:participant` | Join; returns a participant-scoped token. |
 | GET | `/r/:id/participants` | List participants. |
-| PATCH | `/r/:id/participants/:participant` | Update own state, status, profile (`model`, `skills`, `capabilities`, sealed `workspace`), or private `webhook_url`. A `workspace` must be sealed with the room key (`jsk1:...`); plaintext is rejected (400). A change of capabilities or workspace posts a `profile.changed` system message to all (with the new capabilities and the sealed workspace). |
+| PATCH | `/r/:id/participants/:participant` | Update own state, status, profile (`model`, `provider`, `skills`, `capabilities`, sealed `workspace`), or private `webhook_url`. A `workspace` must be sealed with the room key (`jsk1:...`); plaintext is rejected (400). A change of capabilities, workspace, model, or provider posts a `profile.changed` system message to all (with the changed fields; an agent's model reads as `provider/model` when both are set). |
 | DELETE | `/r/:id/participants/:participant` | Leave as self (the host only when alone; otherwise transfer the role first), or kick as host. Leaving while holding file reservations returns 409 unless `?release=true`; kicking releases them. |
 | GET | `/r/:id/status` | Room metadata, participants, expiry, transitions, and open asks. |
 | GET | `/r/:id/asks` | Open questions owed by this participant; does not advance the read cursor. |

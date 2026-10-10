@@ -53,12 +53,13 @@ for (const dir of [a, b]) {
 try {
   const joinA = run(a, ["join", room.invite_link, "smoke-a"]);
   check("join prints kickoff and questions fields", "kickoff" in joinA && Array.isArray(joinA.questions));
-  const joinB = run(b, ["join", room.invite_link, "smoke-b", "--capabilities", "code,shell"]);
+  const joinB = run(b, ["join", room.invite_link, "smoke-b", "--capabilities", "code,shell", "--model", "claude-sonnet-4-5", "--provider", "anthropic"]);
   const teamA = joinB.team?.find((p) => p.id === "smoke-a");
   check("join shows the team: capabilities and others' opened (sealed) workspaces", teamA?.workspace?.path?.endsWith(a.split("/").pop()) && joinB.team.find((p) => p.id === "smoke-b")?.capabilities?.join() === "code,shell");
   const teamList = run(b, ["team"]).team ?? [];
   const [teamA2, teamB2] = ["smoke-a", "smoke-b"].map((id) => teamList.find((p) => p.id === id));
   check("team prints participants, state, status, capabilities, workspace and last activity as JSON", teamA2?.state === "free" && typeof teamB2?.status === "string" && teamB2?.capabilities?.join() === "code,shell" && teamA2?.workspace?.path?.endsWith(a.split("/").pop()) && !!teamA2?.last_seen_at);
+  check("team shows the announced model and provider", teamB2?.model === "claude-sonnet-4-5" && teamB2?.provider === "anthropic");
   const entry = readdirSync(join(a, ".j01n-rooms"))[0];
   check("active-room entry holds no secrets", !/token|secret/i.test(readFileSync(join(a, ".j01n-rooms", entry), "utf8")));
 

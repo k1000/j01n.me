@@ -23,16 +23,19 @@ import { normalizeParticipantId } from "../validation";
 import type { RoomEventBus } from "./events";
 import type { RoomStorage } from "./storage";
 
-/** A `profile.changed` system message when a participant's capabilities or workspace changed, else undefined. */
+/** The body of a `profile.changed` announcement when capabilities, workspace or model changed, else undefined. */
 function profileChangeMessage(before: InviteState, after: InviteState, participantId: string, actorId: string) {
   const old = before.participants[participantId];
   const now = after.participants[participantId];
   const capabilitiesChanged = (old.capabilities ?? []).join() !== (now.capabilities ?? []).join();
   const workspaceChanged = old.workspace !== now.workspace;
-  if (!capabilitiesChanged && !workspaceChanged) return undefined;
+  const modelChanged = old.model !== now.model || (old.provider ?? "") !== (now.provider ?? "");
+  if (!capabilitiesChanged && !workspaceChanged && !modelChanged) return undefined;
+  const running = [now.provider, now.model].filter(Boolean).join("/");
   const text = [
     capabilitiesChanged ? `${participantId} can now: ${(now.capabilities ?? []).join(", ") || "(no capabilities announced)"}` : "",
     workspaceChanged ? (now.workspace ? `${participantId} changed workspace` : `${participantId} stopped announcing its workspace`) : "",
+    modelChanged ? (running ? `${participantId} now runs ${running}` : `${participantId} stopped announcing its model`) : "",
   ].filter(Boolean).join("; ");
   return {
     text,
@@ -40,6 +43,7 @@ function profileChangeMessage(before: InviteState, after: InviteState, participa
     updated_by: actorId,
     ...(capabilitiesChanged ? { capabilities: now.capabilities ?? [] } : {}),
     ...(workspaceChanged ? { workspace: now.workspace ?? null } : {}),
+    ...(modelChanged ? { model: now.model ?? null, provider: now.provider ?? null } : {}),
   };
 }
 

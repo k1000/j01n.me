@@ -1,6 +1,9 @@
 import { escapeHtml } from "./format";
+import { LIVE_ROOM_SCRIPT, LIVE_ROOM_STYLES } from "./live-room-view";
 import { renderMarkdownPage, renderPage } from "./format-markdown";
 import { HOME_BODY, HOME_SCRIPT, HOME_STYLES } from "./home-page";
+import { ROOM_ENTRY_SCRIPT } from "./room-entry";
+import { ROOM_CONSOLE_SCRIPT, ROOM_CONSOLE_STYLES } from "./room-console";
 import { homeBodyMarkdown, homeHeroMarkdown, inviteTemplate } from "./markdown-assets";
 import { roomArcadeHtml, roomArcadeScript, roomArcadeStyles, roomArcadeToggleHtml } from "./room-arcade";
 
@@ -37,60 +40,35 @@ function gatewayMarkdown(): string {
 function roomDialogsHtml(): string {
   return `  <dialog id="create-room-dialog" aria-labelledby="create-room-title">
     <form method="dialog" id="create-room-form">
-      <h2 id="create-room-title"><span class="md-marker">##</span> Create room</h2>
-      <label class="field">host
-        <input name="host_id" autocomplete="name" placeholder="human" />
-      </label>
-      <label class="field">room_name
-        <input name="room_name" autocomplete="off" placeholder="docs-review" />
-      </label>
-      <label class="field">purpose
-        <input name="purpose" autocomplete="off" placeholder="Coordinate a short encrypted collaboration" />
-      </label>
-      <label class="field">first_message to all
-        <textarea name="first_message" placeholder="Kickoff message broadcast to all room participants"></textarea>
-      </label>
+      <h2 id="create-room-title"><span class="md-marker" aria-hidden="true">##</span> Create room</h2>
+      <label class="field">Your name<input name="host_id" autocomplete="name" placeholder="alex" required maxlength="64" /></label>
+      <label class="field">Room name<input name="room_name" autocomplete="off" placeholder="Planning room" /></label>
+      <label class="field">Public purpose<input name="purpose" autocomplete="off" placeholder="Short, non-sensitive description" /></label>
+      <label class="field">Public kickoff<textarea name="first_message" placeholder="Non-sensitive starting instructions"></textarea></label>
+      <p class="fineprint">Purpose and kickoff are public room metadata. Send sensitive instructions inside the room using encrypted messages.</p>
       <div class="field-row">
-        <label class="field">max participants
-          <select name="max_participants">
-            <option value="3">3</option>
-            <option value="7" selected>7</option>
-            <option value="11">11</option>
-          </select>
-        </label>
-        <label class="field">invitation expiry
-          <select name="invite_ttl_ms">
-            <option value="600000">10 min</option>
-            <option value="1800000" selected>30 min</option>
-            <option value="3600000">1 h</option>
-          </select>
-        </label>
+        <label class="field">max participants<select name="max_participants"><option value="3">3</option><option value="7" selected>7</option><option value="11">11</option></select></label>
+        <label class="field">invitation expiry<select name="invite_ttl_ms"><option value="600000">10 min</option><option value="1800000" selected>30 min</option><option value="3600000">1 h</option></select></label>
       </div>
       <fieldset class="field template-selector">
-        <legend>board template</legend>
-        <label class="radio"><input type="radio" name="template" value="quick" checked /> <span>No Board</span></label>
-        <label class="radio"><input type="radio" name="template" value="kanban" /> <span>Kanban — todo → doing → review → done</span></label>
-        <label class="radio"><input type="radio" name="template" value="milestone" /> <span>Milestone — planning → in progress → review → completed</span></label>
+        <legend>Board template</legend>
+        <label class="radio"><input type="radio" name="template" value="kanban" checked /> <span>Kanban — todo → doing → review → done</span></label>
+        <label class="radio"><input type="radio" name="template" value="quick" /> <span>No board</span></label>
+        <label class="radio"><input type="radio" name="template" value="milestone" /> <span>Milestone</span></label>
       </fieldset>
-      <p class="dialog-actions"><button class="button" type="button" data-close-create-room onclick="this.closest('dialog')?.close()">Cancel</button><button class="button" type="submit">Create room</button></p>
+      <p class="fineprint">You will enter as host. Share the private invitation link from inside the room.</p>
+      <p class="dialog-actions"><button class="button" type="button" data-close-create-room>Cancel</button><button class="button" type="submit">Create room</button></p>
+      <p data-create-status role="status"></p>
     </form>
-    <section class="invite-result" data-invite-result>
-      <h2><span class="md-marker">##</span> Invitation JSON</h2>
-      <p>Save this safely and use it to invite bots & humans.</p>
-      <textarea class="invite-json" data-invite-json readonly></textarea>
-      <p class="dialog-actions"><button class="button" type="button" data-copy-invite>Copy to clipboard</button><button class="button" type="button" data-enter-room>Enter room</button></p>
-      <p class="fineprint" data-copy-status aria-live="polite"></p>
-    </section>
   </dialog>
   <dialog id="join-room-dialog" aria-labelledby="join-room-title">
     <form method="dialog" id="join-room-form">
-      <h2 id="join-room-title"><span class="md-marker">##</span> Join room</h2>
-      <label class="field">invitation JSON
-        <textarea name="invite_json" placeholder='{"access":"https://j01n.me/r/...","join_secret":"..."}'></textarea>
-      </label>
-      <p class="fineprint">Paste the invitation JSON from the room host.</p>
-      <p class="dialog-actions"><button class="button" type="button" data-close-join-room onclick="this.closest('dialog')?.close()">Cancel</button><button class="button" type="submit">Join</button></p>
-      <p class="fineprint" data-join-status aria-live="polite"></p>
+      <h2 id="join-room-title"><span class="md-marker" aria-hidden="true">##</span> Join room</h2>
+      <label class="field">Your name<input name="participant_name" autocomplete="name" placeholder="alex" required maxlength="64" /></label>
+      <label class="field">Invitation<textarea name="invite_json" placeholder="https://j01n.me/room/…#…" required></textarea></label>
+      <p class="fineprint">Paste a private invitation link or invitation JSON. No account or extension needed.</p>
+      <p class="dialog-actions"><button class="button" type="button" data-close-join-room>Cancel</button><button class="button" type="submit">Join</button></p>
+      <p data-join-status role="status"></p>
     </form>
   </dialog>
 ${savedRoomsScript()}
@@ -101,16 +79,19 @@ ${createRoomScript()}`;
 function savedRoomsScript(): string {
   return `<script>
 const SAVED_ROOMS_KEY = "j01n.rooms";
+function normalizeParticipantName(value) {
+  return String(value || "").trim().replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 64);
+}
 function readSavedRooms() {
   try { return JSON.parse(localStorage.getItem(SAVED_ROOMS_KEY) || "{}") || {}; } catch { return {}; }
 }
 function writeSavedRooms(rooms) {
-  try { localStorage.setItem(SAVED_ROOMS_KEY, JSON.stringify(rooms)); } catch {}
+  try { localStorage.setItem(SAVED_ROOMS_KEY, JSON.stringify(rooms)); return true; } catch { return false; }
 }
 function persistInvite(roomId, invite) {
   const rooms = readSavedRooms();
   rooms[roomId] = invite;
-  writeSavedRooms(rooms);
+  return writeSavedRooms(rooms);
 }
 function loadInvite(roomId) {
   const invite = readSavedRooms()[roomId];
@@ -126,7 +107,7 @@ function renderSavedRooms() {
   if (!section) return;
   const now = Date.now();
   const rooms = Object.entries(readSavedRooms()).filter(([id, invite]) => {
-    const expired = invite && invite.expires_at && Date.parse(invite.expires_at) <= now;
+    const expired = invite && !invite.participant_token && invite.expires_at && Date.parse(invite.expires_at) <= now;
     if (expired) removeInvite(id);
     return !expired;
   });
@@ -149,173 +130,7 @@ function renderSavedRooms() {
 }
 
 function createRoomScript(): string {
-  return `<script>
-(() => {
-  const dialog = document.getElementById("create-room-dialog");
-  const form = document.getElementById("create-room-form");
-  const result = dialog?.querySelector("[data-invite-result]");
-  const output = dialog?.querySelector("[data-invite-json]");
-  const status = dialog?.querySelector("[data-copy-status]");
-  const joinDialog = document.getElementById("join-room-dialog");
-  const joinForm = document.getElementById("join-room-form");
-  const joinStatus = joinDialog?.querySelector("[data-join-status]");
-
-  const open = () => {
-    form?.reset();
-    if (form) form.style.display = "";
-    result?.classList.remove("is-visible");
-    if (output) output.value = "";
-    if (status) status.textContent = "";
-    if (dialog?.showModal) dialog.showModal();
-  };
-  const close = () => dialog?.close();
-  const openJoin = () => {
-    joinForm?.reset();
-    if (joinStatus) joinStatus.textContent = "";
-    if (joinDialog?.showModal) joinDialog.showModal();
-  };
-  const closeJoin = () => joinDialog?.close();
-
-  function isExpiredTimestamp(value) {
-    if (!value) return false;
-    const ms = Date.parse(String(value));
-    return Number.isFinite(ms) && ms <= Date.now();
-  }
-
-  function enterInviteJson(rawInvite, targetStatus) {
-    if (!rawInvite.trim()) { targetStatus && (targetStatus.textContent = "Paste invitation JSON first"); return false; }
-    let invite;
-    try { invite = JSON.parse(rawInvite); } catch { targetStatus && (targetStatus.textContent = "Invalid invitation JSON"); return false; }
-    const roomUrl = invite?.access || invite?.room_url;
-    const joinSecret = invite?.join_secret;
-    if (!roomUrl || !joinSecret) { targetStatus && (targetStatus.textContent = "Invitation JSON must include access and join_secret"); return false; }
-    if (isExpiredTimestamp(invite?.expires_at)) { targetStatus && (targetStatus.textContent = "Invitation expired. Ask the host to create a new room."); return false; }
-    const roomId = String(roomUrl).split("/r/")[1]?.split("?")[0]?.replace(/\\/$/, "") || "";
-    if (!roomId) { targetStatus && (targetStatus.textContent = "Invalid room URL"); return false; }
-    persistInvite(roomId, invite);
-    window.location.href = "/room/" + encodeURIComponent(roomId);
-    return true;
-  }
-
-  document.querySelectorAll("[data-open-create-room]").forEach((button) => button.addEventListener("click", open));
-  document.querySelectorAll("[data-open-join-room]").forEach((button) => button.addEventListener("click", openJoin));
-  // Render saved rooms on load
-  renderSavedRooms();
-
-  dialog?.querySelectorAll("[data-close-create-room]").forEach((button) => button.addEventListener("click", close));
-  joinDialog?.querySelectorAll("[data-close-join-room]").forEach((button) => button.addEventListener("click", closeJoin));
-
-  async function postRoom(body) {
-    const response = await fetch("/rooms", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    const json = await response.json();
-    if (!response.ok) throw new Error(json.error || "failed to create room");
-    const { host_joined: _hostJoined, first_message: _firstMessage, ...invite } = json;
-    return invite;
-  }
-
-  function showInvite(invite) {
-    if (output) output.value = JSON.stringify(invite, null, 2);
-    if (form) form.style.display = "none";
-    result?.classList.add("is-visible");
-  }
-
-  // WebMCP: let a browser agent create or join rooms through this page.
-  const mc = document.modelContext;
-  if (mc && typeof mc.registerTool === "function") {
-    const tools = [
-      {
-        name: "create_room",
-        description: "Create a temporary end-to-end encrypted j01n.me room. Returns the invitation ({access, join_secret}) to hand to other agents or people; it is also shown on the page.",
-        inputSchema: { type: "object", properties: {
-          host_id: { type: "string", description: "Your participant name in the room" },
-          room_name: { type: "string" },
-          purpose: { type: "string", description: "Public, non-sensitive purpose" },
-          template: { type: "string", enum: ["quick", "kanban", "milestone"] },
-          max_participants: { type: "integer", minimum: 2, maximum: 64 },
-          invite_ttl_minutes: { type: "integer", minimum: 1, maximum: 60 },
-        } },
-        execute: async (input) => {
-          const args = input || {};
-          const template = args.template || "quick";
-          const invite = await postRoom({
-            host_id: args.host_id || "human",
-            max_participants: args.max_participants || 7,
-            invite_ttl_ms: (args.invite_ttl_minutes || 30) * 60000,
-            ...(template !== "quick" ? { template } : {}),
-            ...(args.room_name ? { room_name: args.room_name } : {}),
-            ...(args.purpose ? { purpose: args.purpose } : {}),
-          });
-          open();
-          showInvite(invite);
-          return JSON.stringify({ access: invite.access, join_secret: invite.join_secret, expires_at: invite.expires_at, next: "Share {access, join_secret} out of band. To enter the room here, call join_room with this invitation." });
-        },
-      },
-      {
-        name: "join_room",
-        description: "Join a j01n.me room from an invitation JSON ({access, join_secret}) and open it in this tab.",
-        inputSchema: { type: "object", properties: {
-          invite_json: { type: "string", description: "The invitation JSON text" },
-          participant_id: { type: "string", description: "Your unique name in the room" },
-        }, required: ["invite_json"] },
-        execute: async ({ invite_json, participant_id }) => {
-          let raw = String(invite_json || "");
-          if (participant_id) {
-            try { raw = JSON.stringify({ ...JSON.parse(raw), participant_id }); } catch {}
-          }
-          const outcome = { textContent: "" };
-          if (!enterInviteJson(raw, outcome)) throw new Error(outcome.textContent || "could not join");
-          return "Opening the room. Use read_room once it has loaded.";
-        },
-      },
-    ];
-    for (const tool of tools) {
-      try { Promise.resolve(mc.registerTool(tool)).catch(() => {}); } catch {}
-    }
-  }
-
-  form?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const submit = form.querySelector('button[type="submit"]');
-    const data = new FormData(form);
-    const hostId = String(data.get("host_id") ?? "").trim() || "human";
-    const roomName = String(data.get("room_name") ?? "").trim();
-    const purpose = String(data.get("purpose") ?? "").trim();
-    const firstMessage = String(data.get("first_message") ?? "").trim();
-    const template = String(data.get("template") ?? "quick").trim();
-    const maxParticipants = Number(data.get("max_participants") ?? 7);
-    const inviteTtlMs = Number(data.get("invite_ttl_ms") ?? 1800000);
-    const body = { host_id: hostId, max_participants: maxParticipants, invite_ttl_ms: inviteTtlMs, ...(template !== "quick" ? { template } : {}), ...(roomName ? { room_name: roomName } : {}), ...(purpose ? { purpose } : {}), ...(firstMessage ? { entry_message: firstMessage } : {}) };
-    try {
-      if (submit) submit.textContent = "Creating...";
-      showInvite(await postRoom(body));
-    } catch (error) {
-      if (status) status.textContent = error instanceof Error ? error.message : String(error);
-    } finally {
-      if (submit) submit.textContent = "Create room";
-    }
-  });
-
-  dialog?.querySelector("[data-copy-invite]")?.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(output?.value ?? "");
-      if (status) status.textContent = "Copied.";
-    } catch {
-      output?.select();
-      if (status) status.textContent = "Select and copy the JSON manually.";
-    }
-  });
-
-  dialog?.querySelector("[data-enter-room]")?.addEventListener("click", () => {
-    if (enterInviteJson(output?.value ?? "", status)) close();
-  });
-
-  joinForm?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const data = new FormData(joinForm);
-    if (enterInviteJson(String(data.get("invite_json") ?? ""), joinStatus)) closeJoin();
-  });
-})();
-</script>`;
+  return `<script>${ROOM_ENTRY_SCRIPT}</script>`;
 }
 
 /** Render room export data as markdown for bots/text clients. */
@@ -385,7 +200,7 @@ export function roomPageHtml(roomId: string): string {
   return renderPage(
     "j01n.me — room",
     `<main>
-<p class="room-nav"><a href="/">← j01n.me</a>${roomArcadeToggleHtml()}</p>
+<nav class="room-navigation" aria-label="Room navigation"><a href="/">← j01n.me</a><a class="button" data-room-view-link href="?view=live">Live view</a>${roomArcadeToggleHtml()}</nav>
 ${roomArcadeHtml()}
 <section data-room-root>
 <p class="fineprint">Loading room…</p>
@@ -474,6 +289,7 @@ function roomPageStyles(): string {
   .participant-profile { flex-basis: 100%; display: grid; gap: 0.15rem; font-size: 0.85rem; }
   .button.button-small { margin: 0; padding: 0.35rem 0.6rem; font-size: 0.8rem; }
   .participant-caps { opacity: 0.8; }
+  .participant-model { display: inline-block; margin: 0 0 0 0.5rem; padding: 0.1rem 0.45rem; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 999px; font-family: var(--mono); font-size: 0.78rem; opacity: 0.85; }
   .participant-workspace { overflow-wrap: anywhere; }
   .message-composer { display: grid; gap: 0.75rem; margin: 0.75rem 0 1rem; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
   .message-composer label { display: grid; gap: 0.35rem; font-weight: 700; }
@@ -489,6 +305,8 @@ function roomPageStyles(): string {
   .message-details summary::-webkit-details-marker { display: none; }
   .message-technical { margin: 0.35rem 0 0; font-size: 0.85rem; opacity: 0.72; white-space: pre-wrap; word-break: break-word; }
   [data-room-error] { color: var(--highlight); }
+  ${ROOM_CONSOLE_STYLES}
+  ${LIVE_ROOM_STYLES}
   `;
 }
 
@@ -497,6 +315,17 @@ function roomPageScript(roomId: string): string {
 (() => {
   const root = document.querySelector("[data-room-root]");
   const rid = ${JSON.stringify(roomId)};
+  const liveView = new URLSearchParams(window.location.search).get("view") === "live";
+  document.body.classList.add("room-console-page");
+  document.body.classList.toggle("live-room-page", liveView);
+  const viewLink = document.querySelector("[data-room-view-link]");
+  if (viewLink) {
+    const url = new URL(window.location.href);
+    if (liveView) url.searchParams.delete("view");
+    else url.searchParams.set("view", "live");
+    viewLink.href = url.pathname + url.search + url.hash;
+    viewLink.textContent = liveView ? "Room console" : "Live view";
+  }
 
   let rawInvite = loadInvite(rid);
   // Support hash-fragment join URLs: https://j01n.me/room/<roomId>#<join_secret>
@@ -505,10 +334,14 @@ function roomPageScript(roomId: string): string {
     if (hashSecret.length >= 16) {
       try {
         const inviteFromHash = JSON.stringify({ access: "https://j01n.me/r/" + rid, join_secret: hashSecret });
-        persistInvite(rid, JSON.parse(inviteFromHash));
+        if (!persistInvite(rid, JSON.parse(inviteFromHash))) {
+          if (root) root.innerHTML = '<p data-room-error>This browser cannot save room access. Keep your private invitation link and use a browser with working storage.</p>';
+          return;
+        }
         rawInvite = inviteFromHash;
         // Clear hash so it doesn't linger
-        history.replaceState(null, "", window.location.pathname);
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+        if (viewLink) viewLink.hash = "";
       } catch {}
     }
   }
@@ -528,31 +361,47 @@ function roomPageScript(roomId: string): string {
     if (root) root.innerHTML = \`<p data-room-error>Missing join_secret in invite.</p>\`;
     return;
   }
-  if (isExpiredTimestamp(invite?.expires_at)) {
+  if (!invite.participant_token && isExpiredTimestamp(invite?.expires_at)) {
     removeInvite(rid);
     if (root) root.innerHTML = \`<p data-room-error>Invitation expired. <a href="/">← back</a></p>\`;
     return;
   }
 
-  const participantId = String(invite.participant_id || invite.host_id || "human");
+  let participantId = String(invite.participant_id || "");
+  let isHost = participantId === String(invite.host_id || "");
   let roomEvents;
   let latest = null; // last fetched room snapshot, shared by the UI and the WebMCP tools
   let hostKeyPair;
   let hostPublicKey = "";
 
-  ensureHostCrypto()
-    .then(() => ensureHostJoined())
-    .then(() => announceHostKey())
-    .then(() => refreshRoom())
-    .then(() => subscribeRoomEvents())
-    .then(() => registerRoomTools())
-    .catch(e => {
-      if (root) root.innerHTML = \`<p data-room-error>Error loading room: \${esc(e.message)}</p>\`;
+  if (participantId) startRoom();
+  else showJoinForm();
+
+  function showJoinForm(error = "") {
+    if (!root) return;
+    root.innerHTML = '<h1>Join this room</h1><p>Choose your own participant name. No account or extension is required.</p><form data-room-join-form><label>Your name<input name="participant_name" autocomplete="name" required maxlength="64" value="' + escAttr(participantId || 'human-' + crypto.randomUUID().slice(0, 6)) + '" /></label><button class="button" type="submit">Join room</button><p role="status">' + esc(error) + '</p></form>';
+    const form = root.querySelector("[data-room-join-form]");
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      participantId = normalizeParticipantName(new FormData(form).get("participant_name"));
+      if (!participantId) return;
+      invite = { ...invite, participant_id: participantId };
+      if (!persistInvite(rid, invite)) { showJoinForm('This browser could not save access. Fix browser storage before joining.'); return; }
+      startRoom();
     });
+  }
+
+  function startRoom() {
+    if (root) root.innerHTML = '<p role="status">Entering room…</p>';
+    ensureHostCrypto().then(ensureHostJoined).then(announceHostKey).then(refreshRoom).then(subscribeRoomEvents).then(registerRoomTools).catch(error => {
+      if (!invite.participant_token) showJoinForm(error.message);
+      else if (root) root.innerHTML = '<p data-room-error>' + esc(error.message) + '</p><a href="/">Back to your rooms</a>';
+    });
+  }
 
   async function ensureHostCrypto() {
     const storageKey = "j01n.hostKey." + rid + "." + participantId;
-    const saved = sessionStorage.getItem(storageKey);
+    const saved = localStorage.getItem(storageKey) || sessionStorage.getItem(storageKey);
     if (saved) {
       const jwk = JSON.parse(saved);
       hostKeyPair = {
@@ -560,12 +409,13 @@ function roomPageScript(roomId: string): string {
         publicKey: await crypto.subtle.importKey("jwk", jwk.publicKey, { name: "ECDH", namedCurve: "P-256" }, true, []),
       };
     } else {
+      if (invite.participant_token) throw new Error("Saved encryption key unavailable. Use the browser that joined this room, or explicitly join with a new name.");
       hostKeyPair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
-      sessionStorage.setItem(storageKey, JSON.stringify({
-        privateKey: await crypto.subtle.exportKey("jwk", hostKeyPair.privateKey),
-        publicKey: await crypto.subtle.exportKey("jwk", hostKeyPair.publicKey),
-      }));
     }
+    localStorage.setItem(storageKey, JSON.stringify({
+      privateKey: await crypto.subtle.exportKey("jwk", hostKeyPair.privateKey),
+      publicKey: await crypto.subtle.exportKey("jwk", hostKeyPair.publicKey),
+    }));
     hostPublicKey = await exportRawPublicKey(hostKeyPair.publicKey);
   }
 
@@ -589,6 +439,7 @@ function roomPageScript(roomId: string): string {
   }
 
   async function ensureHostJoined() {
+    if (invite.participant_token) return;
     const body = { state: "free", status: "joined via room UI", public_key: hostPublicKey };
     const joinUrl = \`/r/\${encodeURIComponent(rid)}/participants/\${encodeURIComponent(participantId)}\`;
     const response = await fetch(joinUrl, {
@@ -601,17 +452,10 @@ function roomPageScript(roomId: string): string {
       rememberParticipantToken(json.participant_token);
       return;
     }
-    if (response.status === 409) {
-      const patch = await fetch(joinUrl, {
-        method: "PATCH",
-        headers: authHeaders(true),
-        body: JSON.stringify(body),
-      });
-      if (patch.ok) return;
-    }
+    if (response.status === 409) throw new Error("Name already in use. Choose a different name.");
     let detail = "";
     try { const errorBody = await response.json(); detail = errorBody?.error ? ": " + errorBody.error : ""; } catch {}
-    throw new Error("Failed to join host" + detail);
+    throw new Error("Failed to join room" + detail);
   }
 
   async function announceHostKey() {
@@ -625,7 +469,30 @@ function roomPageScript(roomId: string): string {
     if (response.ok) sessionStorage.setItem(flagKey, "1");
   }
 
-  async function refreshRoom() {
+  let refreshInFlight;
+  let refreshAgain = false;
+  function refreshRoom() {
+    if (refreshInFlight) {
+      refreshAgain = true;
+      return refreshInFlight;
+    }
+    refreshInFlight = (async () => {
+      let lastError;
+      do {
+        refreshAgain = false;
+        try {
+          await fetchRoomSnapshot();
+          lastError = undefined;
+        } catch (error) {
+          lastError = error;
+        }
+      } while (refreshAgain);
+      if (lastError) throw lastError;
+    })().finally(() => { refreshInFlight = undefined; });
+    return refreshInFlight;
+  }
+
+  async function fetchRoomSnapshot() {
     const headers = authHeaders();
     const [status, board, read] = await Promise.all([
       fetch(\`/r/\${encodeURIComponent(rid)}/status\`, { headers }),
@@ -643,6 +510,9 @@ function roomPageScript(roomId: string): string {
       }
     }
     const statusBody = await status.json();
+    isHost = participantId === statusBody.room?.host_id;
+    invite = { ...invite, room_name: statusBody.room?.name, host_id: statusBody.room?.host_id, expires_at: statusBody.expires_at };
+    persistInvite(rid, invite);
     const boardBody = await board.json();
     const readBody = await read.json();
     const participantList = statusBody.participants || [];
@@ -659,6 +529,7 @@ function roomPageScript(roomId: string): string {
       next_seq: readBody.cursor,
       expires_at: statusBody.expires_at,
     }, invite);
+    if (roomEvents && roomEvents.readyState === EventSource.OPEN) updateConnectionStatus("connected");
   }
 
   function showBrowserNotification(body) {
@@ -683,26 +554,28 @@ function roomPageScript(roomId: string): string {
     const el = document.querySelector("[data-connection-status]");
     if (!el) return;
     el.className = "connection-status " + state;
-    const labels = { connected: "Connected", connecting: "Connecting", disconnected: "Disconnected" };
+    const labels = { connected: "Connected", connecting: "Connecting", disconnected: "Disconnected", stale: "Update failed" };
     el.innerHTML = '<span class="connection-dot"></span> ' + (labels[state] || state);
   }
 
-  function renderKanbanBoard(board, columnsVal) {
+  function renderKanbanBoard(board, columnsVal, headingTag = "h3") {
     const tasks = extractValue(board["tasks"]?.value) || {};
     const cols = ["todo", "doing", "review", "done"];
     return '<div class="kanban-board">' + cols.map(c => {
       const columnTitle = {todo: "To Do", doing: "Doing", review: "Review", done: "Done"}[c] || c;
-      const taskIds = (columnsVal[c] || []);
+      const taskIds = Array.isArray(columnsVal[c]) ? columnsVal[c] : [];
       const cards = taskIds.map(id => {
         const task = tasks[id];
         const title = task ? (typeof task === "object" ? (task.title || id) : String(task)) : id;
         const owner = task && typeof task === "object" && task.owner ? esc(task.owner) : "";
         return '<div class="kanban-card" data-task-id="' + escAttr(id) + '">' +
           '<span class="kanban-card-title">' + esc(title) + '</span>' +
-          (owner ? '<span class="kanban-card-owner">' + owner + '</span>' : '') +
+          (owner ? '<span class="kanban-card-owner">Owner: ' + owner + '</span>' : '') +
+          (task?.description ? '<p>' + esc(task.description) + '</p>' : '') +
+          (!liveView ? '<button class="button" type="button" data-edit-task="' + escAttr(id) + '" aria-label="' + escAttr('Edit ' + title) + '">Edit</button>' : '') +
         '</div>';
       }).join("");
-      return '<div class="kanban-column"><h4 class="kanban-column-title">' + columnTitle + '</h4><div class="kanban-cards">' + cards + '</div></div>';
+      return '<div class="kanban-column"><' + headingTag + ' class="kanban-column-title">' + columnTitle + '</' + headingTag + '><div class="kanban-cards">' + cards + '</div></div>';
     }).join("") + '</div>';
   }
 
@@ -717,33 +590,64 @@ function roomPageScript(roomId: string): string {
     return v;
   }
 
+${LIVE_ROOM_SCRIPT}
+${ROOM_CONSOLE_SCRIPT}
+
   function subscribeRoomEvents() {
-    if (roomEvents || typeof EventSource === "undefined") return;
+    if (roomEvents) return;
+    if (typeof EventSource === "undefined") {
+      updateConnectionStatus("disconnected");
+      return;
+    }
     const eventUrl = \`/r/\${encodeURIComponent(rid)}/events?s=\${encodeURIComponent(authToken())}&participant_id=\${encodeURIComponent(participantId)}&include_self=true\`;
     updateConnectionStatus("connecting");
     roomEvents = new EventSource(eventUrl);
     roomEvents.addEventListener("open", () => {
       updateConnectionStatus("connected");
+      // SSE hints are not replayed; reload the retained snapshot after every reconnect.
       refreshRoom().catch(showRoomEventError);
     });
-    roomEvents.addEventListener("changed", () => {
+    roomEvents.addEventListener("message", (event) => {
+      recordRoomActivity(event, "message");
       unreadCount++;
       updateTitle();
       showBrowserNotification("New messages arrived.");
       refreshRoom().catch(showRoomEventError);
     });
-    roomEvents.addEventListener("board", () => refreshRoom().catch(showRoomEventError));
-    roomEvents.addEventListener("participant", () => refreshRoom().catch(showRoomEventError));
+    roomEvents.addEventListener("board", (event) => {
+      recordRoomActivity(event, "board");
+      refreshRoom().catch(showRoomEventError);
+    });
+    roomEvents.addEventListener("participant", (event) => {
+      recordRoomActivity(event, "participant");
+      refreshRoom().catch(showRoomEventError);
+    });
     roomEvents.addEventListener("error", () => {
+      updateConnectionStatus("connecting");
       if (roomEvents?.readyState === EventSource.CLOSED) {
-        updateConnectionStatus("disconnected");
         showRoomEventError(new Error("Room event stream closed"));
+        updateConnectionStatus("disconnected");
       }
     });
   }
 
   function showRoomEventError(error) {
-    if (root) root.insertAdjacentHTML("afterbegin", \`<p data-room-error>\${esc(error instanceof Error ? error.message : String(error))}</p>\`);
+    updateConnectionStatus("stale");
+    if (!root) return;
+    let notice = root.querySelector("[data-room-error]");
+    if (!notice) {
+      notice = document.createElement("p");
+      notice.setAttribute("data-room-error", "");
+      notice.setAttribute("role", "alert");
+      root.prepend(notice);
+    }
+    notice.textContent = "Could not refresh room: " + (error instanceof Error ? error.message : String(error)) + " ";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "button";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", () => refreshRoom().catch(showRoomEventError));
+    notice.append(retry);
   }
 
   async function renderReservations(board) {
@@ -785,18 +689,22 @@ function roomPageScript(roomId: string): string {
       return;
     }
 
+    if (liveView) {
+      await renderLiveRoom(data);
+      return;
+    }
+
     const boardKeys = Object.keys(board).filter((key) => key !== "reservations");
     const reservationsHtml = await renderReservations(board);
     const columnsVal = extractValue(board["columns"]?.value);
-    const isKanban = columnsVal && typeof columnsVal === "object" && !Array.isArray(columnsVal) && ["todo", "doing", "review", "done"].some((c) => c in columnsVal);
-    const boardHtml = boardKeys.length === 0
-      ? \`<p class="board-empty">No board data yet.</p>\`
-      : isKanban
-        ? renderKanbanBoard(board, columnsVal)
-        : Object.entries(board).filter(([k]) => k !== "reservations").map(([k, entry]) => {
-            const val = boardValueText(entry.value);
-            return \`<div class="board-entry"><span class="board-key">\${esc(k)}</span><span class="board-meta">updated by \${esc(entry.updated_by)} at \${esc(entry.updated_at)}</span><button class="button" type="button" data-edit-board-key="\${escAttr(k)}">Edit</button><pre>\${esc(val)}</pre></div>\`;
-          }).join("");
+    const tasksVal = extractValue(board.tasks?.value) || {};
+    const isKanban = columnsVal && typeof columnsVal === "object" && !Array.isArray(columnsVal) && ["todo", "doing", "review", "done"].some((c) => c in columnsVal)
+      && typeof tasksVal === 'object' && !Array.isArray(tasksVal) && !('encrypted_payload' in tasksVal);
+    const boardEntries = Object.entries(board).filter(([key]) => key !== 'reservations' && (!isKanban || !['columns', 'tasks'].includes(key))).map(([k, entry]) => {
+      const val = boardValueText(entry.value);
+      return \`<div class="board-entry"><span class="board-key">\${esc(k)}</span><span class="board-meta">v\${esc(entry.version)} · updated by \${esc(entry.updated_by)} at \${esc(entry.updated_at)}</span><button class="button" type="button" data-edit-board-key="\${escAttr(k)}" aria-label="\${escAttr('Edit board key ' + k)}">Edit</button><pre>\${esc(val)}</pre></div>\`;
+    }).join('');
+    const boardHtml = boardKeys.length === 0 ? '<p class="board-empty">No board data yet.</p>' : (isKanban ? renderKanbanBoard(board, columnsVal) : '') + boardEntries;
 
     const pList = Object.values(participants);
     // Where each participant works: sealed with the room key, opened here with the join secret.
@@ -809,9 +717,11 @@ function roomPageScript(roomId: string): string {
     };
     const profileLine = (p) => {
       const caps = (p.capabilities || []).length ? \`<span class="participant-caps">\${esc(p.capabilities.join(" · "))}</span>\` : "";
+      const running = [p.provider, p.model].filter(Boolean).join("/");
+      const modelChip = running ? \`<span class="participant-model">\${esc(running)}</span>\` : "";
       const ws = workspaces[p.id];
       const where = ws ? [[ws.repo, ws.branch && "@" + ws.branch].filter(Boolean).join(" "), ws.path].filter(Boolean).map((line) => \`<code class="participant-workspace">\${esc(line)}</code>\`).join("") : "";
-      return caps || where ? \`<div class="participant-profile">\${caps}\${where}</div>\` : "";
+      return caps || modelChip || where ? \`<div class="participant-profile">\${caps}\${modelChip}\${where}</div>\` : "";
     };
     const participantsHtml = pList.length === 0
       ? \`<p class="board-empty">No participants yet.</p>\`
@@ -823,27 +733,27 @@ function roomPageScript(roomId: string): string {
       : (await Promise.all(messages.map((m) => renderMessage(m, messages)))).join("");
     const extendControls = isHost ? \` <button class="button button-small" type="button" data-extend-room title="Extend invite by 30 minutes">Extend 30 min</button><p class="room-ttl-status" data-room-ttl-status aria-live="polite"></p>\` : "";
 
-    const inviteWasOpen = root.querySelector(".room-invite")?.open;
-    root.innerHTML = \`\n<section class="room-overview" aria-label="Room overview">\n<div class="room-overview-head"><h1>\${esc(room.name || "Room")}</h1><span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></div>\n<p class="room-purpose">\${esc(room.purpose || "—")}</p>\n<dl class="room-meta">\n<div><dt>host</dt><dd>\${esc(room.host_id || "—")}</dd></div>\n<div><dt>phase</dt><dd>\${esc(phase || "—")}</dd></div>\n<div><dt>expires</dt><dd class="room-expiry"><span>\${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}</span>\${extendControls}</dd></div>\n</dl>\n<div class="room-share"><h2>Room URL</h2><div class="snippet"><pre>\${esc("https://j01n.me/r/" + rid)}</pre><button class="copy" type="button" data-copy-room-url title="Copy room URL">copy</button></div>\n\${isHost ? \`<details class="room-invite"\${inviteWasOpen ? " open" : ""}><summary>Invitation JSON — keep secret</summary><p class="invite-note">Save this safely and use it to invite bots &amp; humans.</p><div class="snippet"><pre>\${esc(invitationJson)}</pre><button class="copy" type="button" title="Copy the invitation">copy</button></div></details>\` : ""}</div>\n</section>\n<section class="room-board"><h3>Board</h3><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>\${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>\${isKanban ? '<form class="kanban-add-task" data-kanban-add-task><label>Title<input name="task_title" placeholder="Task title" /></label><label>Column<select name="task_column"><option value="todo">To Do</option><option value="doing" selected>Doing</option><option value="review">Review</option><option value="done">Done</option></select></label><button class="button" type="submit">Add task</button></form>' : ""}\${boardHtml}</section>\n<section class="room-reservations" aria-label="File reservations"><h3>File reservations</h3>\${reservationsHtml}</section>\n<section class="room-participants"><h3>Participants</h3>\${participantsHtml}</section>\n<section class="room-messages"><h3>Messages</h3>\${messagesHtml}<form class="message-composer" data-message-form><label>to<select name="to">\${recipientOptions}</select></label><label>message<textarea name="message" placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><button class="button" type="submit">Send</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>\`;
+    const drafts = captureConsoleDrafts();
+    root.innerHTML = \`\n<h1>\${esc(room.name || "Room")} <span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></h1>\n<dl class="room-meta">\n<dt>room URL</dt><dd><code>\${esc("https://j01n.me/r/" + rid)}</code> <button class="button button-small" type="button" data-copy-room-url title="Copy room URL">Copy URL</button></dd>\n<dt>invite</dt><dd><label for="room-invitation">Private invitation link</label><input id="room-invitation" readonly value="\${escAttr(location.origin + '/room/' + encodeURIComponent(rid) + '#' + joinSecret)}" /><button class="button button-small" type="button" data-copy-invitation>Copy invitation</button><p class="fineprint" data-invitation-status role="status">This link grants room access. Share privately with people or agents.</p></dd>\n<dt>purpose</dt><dd>\${esc(room.purpose || "—")}</dd>
+\${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(room.first_message) + '</dd>' : ''}\n<dt>host</dt><dd>\${esc(room.host_id || "—")}</dd>\n<dt>phase</dt><dd>\${esc(phase || "—")}</dd>\n<dt>expires</dt><dd>\${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}\${extendControls}</dd>\n</dl>\n<section class="room-board"><h2>Board</h2><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>\${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>\${isKanban ? renderTaskEditor(board, participants) : ""}\${boardHtml}</section>\n<section class="room-reservations" aria-label="File reservations"><h2>File reservations</h2>\${reservationsHtml}</section>\n<section class="room-participants"><h2>Participants</h2>\${participantsHtml}</section>\n<section class="room-messages"><h2>Messages</h2>\${messagesHtml}<form class="message-composer" data-message-form><input type="hidden" name="reply_to" /><p data-reply-status role="status"></p><button class="button" type="button" data-cancel-reply hidden>Cancel reply</button><label>Recipient<select name="to" required>\${recipientOptions}</select></label><label>Message<textarea name="message" required placeholder="Write a message to the room"></textarea></label><label class="reply-request"><input type="checkbox" name="expects_reply" /> Request a reply</label><p class="message-compose-actions"><button class="button" type="submit">Send</button><button class="button" type="button" data-check-delivery hidden>Check delivery</button><button class="button" type="button" data-retry-delivery hidden>Allow retry (may duplicate)</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>\`;
     updateConnectionStatus(connectionState);
-    root.querySelectorAll(".snippet .copy").forEach((button) => button.addEventListener("click", () => {
-      const pre = button.previousElementSibling;
-      navigator.clipboard.writeText(pre.innerText).then(() => {
-        button.textContent = "copied";
-        setTimeout(() => (button.textContent = "copy"), 1400);
-      }, () => {
-        const range = document.createRange();
-        range.selectNodeContents(pre);
-        getSelection().removeAllRanges();
-        getSelection().addRange(range);
-        button.textContent = "selected";
-      });
-    }));
+    root.querySelector("[data-copy-room-url]")?.addEventListener("click", () => {
+      const url = "https://j01n.me/r/" + rid;
+      navigator.clipboard.writeText(url).catch(() => {});
+    });
+    root.querySelector("[data-copy-invitation]")?.addEventListener("click", async () => {
+      const input = root.querySelector("#room-invitation");
+      const status = root.querySelector("[data-invitation-status]");
+      try { await navigator.clipboard.writeText(input.value); status.textContent = "Copied. Share privately."; }
+      catch { input.select(); status.textContent = "Select and copy the invitation link manually."; }
+    });
     wireExtendInvite();
     wireMakeHost();
     wireBoardEditor(board);
-    wireKanbanAddTask();
-    wireMessageComposer(participants, messages);
+    wireTaskEditor(board);
+    wireMessageComposer();
+    restoreConsoleDrafts(drafts);
+    updateReplyStatus();
   }
 
   function wireExtendInvite() {
@@ -885,59 +795,19 @@ function roomPageScript(roomId: string): string {
       });
     });
   }
-
-  function wireKanbanAddTask() {
-    const form = root?.querySelector("[data-kanban-add-task]");
-    if (!form) return;
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const data = new FormData(form);
-      const title = String(data.get("task_title") ?? "").trim();
-      const column = String(data.get("task_column") ?? "doing").trim();
-      if (!title) return;
-      const taskId = "task-" + Date.now();
-      const submit = form.querySelector('button[type="submit"]');
-
-      // Read current board state
-      try {
-        const boardRes = await fetch(\`/r/\${encodeURIComponent(rid)}/board\`, {
-          headers: authHeaders()
-        });
-        const boardData = await boardRes.json();
-        const currentColumns = boardData?.board?.columns?.value || {};
-        const currentTasks = boardData?.board?.tasks?.value || {};
-
-        // Build new state
-        const newColumns = { ...currentColumns };
-        const colArr = [...(newColumns[column] || [])];
-        colArr.push(taskId);
-        newColumns[column] = colArr;
-
-        const newTasks = { ...currentTasks, [taskId]: { title, state: column, owner: participantId } };
-
-        // Save both via PATCH
-        const patchBody = { columns: wrapBoardValue(newColumns), tasks: wrapBoardValue(newTasks) };
-        await fetch(\`/r/\${encodeURIComponent(rid)}/board\`, {
-          method: "PATCH",
-          headers: authHeaders(true),
-          body: JSON.stringify(patchBody),
-        });
-        await refreshRoom();
-      } catch (e) {
-        console.error("Failed to add task:", e);
-      }
-    });
-  }
-
   function wireBoardEditor(board) {
     const form = root?.querySelector("[data-board-form]");
+    for (const control of form?.elements || []) control.disabled = boardSaving;
     const keyInput = form?.querySelector('input[name="key"]');
     const valueInput = form?.querySelector('textarea[name="value"]');
     const status = root?.querySelector("[data-board-status]");
     const openForm = (key) => {
-      if (!form || !keyInput || !valueInput) return;
+      if (boardSaving || !form || !keyInput || !valueInput) return;
       const entry = key ? board[key] : null;
       keyInput.value = key || "";
+      keyInput.readOnly = Boolean(entry);
+      form.elements.original_key.value = key || "";
+      form.elements.version.value = entry?.version || 0;
       valueInput.value = entry ? boardValueText(entry.value) : "";
       form.classList.add("is-visible");
       keyInput.focus();
@@ -948,70 +818,69 @@ function roomPageScript(roomId: string): string {
     root?.querySelector("[data-close-board-editor]")?.addEventListener("click", () => form?.classList.remove("is-visible"));
     form?.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (!keyInput || !valueInput) return;
-      const key = keyInput.value.trim();
+      if (boardSaving || !keyInput || !valueInput) return;
+      const key = keyInput.value.trim().replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 80);
+      keyInput.value = key;
       if (!key) { if (status) status.textContent = "Board key is required."; return; }
       let parsedValue = valueInput.value;
       try { parsedValue = JSON.parse(valueInput.value); } catch {}
-      const submit = form.querySelector('button[type="submit"]');
+      boardSaving = true;
+      for (const control of form.elements) control.disabled = true;
+      let saved = false;
       try {
-        if (submit) submit.textContent = "Saving...";
-        await putBoardKey(key, parsedValue);
+        await putBoardKey(key, parsedValue, key === form.elements.original_key.value ? Number(form.elements.version.value) : 0);
+        saved = true;
+        const currentForm = root.querySelector('[data-board-form]');
+        currentForm.reset(); currentForm.classList.remove('is-visible');
+        await refreshRoom();
       } catch (error) {
-        if (status) status.textContent = error instanceof Error ? error.message : String(error);
-      } finally {
-        if (submit) submit.textContent = "Save";
+        if (error.status === 409) {
+          await refreshRoom().catch(showRoomEventError);
+          const currentForm = root.querySelector('[data-board-form]');
+          currentForm.elements.original_key.value = key;
+          currentForm.elements.key.readOnly = true;
+          currentForm.elements.version.value = latest.board[key]?.version || 0;
+        }
+        const currentStatus = root.querySelector('[data-board-status]');
+        if (currentStatus) currentStatus.textContent = saved ? 'Board saved; room refresh failed. Use Retry, not Save.' : error.message;
+        if (saved) showRoomEventError(error);
+      } finally { boardSaving = false; for (const control of root.querySelector('[data-board-form]')?.elements || []) control.disabled = false; }
+    });
+  }
+
+  async function sendText(to, text, options = {}) {
+    if (unknownDelivery) throw new Error('Delivery unknown. Check delivery before sending again.');
+    const id = crypto.randomUUID();
+    const encryptedBody = await encryptMessageBody(to, { text, client_message_id: id }, latest.participants, latest.messages);
+    let response;
+    try {
+      response = await fetch('/r/' + encodeURIComponent(rid), {
+        method: 'POST', headers: authHeaders(true),
+        body: JSON.stringify({ to, body: encryptedBody, reply_to: options.replyTo || null, ...(options.expectsReply ? { expects_reply: true } : {}) }),
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(json.error || 'Failed to send message.');
+      if (json.ok !== true || typeof json.id !== 'string' || typeof json.seq !== 'number') throw new Error('Invalid send receipt.');
+      return json;
+    } catch (error) {
+      if (!response || response.ok || response.status >= 500 || response.status === 408) {
+        unknownDelivery = { id, checked: false };
+        error.message = 'Delivery unknown. Check delivery before resending.';
+        updateDeliveryControls();
       }
-    });
+      throw error;
+    }
   }
 
-  function wireMessageComposer(participants, messages) {
-    const form = root?.querySelector("[data-message-form]");
-    const textarea = form?.querySelector('textarea[name="message"]');
-    const select = form?.querySelector('select[name="to"]');
-    const status = root?.querySelector("[data-message-status]");
-    form?.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const text = textarea?.value.trim() || "";
-      const to = select?.value || "all";
-      if (!text) { if (status) status.textContent = "Message is required."; return; }
-      const submit = form.querySelector('button[type="submit"]');
-      try {
-        if (submit) submit.textContent = "Sending...";
-        if (status) status.textContent = "Encrypting...";
-        await sendText(to, text);
-        if (textarea) textarea.value = "";
-        if (status) status.textContent = "Sent.";
-      } catch (error) {
-        if (status) status.textContent = error instanceof Error ? error.message : String(error);
-      } finally {
-        if (submit) submit.textContent = "Send";
-      }
-    });
-  }
-
-  async function sendText(to, text) {
-    const encryptedBody = await encryptMessageBody(to, { text }, latest.participants, latest.messages);
-    const response = await fetch("/r/" + encodeURIComponent(rid), {
-      method: "POST",
-      headers: authHeaders(true),
-      body: JSON.stringify({ to, body: encryptedBody }),
-    });
-    const json = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(json.error || "failed to send message");
-    await refreshRoom();
-    return json;
-  }
-
-  async function putBoardKey(key, value) {
-    const response = await fetch("/r/" + encodeURIComponent(rid) + "/board/" + encodeURIComponent(key), {
+  async function putBoardKey(key, value, ifVersion = latest?.board[key]?.version || 0) {
+    const response = await fetch("/r/" + encodeURIComponent(rid) + "/board/" + encodeURIComponent(key) + '?if_version=' + ifVersion, {
       method: "PUT",
       headers: authHeaders(true),
-      body: JSON.stringify(wrapBoardValue(value)),
+      body: JSON.stringify(value?.encrypted_payload ? value : wrapBoardValue(value)),
     });
     const json = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(json.error || "failed to save board key");
-    await refreshRoom();
+    if (!response.ok) { const error = new Error(response.status === 409 ? 'Board changed. Your draft is kept; review the current value, then retry.' : json.error || 'Failed to save board key.'); error.status = response.status; throw error; }
+    return json;
   }
 
   // WebMCP: let a browser agent use this room through the page. Encryption stays in this script.
@@ -1029,7 +898,7 @@ function roomPageScript(roomId: string): string {
           const messages = await Promise.all(latest.messages.map(async (m) => ({ seq: m.seq, from: m.from, to: m.to, intent: m.intent, time: m.created_at, text: await cleanMessageBody(m, latest.messages) })));
           const board = Object.fromEntries(Object.entries(latest.board).map(([key, entry]) => {
             const unwrapped = unwrapUiBoardValue(entry.value);
-            return [key, { value: unwrapped.ok ? unwrapped.value : entry.value, updated_by: entry.updated_by, updated_at: entry.updated_at }];
+            return [key, { value: unwrapped.ok ? unwrapped.value : entry.value, version: entry.version, updated_by: entry.updated_by, updated_at: entry.updated_at }];
           }));
           const participants = Object.values(latest.participants).map((p) => ({ id: p.id, state: p.state, status: p.status, left: !!p.left_at }));
           return JSON.stringify({ you: participantId, room: latest.room, phase: latest.phase, expires_at: latest.expires_at, participants, board, messages });
@@ -1041,15 +910,17 @@ function roomPageScript(roomId: string): string {
         inputSchema: { type: "object", properties: { to: { type: "string", description: '"all" or a participant id from read_room' }, text: { type: "string", description: "Message text" } }, required: ["to", "text"] },
         execute: async ({ to, text }) => {
           const result = await sendText(to || "all", String(text));
+          await refreshRoom();
           return "Sent message #" + result.seq + " to " + (to || "all") + ".";
         },
       },
       {
         name: "set_board_key",
         description: "Set one key on the room's shared board (tasks, claims, blockers, decisions). The value replaces the key's current value.",
-        inputSchema: { type: "object", properties: { key: { type: "string" }, value: { description: "Any JSON value" } }, required: ["key", "value"] },
-        execute: async ({ key, value }) => {
-          await putBoardKey(String(key), value);
+        inputSchema: { type: "object", properties: { key: { type: "string" }, value: { description: "Any JSON value" }, if_version: { type: "integer", minimum: 0 } }, required: ["key", "value"] },
+        execute: async ({ key, value, if_version }) => {
+          await putBoardKey(String(key), value, if_version);
+          await refreshRoom().catch(showRoomEventError);
           return "Board key " + key + " saved.";
         },
       },
@@ -1125,7 +996,10 @@ function roomPageScript(roomId: string): string {
   async function renderMessage(message, allMessages) {
     const clean = await cleanMessageBody(message, allMessages);
     const raw = typeof message.body === "object" ? JSON.stringify(message.body, null, 2) : String(message.body ?? "");
-    return \`<details class="message-entry message-details"><summary><div><span class="message-from">\${esc(message.from)}</span> <span class="message-time">\${esc(new Date(message.created_at).toLocaleString())}</span></div><div class="message-body">\${esc(clean)}</div></summary><pre class="message-technical">\${esc(raw)}</pre></details>\`;
+    const recipient = Array.isArray(message.to) ? message.to.join(", ") : message.to || "all";
+    const replyButton = !liveView && latest?.participants[message.from] && message.from !== participantId && message.intent !== "key.exchange"
+      ? '<button class="button button-small" type="button" data-reply-message="' + escAttr(message.id) + '" data-reply-recipient="' + escAttr(message.from) + '" aria-label="' + escAttr("Reply to " + message.from) + '">Reply</button>' : "";
+    return \`<details class="message-entry message-details" data-message-id="\${escAttr(message.id || "")}"><summary><div><span class="message-from">\${esc(message.from)}</span> <span class="message-time">\${esc(new Date(message.created_at).toLocaleString())}</span></div><span class="message-route">to \${esc(recipient)} · \${esc(message.intent || "message")} · #\${esc(message.seq ?? "—")}\${message.expects_reply ? ' · reply requested' : ''}</span><div class="message-body">\${esc(clean)}</div></summary><pre class="message-technical">\${esc(raw)}</pre></details>\` + replyButton;
   }
 
   async function cleanMessageBody(message, allMessages) {

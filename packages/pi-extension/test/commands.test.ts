@@ -7,6 +7,7 @@ import { SDK_CLIENT_PROTOCOL } from "@j01n/sdk";
 const ROOM = "https://j01n.me/r/room-1";
 const calls: Array<{ method: string; url: string; auth: string | null; body?: string }> = [];
 let boardResponse: Response | undefined;
+let teamParticipants: unknown[] | undefined;
 
 describe("pi-extension sessions", () => {
   const originalCwd = process.cwd();
@@ -14,6 +15,7 @@ describe("pi-extension sessions", () => {
   beforeEach(() => {
     calls.length = 0;
     boardResponse = undefined;
+    teamParticipants = undefined;
     process.chdir(mkdtempSync(join(tmpdir(), "j01n-pi-")));
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
@@ -21,6 +23,7 @@ describe("pi-extension sessions", () => {
       if (method === "PUT") return Response.json({ ok: true, cursor: 0, participant_token: "tok-1" });
       if (method === "GET" && String(url).endsWith("/wait")) return Response.json({ timeout: true, cursor: 0 });
       if (method === "GET" && String(url).endsWith("/board")) return boardResponse ?? Response.json({ board: {}, board_schema: null });
+      if (method === "GET" && String(url).endsWith("/participants")) return Response.json({ participants: teamParticipants ?? [] });
       if (method === "GET" && String(url).includes("/r/")) return Response.json({ cursor: 0, messages: [] });
       return Response.json({ ok: true, seq: 1, participant: {} });
     });
@@ -62,6 +65,20 @@ describe("pi-extension sessions", () => {
 
     calls.length = 0;
     await runj01n(["join", ROOM, "secret", "pi-agent", "--no-workspace"]);
+    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+  });
+
+  it("join announces --model and --provider; an identical row is not announced again", async () => {
+    const { runj01n } = await import("../commands");
+    await runj01n(["join", ROOM, "secret", "pi-agent", "--model", "claude-sonnet-4-5", "--provider", "anthropic", "--no-workspace"]);
+    const profile = JSON.parse(calls.find((c) => c.method === "PATCH")!.body!);
+    expect(profile.model).toBe("claude-sonnet-4-5");
+    expect(profile.provider).toBe("anthropic");
+
+    // The room row already carries the same model/provider: dedupe skips the write.
+    teamParticipants = [{ id: "pi-agent", state: "free", status: "s", last_seen_at: new Date().toISOString(), model: "claude-sonnet-4-5", provider: "anthropic" }];
+    calls.length = 0;
+    await runj01n(["join", ROOM, "secret", "pi-agent", "--model", "claude-sonnet-4-5", "--provider", "anthropic", "--no-workspace"]);
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
   });
 
@@ -150,6 +167,8 @@ describe("pi-extension sessions", () => {
     const { runj01n } = await import("../commands");
     const result = JSON.parse(await runj01n(["doctor", ROOM, "secret", "pi-agent"]));
     expect(result).toMatchObject({ client_protocol: SDK_CLIENT_PROTOCOL, client_update: "Update the Pi extension", open_questions: 1 });
+    expect(result.extension).toMatchObject({ reload_required: expect.any(Boolean), duplicate_install: expect.any(Boolean), warnings: expect.any(Array) });
+    expect(result.extension).toHaveProperty("loaded_commit");
     expect(asksAuth).toBe("Bearer tok-1");
   });
 

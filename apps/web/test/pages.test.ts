@@ -91,7 +91,9 @@ describe("homePage", () => {
     expect(html).toContain('<option value="600000">10 min</option>');
     expect(html).toContain('<option value="1800000" selected>30 min</option>');
     expect(html).toContain('<option value="3600000">1 h</option>');
-    expect(html).toContain("Save this safely and use it to invite bots & humans.");
+    expect(html).toContain("You will enter as host. Share the private invitation link from inside the room.");
+    expect(html).toContain('name="template" value="kanban" checked');
+    expect(html).toContain('name="participant_name"');
   });
 
   it("stacks board template choices in the create-room dialog", () => {
@@ -198,14 +200,13 @@ describe("room page", () => {
     expect(await viewer.decryptMessageBody(message, keys)).toEqual({ ok: true, value: { text: "My direct message" } });
   });
 
-  it("groups room details like the home page and keeps the host invitation collapsible", () => {
+  it("shows room details, the private invitation input, and host controls", () => {
     const html = roomPageHtml("room-1");
 
-    expect(html).toContain('class="room-overview"');
-    expect(html).toContain('class="room-overview-head"');
-    expect(html).toContain('class="room-share"');
-    expect(html).toContain('<details class="room-invite"');
-    expect(html).toContain('root.querySelector(".room-invite")?.open');
+    expect(html).toContain('data-connection-status');
+    expect(html).toContain('id="room-invitation" readonly');
+    expect(html).toContain('data-copy-invitation');
+    expect(html).toContain("This link grants room access. Share privately with people or agents.");
     expect(html).toContain('data-copy-room-url');
     expect(html).toContain('data-extend-room');
   });
@@ -225,7 +226,7 @@ describe("room page", () => {
     const end = html.indexOf("  async function renderRoom(", start);
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
-    expect(html).toContain('roomEvents.addEventListener("board", () => refreshRoom().catch(showRoomEventError))');
+    expect(html).toContain('roomEvents.addEventListener("board", (event) => {\n      recordRoomActivity(event, "board");\n      refreshRoom().catch(showRoomEventError);');
     expect(html).toContain('<section class="room-reservations" aria-label="File reservations">');
     expect(html).toContain('await renderReservations(board)');
 
@@ -245,10 +246,16 @@ describe("room page", () => {
     expect(await render({ reservations: { value: { one: { by: "alice", since: "now", sealed: "broken" } } } })).not.toContain("alice");
   });
 
+  it("renders each participant's announced model as provider/model", () => {
+    const html = roomPageHtml("room-1");
+    expect(html).toContain('const running = [p.provider, p.model].filter(Boolean).join("/")');
+    expect(html).toContain('<span class="participant-model">');
+  });
+
   it("keeps the recipient list current and excludes the sender", () => {
     const html = roomPageHtml("room-1");
 
-    expect(html).toContain('roomEvents.addEventListener("participant", () => refreshRoom().catch(showRoomEventError))');
+    expect(html).toContain('roomEvents.addEventListener("participant", (event) => {\n      recordRoomActivity(event, "participant");\n      refreshRoom().catch(showRoomEventError);');
     expect(html).toContain('roomEvents.addEventListener("open", () => {');
     expect(html).toMatch(/pList\.filter\(p => !p\.left_at && p\.id !== participantId\)/);
     expect(html).toContain('<option value="all">all</option>');
@@ -289,6 +296,12 @@ describe("skill page", () => {
     expect(skillMarkdown).toContain("concise. Link to artifacts");
     expect(skillMarkdown).toContain("Announce files before editing");
     expect(skillMarkdown).not.toContain("https://j01n.me/client/agent.py");
+  });
+
+  it("teaches reviewers to close the ask after recording a board verdict", () => {
+    expect(orchestrationMarkdown).toContain("A board status change alone does not close an open review ask");
+    expect(orchestrationMarkdown).toContain("--reply-to <review-request-id>");
+    expect(skillMarkdown).toContain("A board status change alone does not close an open review ask");
   });
 
   it("serves dedicated board example pages", async () => {

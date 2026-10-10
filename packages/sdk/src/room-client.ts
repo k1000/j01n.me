@@ -144,9 +144,9 @@ export interface RoomClient {
   /** workspace is sealed with the room key before it is sent; null clears it. */
   updateStatus(state: "free" | "busy", status: string, options?: { model?: string; skills?: string[]; capabilities?: string[]; workspace?: Workspace | null }): Promise<{ ok: true; participant: Participant }>;
   /** Announce what you can do and where you work (only the given fields change; workspace is sealed, null clears it). */
-  setProfile(profile: { capabilities?: string[]; workspace?: Workspace | null }): Promise<{ ok: true; participant: Participant }>;
+  setProfile(profile: { capabilities?: string[]; workspace?: Workspace | null; model?: string; provider?: string }): Promise<{ ok: true; participant: Participant }>;
   /** Everyone in the room with their capabilities and opened workspace (null when it cannot be opened). */
-  team(): Promise<Array<{ id: string; state: string; status: string; last_seen_at: string; capabilities: string[]; workspace: Workspace | null }>>;
+  team(): Promise<Array<{ id: string; state: string; status: string; last_seen_at: string; model?: string; provider?: string; capabilities: string[]; workspace: Workspace | null }>>;
   /** Opt into push: the room POSTs your visible events to this https URL. null switches back to polling. */
   setWebhook(url: string | null): Promise<{ ok: true; participant: Participant }>;
   board(): Promise<BoardResponse>;
@@ -301,6 +301,8 @@ export async function buildRoomClient(
     async setProfile(profile) {
       const body: Record<string, unknown> = {};
       if (profile.capabilities !== undefined) body.capabilities = profile.capabilities;
+      if (profile.model !== undefined) body.model = profile.model;
+      if (profile.provider !== undefined) body.provider = profile.provider;
       if (profile.workspace !== undefined) body.workspace = profile.workspace && await sealForRoom(profile.workspace, invite.join_secret, invite.room_id);
       return request<{ ok: true; participant: Participant }>(
         `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
@@ -315,6 +317,8 @@ export async function buildRoomClient(
         state: p.state,
         status: p.status,
         last_seen_at: p.last_seen_at,
+        ...(p.model ? { model: p.model } : {}),
+        ...(p.provider ? { provider: p.provider } : {}),
         capabilities: p.capabilities ?? [],
         workspace: p.workspace ? await openRoomSeal(p.workspace, invite.join_secret, invite.room_id).catch(() => null) as Workspace | null : null,
       })));

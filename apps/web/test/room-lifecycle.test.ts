@@ -909,6 +909,25 @@ describe("capabilities and workspace", () => {
     expect((all[1].body as { text: string }).text).toBe("agent-a stopped announcing its workspace");
   });
 
+  it("announces model and provider changes and stays quiet on identical values", async () => {
+    const fix = await bootstrapRoom();
+    await joinParticipant(fix, "agent-a");
+    await joinParticipant(fix, "agent-b");
+    const announcements = async () => (await getRoomJson<{ messages: RoomMessage[] }>(fix, "/?view=all", "agent-b")).messages.filter((m) => m.intent === "profile.changed");
+    expect((await patch(fix, { model: "claude-sonnet-4-5", provider: "anthropic" })).status).toBe(200);
+    let all = await announcements();
+    expect(all).toHaveLength(1);
+    expect(all[0].body).toMatchObject({ text: "agent-a now runs anthropic/claude-sonnet-4-5", model: "claude-sonnet-4-5", provider: "anthropic" });
+    // identical repeat: no new announcement
+    expect((await patch(fix, { model: "claude-sonnet-4-5", provider: "anthropic" })).status).toBe(200);
+    all = await announcements();
+    expect(all).toHaveLength(1);
+    // model-only change works even without a provider
+    await patch(fix, { model: "gpt-5" });
+    all = await announcements();
+    expect(all[1].body).toMatchObject({ text: "agent-a now runs anthropic/gpt-5", model: "gpt-5" });
+  });
+
   it("rejects a plaintext workspace so the server never stores paths", async () => {
     const fix = await bootstrapRoom();
     await joinParticipant(fix, "agent-a");

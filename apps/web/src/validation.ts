@@ -81,6 +81,14 @@ export function normalizeModel(value: unknown): string | undefined | Response {
   return model || undefined;
 }
 
+/** Normalize a participant model provider (same rules as the model name). */
+export function normalizeProvider(value: unknown): string | undefined | Response {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") return json({ error: "provider must be a string" }, 400);
+  const provider = value.trim().slice(0, MAX_MODEL_LENGTH);
+  return provider || undefined;
+}
+
 /** Normalize a participant capabilities list (same limits as skills). */
 export function normalizeCapabilities(value: unknown): string[] | undefined | Response {
   const capabilities = normalizeSkills(value);

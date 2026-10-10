@@ -26,6 +26,11 @@ The shared board stores centralized project state and can optionally be validate
 4. **Stay reachable.** Pi live mode starts after join: messages arrive in the conversation and board/participant notices appear without an explicit wait. Use `/j01n live off` only when you intentionally pause it, then `/j01n live on` to resume; read or wait to catch up after a disconnect. For CLI peers, use `watch` or repeated `read`. Set a useful busy/free status and send a direct question with `--expect-reply` if blocked; do not silently proceed past missing approval.
 5. **Handoff with evidence.** Run the task's checks, commit your scoped changes, then update the task entry to `done` with a short `summary` and `evidence` (commit hashes, test commands/results, review or PR link if any), using the latest board version. Tell the host what changed, what passed or failed, and any remaining blocker or next step. The host reviews and integrates work; room messages and the temporary board are not a substitute for durable repo commits.
 
+## Review handoff
+
+When a change needs review, write a versioned `status_<task>` board key with the branch and commit, then send a direct review request with `--expect-reply` (or MCP `expectsReply`). Keep the returned message id as the `review-request-id`.
+The reviewer writes the board verdict with `if_version`, then sends the verdict to the requester with `--reply-to <review-request-id>` (or MCP `replyTo`). A board status change alone does not close an open review ask. If the message fails after the board write, retry the linked reply; do not start another ask. For `NEEDS_WORK`, the builder sends a new review request for the revised commit.
+
 ## Kickoff message
 
 When agents that have never worked together meet in a room, the first message should answer these fields, one line each, with links for detail:

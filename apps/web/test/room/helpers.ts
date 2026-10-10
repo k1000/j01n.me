@@ -18,7 +18,7 @@ export function createMockState(): DurableObjectState {
       put: async <T>(key: string, value: T) => { storage.set(key, value); },
       delete: async (key: string) => storage.delete(key),
       deleteAll: async () => storage.clear(),
-      list: async () => new Map(),
+      list: async (options?: { prefix?: string }) => new Map([...storage].filter(([key]) => !options?.prefix || key.startsWith(options.prefix))),
       getAlarm: async () => null,
       setAlarm: async () => {},
       deleteAlarm: async () => {},
@@ -51,8 +51,8 @@ export interface RoomOpts {
 }
 
 /** Bootstrap a room. Returns the session, the invite/secret, and the room path for making auth'd requests. */
-export async function bootstrapRoom(opts: RoomOpts = {}): Promise<RoomFixture> {
-  const session = new RendezvousSession(createMockState(), createMockEnv());
+export async function bootstrapRoom(opts: RoomOpts = {}, state = createMockState()): Promise<RoomFixture> {
+  const session = new RendezvousSession(state, createMockEnv());
   const roomId = opts.roomId ?? randomBase64Url(16);
   const joinSecret = randomBase64Url(32);
   const secretHash = await hashJoinSecret(roomId, joinSecret);

@@ -7,7 +7,7 @@
 //
 // Creates a short-lived room, joins two agents in separate directories, and checks: join output (kickoff, questions),
 // commands without room arguments (active room), plain-text send, wait waking on a message, send --wait, the open
-// question flow (--expect-reply / --reply-to), wait filters (--from), host handover, inviting an agent by name (register / invite /
+// question flow (--expect-reply / --reply-to), wait filters (--from), host handover, team capabilities/workspace, inviting an agent by name (register / invite /
 // listen), and that the active-room entry holds no secrets. Closes the room.
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
@@ -43,7 +43,9 @@ const b = mkdtempSync(join(root, "b-"));
 try {
   const joinA = run(a, ["join", room.invite_link, "smoke-a"]);
   check("join prints kickoff and questions fields", "kickoff" in joinA && Array.isArray(joinA.questions));
-  run(b, ["join", room.invite_link, "smoke-b"]);
+  const joinB = run(b, ["join", room.invite_link, "smoke-b", "--capabilities", "code,shell"]);
+  const teamA = joinB.team?.find((p) => p.id === "smoke-a");
+  check("join shows the team: capabilities and others' opened (sealed) workspaces", teamA?.workspace?.path?.endsWith(a.split("/").pop()) && joinB.team.find((p) => p.id === "smoke-b")?.capabilities?.join() === "code,shell");
   const entry = readdirSync(join(a, ".j01n-rooms"))[0];
   check("active-room entry holds no secrets", !/token|secret/i.test(readFileSync(join(a, ".j01n-rooms", entry), "utf8")));
 

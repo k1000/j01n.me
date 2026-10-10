@@ -1,3 +1,4 @@
+import { openKickoff, sealKickoff } from "@j01n/sdk/crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_EXTEND_MS, MAX_BODY_BYTES, MAX_INVITE_TTL_MS, MIN_INVITE_TTL_MS } from "../src/constants";
 import { hashJoinSecret } from "@j01n/sdk/crypto";
@@ -181,8 +182,8 @@ describe("room lifecycle", () => {
 
     expect((await status("helper/0")).headers.get("x-j01n-client-update")).toContain("curl -fsSL https://j01n.me/client/j01n.js");
     expect((await status("sdk/0")).headers.get("x-j01n-client-update")).toContain("pi install https://gitlab.com/k1000/j01n.me");
-    expect((await status("helper/6")).headers.get("x-j01n-client-update")).toBeNull();
-    expect((await status("helper/5")).headers.get("x-j01n-client-update")).toContain("older than 6");
+    expect((await status("helper/7")).headers.get("x-j01n-client-update")).toBeNull();
+    expect((await status("helper/6")).headers.get("x-j01n-client-update")).toContain("older than 7");
     expect((await status()).headers.get("x-j01n-client-update")).toBeNull();
   });
 
@@ -844,6 +845,38 @@ describe("participant profile updates", () => {
     expect(res.status).toBe(200);
     const parts = await getRoomJson<{ participants: Array<{ id: string; public_key?: string }> }>(fix, "/participants");
     expect(parts.participants.find((p) => p.id === "agent-a")?.public_key).toBe("raw-base64url-public-key");
+  });
+});
+
+describe("capabilities and workspace", () => {
+  const patch = (fix: Awaited<ReturnType<typeof bootstrapRoom>>, body: unknown) => fix.session.fetch(new Request(
+    `https://room${fix.roomPath}/participants/agent-a`,
+    { method: "PATCH", headers: { ...participantAuthHeaders(fix, "agent-a"), "content-type": "application/json" }, body: JSON.stringify(body) },
+  ));
+  const agentA = async (fix: Awaited<ReturnType<typeof bootstrapRoom>>) =>
+    (await getRoomJson<{ participants: Array<{ id: string; capabilities?: string[]; workspace?: string }> }>(fix, "/participants")).participants.find((p) => p.id === "agent-a");
+
+  it("announces capabilities and a sealed workspace that every participant sees", async () => {
+    const fix = await bootstrapRoom();
+    await joinParticipant(fix, "agent-a");
+    const sealed = (await sealKickoff({ path: "/work/api", repo: "gitlab.com/acme/api", branch: "main" }, fix.joinSecret, fix.roomId)).encrypted_payload;
+    expect((await patch(fix, { capabilities: ["code", "browser", "vision"], workspace: sealed })).status).toBe(200);
+    const announced = await agentA(fix);
+    expect(announced?.capabilities).toEqual(["code", "browser", "vision"]);
+    expect(await openKickoff({ encrypted_payload: announced!.workspace! }, fix.joinSecret, fix.roomId)).toEqual({ path: "/work/api", repo: "gitlab.com/acme/api", branch: "main" });
+
+    expect((await patch(fix, { status: "working" })).status).toBe(200);
+    expect((await agentA(fix))?.workspace).toBe(sealed);
+    expect((await patch(fix, { workspace: null })).status).toBe(200);
+    expect((await agentA(fix))?.workspace).toBeUndefined();
+  });
+
+  it("rejects a plaintext workspace so the server never stores paths", async () => {
+    const fix = await bootstrapRoom();
+    await joinParticipant(fix, "agent-a");
+    const res = await patch(fix, { workspace: "/Users/someone/secret-project" });
+    expect(res.status).toBe(400);
+    expect(await agentA(fix)).not.toHaveProperty("workspace");
   });
 });
 

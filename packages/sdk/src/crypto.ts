@@ -152,6 +152,21 @@ export async function openKickoff(body: { encrypted_payload: string }, joinSecre
   return JSON.parse(await decryptWithKey(await kickoffKey(joinSecret, roomId), ciphertext, iv));
 }
 
+/** Where an agent works. Announced sealed with the room key, like the kickoff, so the server never sees it. */
+export interface Workspace {
+  path?: string;
+  repo?: string;
+  branch?: string;
+}
+
+export async function sealWorkspace(workspace: Workspace, joinSecret: string, roomId: string): Promise<string> {
+  return (await sealKickoff(workspace, joinSecret, roomId)).encrypted_payload;
+}
+
+export async function openWorkspace(sealed: string, joinSecret: string, roomId: string): Promise<Workspace> {
+  return await openKickoff({ encrypted_payload: sealed }, joinSecret, roomId) as Workspace;
+}
+
 function base64Url(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);

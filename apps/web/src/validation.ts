@@ -81,6 +81,12 @@ export function normalizeModel(value: unknown): string | undefined | Response {
   return model || undefined;
 }
 
+/** Normalize a participant capabilities list (same limits as skills). */
+export function normalizeCapabilities(value: unknown): string[] | undefined | Response {
+  const capabilities = normalizeSkills(value);
+  return capabilities instanceof Response ? json({ error: "capabilities must be an array of strings" }, 400) : capabilities;
+}
+
 /** Normalize a participant skills list. */
 export function normalizeSkills(value: unknown): string[] | undefined | Response {
   if (value === undefined) return undefined;

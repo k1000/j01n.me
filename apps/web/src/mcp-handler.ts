@@ -22,7 +22,8 @@ import type { CreateRoomBody } from "./invite";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { SdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { inviteLink, parseInviteLink } from "@j01n/sdk/invite";
-import { isEncryptedBody, isSealedKickoff, openKickoff, sealKickoff } from "@j01n/sdk/crypto";
+import { isEncryptedBody, isSealedKickoff, openKickoff, openWorkspace, sealKickoff, sealWorkspace } from "@j01n/sdk/crypto";
+import type { Workspace } from "@j01n/sdk/crypto";
 import type { RoomMessage } from "./types";
 import { deleteInvite, inviteAgent, registerAgent, waitForInvites } from "@j01n/sdk/agents";
 import type { AgentFetch, AgentIdentity } from "@j01n/sdk/agents";
@@ -731,6 +732,11 @@ async function pumpRoomEvents(
   }
 }
 
+const CAPABILITIES_PARAM = { type: "string", description: "What you can do, comma-separated: code, shell, browser, screenshot, vision (read images), web_search, files" };
+const WORKSPACE_PARAM = {
+  type: "object", description: "Where you work (sealed with the room key; the server stores only ciphertext)",
+  properties: { path: { type: "string" }, repo: { type: "string" }, branch: { type: "string" } },
+};
 const INVITE_JSON_PARAM = { type: "string", description: 'The room link from create_room (https://j01n.me/room/<id>#<secret>) or the handoff JSON {"access":"<room_url>","join_secret":"<secret>"}' };
 const WEBHOOK_URL_PARAM = { type: "string", description: 'Optional, only if you can expose a public https endpoint: the room POSTs events you can see (messages to you or all, board and participant changes) there as wake-up signals, then call read_messages. Omit to poll with read_messages (default). "off" removes it.' };
 const IF_VERSION_PARAM = { type: "number", description: "Optional: only write if the key is still at this version (from read_board / wait_for_event; 0 = the key must not exist yet). A conflict returns the current value." };
@@ -766,6 +772,8 @@ const tools: Record<string, ToolDef> = {
         inviteJson: INVITE_JSON_PARAM,
         participantId: { type: "string" },
         webhookUrl: WEBHOOK_URL_PARAM,
+        capabilities: CAPABILITIES_PARAM,
+        workspace: WORKSPACE_PARAM,
       },
       required: ["inviteJson", "participantId"],
     },
@@ -774,11 +782,12 @@ const tools: Record<string, ToolDef> = {
       const participantId = params.participantId as string;
       const crypto = await ensureEcdhSession(env, roomUrl, participantId, secret);
       const { public_key } = await crypto.announceKeyBody();
+      const profile = await profileBody(params, secret, roomUrl);
 
       // Joining uses the room secret; the participant id is in the path.
       const joinResult = await doFetch(env, roomUrl, `/participants/${encodeURIComponent(participantId)}`, secret, {
         method: "PUT",
-        body: { public_key, state: "free", status: "joined via hosted MCP", ...webhookUrlBody(params.webhookUrl) },
+        body: { public_key, state: "free", status: "joined via hosted MCP", ...webhookUrlBody(params.webhookUrl), ...profile },
       }) as JoinResponse & { cursor?: number };
 
       // Store the per-participant token first: every call below (and later tools) authenticates with it.
@@ -827,6 +836,8 @@ const tools: Record<string, ToolDef> = {
         // The whole board: every key with value, version, updated_by and updated_at.
         board,
         questions,
+        // Who is in the room: capabilities and where each works.
+        team: await teamOf(env, roomUrl, secret, participantId),
         ok: true,
         room_id: roomUrl.split("/").pop()!,
         room_url: roomUrl,
@@ -954,11 +965,11 @@ const tools: Record<string, ToolDef> = {
   },
 
   list_participants: {
-    description: "List participants with state, model, skills.",
+    description: "List participants with state, model, skills, capabilities and workspace (where each works; opened when you pass the room link).",
     inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
-      return doFetch(env, roomUrl, "/participants", secret, { participantId: params.participantId as string });
+      return { participants: await teamOf(env, roomUrl, secret, params.participantId as string) };
     },
   },
 
@@ -970,10 +981,13 @@ const tools: Record<string, ToolDef> = {
         state: { type: "string" }, status: { type: "string" },
         model: { type: "string" }, skills: { type: "string" },
         webhookUrl: WEBHOOK_URL_PARAM,
+        capabilities: CAPABILITIES_PARAM,
+        workspace: WORKSPACE_PARAM,
       }, required: ["inviteJson", "participantId", "state", "status"],
     },
     handler: async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+      const profile = await profileBody(params, secret, roomUrl);
       return doFetch(env, roomUrl, `/participants/${params.participantId}`, secret, {
         method: "PATCH",
         participantId: params.participantId as string,
@@ -983,6 +997,7 @@ const tools: Record<string, ToolDef> = {
           model: params.model,
           skills: parseSkills(params.skills as string),
           ...webhookUrlBody(params.webhookUrl),
+          ...profile,
         },
       });
     },
@@ -1321,6 +1336,30 @@ function handleToolsList(body: McpRequest): Response {
     inputSchema: usesSessionRoom(name, def) ? withOptionalRoomArgs(def.inputSchema) : def.inputSchema,
   }));
   return jsonRpcResponse(mcpResult(body.id ?? 0, { tools: toolList }));
+}
+
+// ── Capabilities and workspace ──
+
+async function profileBody(params: Record<string, unknown>, secret: string, roomUrl: string): Promise<Record<string, unknown>> {
+  const body: Record<string, unknown> = {};
+  if (typeof params.capabilities === "string") body.capabilities = parseSkills(params.capabilities);
+  if (params.workspace && typeof params.workspace === "object") {
+    if (secret === SESSION_ROOM_SECRET) throw new Error("pass inviteJson (the room link) to announce a workspace: it is sealed with the room key");
+    const { path, repo, branch } = params.workspace as Workspace;
+    body.workspace = await sealWorkspace({ path, repo: repo?.replace(/\/\/[^@/]+@/, "//"), branch }, secret, roomUrl.split("/").pop()!);
+  }
+  return body;
+}
+
+/** Participants with capabilities and opened workspaces (left sealed when only the session room is known). */
+async function teamOf(env: Env, roomUrl: string, secret: string, participantId: string) {
+  const { participants = [] } = await doFetch(env, roomUrl, "/participants", secret, { participantId }) as { participants?: Array<Record<string, unknown>> };
+  return Promise.all(participants.map(async (p) => ({
+    ...p,
+    ...(typeof p.workspace === "string" && secret !== SESSION_ROOM_SECRET
+      ? { workspace: await openWorkspace(p.workspace, secret, roomUrl.split("/").pop()!).catch(() => null) }
+      : {}),
+  })));
 }
 
 // ── Agent inboxes: served by the same Worker, so they are called in-process ──

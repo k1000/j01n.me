@@ -444,6 +444,11 @@ function roomPageStyles(): string {
   .participant-card .participant-name { font-weight: 700; }
   .participant-card .participant-state { font-size: 0.85rem; opacity: 0.72; }
   .participant-card .participant-status { font-size: 0.9rem; }
+  .participant-card { flex-wrap: wrap; }
+  .participant-profile { flex-basis: 100%; display: grid; gap: 0.15rem; font-size: 0.85rem; }
+  .button.button-small { margin: 0; padding: 0.35rem 0.6rem; font-size: 0.8rem; }
+  .participant-caps { opacity: 0.8; }
+  .participant-workspace { overflow-wrap: anywhere; }
   .message-composer { display: grid; gap: 0.75rem; margin: 0.75rem 0 1rem; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
   .message-composer label { display: grid; gap: 0.35rem; font-weight: 700; }
   .message-composer select, .message-composer textarea { width: 100%; box-sizing: border-box; font: inherit; border: 2px solid currentColor; background: Canvas; color: currentColor; }
@@ -753,9 +758,17 @@ function roomPageScript(roomId: string): string {
           }).join("");
 
     const pList = Object.values(participants);
+    // Where each participant works: sealed with the room key, opened here with the join secret.
+    const workspaces = Object.fromEntries(await Promise.all(pList.map(async (p) => [p.id, p.workspace ? await openSealedKickoff(p.workspace).catch(() => null) : null])));
+    const profileLine = (p) => {
+      const caps = (p.capabilities || []).length ? \`<span class="participant-caps">\${esc(p.capabilities.join(" · "))}</span>\` : "";
+      const ws = workspaces[p.id];
+      const where = ws ? [[ws.repo, ws.branch && "@" + ws.branch].filter(Boolean).join(" "), ws.path].filter(Boolean).map((line) => \`<code class="participant-workspace">\${esc(line)}</code>\`).join("") : "";
+      return caps || where ? \`<div class="participant-profile">\${caps}\${where}</div>\` : "";
+    };
     const participantsHtml = pList.length === 0
       ? \`<p class="board-empty">No participants yet.</p>\`
-      : pList.map(p => \`<div class="participant-card"><span class="participant-name">\${esc(p.id)}</span><span class="participant-state">[\${esc(p.state)}]</span><span class="participant-status">\${esc(p.status)}</span>\${p.id === room.host_id ? \` <span class="participant-state">host</span>\` : isHost && !p.left_at ? \` <button class="button button-small" type="button" data-make-host="\${escAttr(p.id)}" title="Hand the host role to \${escAttr(p.id)}">Make host</button>\` : ""}</div>\`).join("");
+      : pList.map(p => \`<div class="participant-card"><span class="participant-name">\${esc(p.id)}</span><span class="participant-state">[\${esc(p.state)}]</span><span class="participant-status">\${esc(p.status)}</span>\${p.id === room.host_id ? \` <span class="participant-state">host</span>\` : isHost && !p.left_at ? \` <button class="button button-small" type="button" data-make-host="\${escAttr(p.id)}" title="Hand the host role to \${escAttr(p.id)}">Make host</button>\` : ""}\${profileLine(p)}</div>\`).join("");
     const recipientOptions = [\`<option value="all">all</option>\`, ...pList.filter(p => !p.left_at && p.id !== participantId).map(p => \`<option value="\${escAttr(p.id)}">\${esc(p.id)}</option>\`)].join("");
 
     const messagesHtml = messages.length === 0

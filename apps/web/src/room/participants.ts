@@ -1,6 +1,6 @@
 import { json, type GuardResult } from "../format";
 import type { InviteState, Participant } from "../types";
-import { normalizeState, normalizeStatus, normalizeModel, normalizeSkills } from "../validation";
+import { normalizeState, normalizeStatus, normalizeModel, normalizeSkills, normalizeCapabilities } from "../validation";
 import { hashJoinSecret, randomBase64Url } from "@j01n/sdk/crypto";
 
 /** Participant as shown to others: drops the token verifier hash and the private webhook URL. */
@@ -17,6 +17,9 @@ interface ParticipantProfile {
   status?: string;
   model?: string;
   skills?: string[];
+  capabilities?: string[];
+  /** Sealed workspace; null clears it. */
+  workspace?: string | null;
   public_key?: string;
   /** null clears the webhook. */
   webhook_url?: string | null;
@@ -57,10 +60,24 @@ export function parseParticipantProfile(body: Record<string, unknown>): Particip
   if (model instanceof Response) return model;
   const skills = normalizeSkills(body.skills);
   if (skills instanceof Response) return skills;
+  const capabilities = normalizeCapabilities(body.capabilities);
+  if (capabilities instanceof Response) return capabilities;
+  const workspace = normalizeWorkspace(body.workspace);
+  if (workspace instanceof Response) return workspace;
   const public_key = typeof body.public_key === "string" ? body.public_key.slice(0, 256) : undefined;
   const webhook_url = normalizeWebhookUrl(body.webhook_url);
   if (webhook_url instanceof Response) return webhook_url;
-  return { state, status, model, skills, public_key, webhook_url };
+  return { state, status, model, skills, capabilities, workspace, public_key, webhook_url };
+}
+
+/** The workspace must arrive sealed with the room key, so the server never stores a plaintext path or repo. */
+function normalizeWorkspace(value: unknown): string | null | undefined | Response {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  if (typeof value !== "string" || !value.startsWith("jsk1:") || value.length > 4096) {
+    return json({ error: "workspace must be sealed with the room key (jsk1:...); clients do this for you" }, 400);
+  }
+  return value;
 }
 
 function normalizeWebhookUrl(value: unknown): string | null | undefined | Response {
@@ -85,6 +102,8 @@ export function createJoinedParticipant(participantId: string, profile: Particip
     status_updated_at: now,
     ...(profile.model ? { model: profile.model } : {}),
     ...(profile.skills ? { skills: profile.skills } : {}),
+    ...(profile.capabilities ? { capabilities: profile.capabilities } : {}),
+    ...(profile.workspace ? { workspace: profile.workspace } : {}),
     ...(profile.public_key ? { public_key: profile.public_key } : {}),
     ...(profile.webhook_url ? { webhook_url: profile.webhook_url } : {}),
     ...(tokenHash ? { tokenHash } : {}),
@@ -107,17 +126,20 @@ export function withTokenIndex(invite: InviteState, tokenOnlyHash: string | unde
 
 function updateParticipantProfile(participant: Participant, profile: ParticipantProfile): Participant {
   const now = new Date().toISOString();
-  const { webhook_url: currentWebhookUrl, ...rest } = participant;
+  const { webhook_url: currentWebhookUrl, workspace: currentWorkspace, ...rest } = participant;
   const webhook_url = profile.webhook_url === undefined ? currentWebhookUrl : profile.webhook_url ?? undefined;
+  const workspace = profile.workspace === undefined ? currentWorkspace : profile.workspace ?? undefined;
   return {
     ...rest,
     ...(webhook_url ? { webhook_url } : {}),
+    ...(workspace ? { workspace } : {}),
     state: profile.state ?? participant.state ?? "free",
     status: profile.status ?? participant.status ?? "joined",
     status_updated_at: now,
     last_seen_at: now,
     ...(profile.model !== undefined ? { model: profile.model } : {}),
     ...(profile.skills !== undefined ? { skills: profile.skills } : {}),
+    ...(profile.capabilities !== undefined ? { capabilities: profile.capabilities } : {}),
     ...(profile.public_key !== undefined ? { public_key: profile.public_key } : {}),
   };
 }

@@ -718,4 +718,34 @@ describe("hosted MCP handler", () => {
     expect(inboxBodies.some((body) => body.includes("very-secret-join-secret"))).toBe(false);
     expect(await call("wait_for_invite", { agentIdentity: guest.agentIdentity, timeoutSeconds: 1 })).toEqual({ timeout: true });
   });
+
+  it("join_room announces capabilities and a workspace sealed with the room key, and returns the team opened", async () => {
+    const bodies: string[] = [];
+    let workspace: string | undefined;
+    const env = {
+      RENDEZVOUS: {
+        idFromName: () => "id",
+        get: () => ({
+          fetch: async (url: string, init?: RequestInit) => {
+            const path = new URL(url).pathname;
+            if (init?.body) bodies.push(String(init.body));
+            if (path.includes("__load_session")) return Response.json({ sessions: {} });
+            if (init?.method === "PUT") { workspace = JSON.parse(String(init.body)).workspace; return Response.json({ ok: true, cursor: 0, participant_token: "tok" }); }
+            if (path.endsWith("/participants")) return Response.json({ participants: [{ id: "a", capabilities: ["code", "vision"], workspace }] });
+            return Response.json({ ok: true, messages: [], board: {}, asks: [] });
+          },
+        }),
+      },
+    } as never;
+    const result = await toolResultText<{ team: Array<{ id: string; capabilities: string[]; workspace: unknown }> }>(await handleMcpRequest(rpc("tools/call", { name: "join_room", arguments: {
+      inviteJson: "https://j01n.me/room/ws-room#very-secret-join-secret", participantId: "a",
+      capabilities: "code, vision", workspace: { path: "/Users/someone/private-repo", repo: "https://user:token@gitlab.com/acme/api.git", branch: "main" },
+    } }), env));
+
+    const put = JSON.parse(bodies.find((b) => b.includes("public_key") && b.includes("capabilities"))!);
+    expect(put.capabilities).toEqual(["code", "vision"]);
+    expect(put.workspace).toMatch(/^jsk1:/);
+    expect(bodies.join()).not.toContain("/Users/someone/private-repo");
+    expect(result.team[0]).toMatchObject({ id: "a", capabilities: ["code", "vision"], workspace: { path: "/Users/someone/private-repo", repo: "https://gitlab.com/acme/api.git", branch: "main" } });
+  });
 });

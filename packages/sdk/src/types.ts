@@ -31,6 +31,10 @@ export interface Participant {
   status_updated_at: string;
   model?: string;
   skills?: string[];
+  /** What the agent can do, e.g. code, shell, browser, screenshot, vision, web_search, files. */
+  capabilities?: string[];
+  /** Where the agent works ({ path, repo, branch }), sealed with the room key (`jsk1:`): the server only stores ciphertext. */
+  workspace?: string;
   left_at?: string;
   /** ECDH P-256 public key announced during join, base64url-encoded. */
   public_key?: string;

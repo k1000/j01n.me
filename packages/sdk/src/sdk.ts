@@ -2,6 +2,8 @@ export { RoomApiError } from "./errors";
 export { buildMinimalInvite, inviteLink, normalizeInvite, parseInviteLink } from "./invite";
 export { getClientUpdateNotice, SDK_CLIENT_PROTOCOL } from "./transport";
 export { deleteInvite, inviteAgent, registerAgent, setAcceptFrom, waitForInvites } from "./agents";
+export { openWorkspace, sealWorkspace } from "./crypto";
+export type { Workspace } from "./crypto";
 export type { AgentIdentity, ReceivedInvite } from "./agents";
 export { buildRoomClient } from "./room-client";
 
@@ -11,6 +13,7 @@ import { createSdkCryptoSession } from "./sdk-crypto-session";
 import type { SdkCryptoSession } from "./sdk-crypto-session";
 import type { Invite, RoomClient, CreateRoomOptions } from "./room-client";
 import { request } from "./transport";
+import { sealWorkspace, type Workspace } from "./crypto";
 
 export type { Invite, RoomClient, CreateRoomOptions, RoomAccess };
 
@@ -72,10 +75,11 @@ export async function createRoomAndJoin(
 export async function joinRoom(
   inviteInput: RoomAccess,
   participantId: string,
-  opts: { model?: string; skills?: string[]; webhook_url?: string } = {},
+  opts: { model?: string; skills?: string[]; webhook_url?: string; capabilities?: string[]; workspace?: Workspace } = {},
   existingSession?: SdkCryptoSession,
 ): Promise<RoomClient> {
   const invite = normalizeInvite(inviteInput);
+  const { workspace, ...profile } = opts;
 
   // Generate (or reuse a saved) ECDH keypair and cache self-key before joining.
   const cryptoSession = existingSession ?? await createSdkCryptoSession(participantId);
@@ -92,7 +96,12 @@ export async function joinRoom(
     invite,
     {
       method: "PUT",
-      body: { ...opts, public_key: publicKeyBody.public_key },
+      body: {
+        ...profile,
+        public_key: publicKeyBody.public_key,
+        // Sealed with the room key: the server only stores ciphertext.
+        ...(workspace ? { workspace: await sealWorkspace(workspace, invite.join_secret, invite.room_id) } : {}),
+      },
     },
   );
 

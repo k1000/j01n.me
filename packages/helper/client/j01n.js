@@ -16,6 +16,7 @@
    Kickoff:  node .j01n/j01n.js kickoff <room link> <me> Goal: review the SDK docs   (sealed: only invite holders can read it)
    Asks:     node .j01n/j01n.js send <to> Can you review? --expect-reply   /   send <from> done --reply-to <message id>
    Agents:   register <me> [allowed,agents]  |  invite <me> <to> <room link>  |  listen <me>   (invite agents by name)
+   Profile:  join <link> <me> --capabilities code,shell,browser,screenshot,vision   (workspace: cwd + git remote/branch, sealed; --no-workspace skips)
    Host:     node .j01n/j01n.js host <participant>   (host only: hand the host role over; the host cannot leave others without one)
    Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, host, register, allow, invite, invites, listen
 */
@@ -28,7 +29,7 @@ const dec = new TextDecoder();
 const rawArgs = process.argv.slice(2).filter((arg, index) => index !== 0 || arg !== '--');
 const cmd = rawArgs[0];
 // Room-feature version this helper speaks; bump with CLIENT_PROTOCOL in apps/web/src/constants.ts.
-const CLIENT_PROTOCOL = 6;
+const CLIENT_PROTOCOL = 7;
 let updateNoticeShown = false;
 let clientUpdateNotice = null;
 if (cmd === 'create') {
@@ -250,6 +251,24 @@ async function kickoffKey() {
 }
 function isSealedKickoff(body) { return typeof body?.encrypted_payload === 'string' && body.encrypted_payload.startsWith('jsk1:'); }
 async function openKickoff(body) { const [iv, ciphertext] = body.encrypted_payload.slice(5).split('.'); return JSON.parse(await aesDecrypt(await kickoffKey(), ciphertext, iv)); }
+// Workspaces (where each agent works) are sealed with the same room key, so the server only stores ciphertext.
+async function sealJson(value) { const { iv, ciphertext } = await aesEncrypt(await kickoffKey(), JSON.stringify(value)); return 'jsk1:' + iv + '.' + ciphertext; }
+async function detectWorkspace() {
+  const { execFileSync } = await import('node:child_process');
+  const git = (...args) => { try { return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined; } catch { return undefined; } };
+  const repo = git('remote', 'get-url', 'origin')?.replace(/\/\/[^@/]+@/, '//'); // never announce user:token@
+  const branch = git('branch', '--show-current');
+  return { path: process.cwd(), ...(repo ? { repo } : {}), ...(branch ? { branch } : {}) };
+}
+// Everyone in the room: capabilities and opened workspace (null when it cannot be opened).
+async function team(state) {
+  const r = await requestJson(roomUrl + '/participants', { headers: tokenHeaders(state) });
+  if (!r.ok) return [];
+  return Promise.all((r.body.participants || []).filter((p) => !p.left_at).map(async (p) => ({
+    id: p.id, state: p.state, status: p.status, capabilities: p.capabilities || [],
+    workspace: p.workspace ? await openKickoff({ encrypted_payload: p.workspace }).catch(() => null) : null,
+  })));
+}
 async function decryptedMessages(state, messages) {
   const out = [];
   for (const m of messages) {
@@ -399,6 +418,15 @@ const COMMANDS = {
     }
     headers = tokenHeaders(state);
     await announce(state);
+    // Flags: --capabilities code,shell,... and --no-workspace (do not announce where you work).
+    const capIndex = rest.indexOf('--capabilities');
+    const announced = {};
+    if (capIndex >= 0) announced.capabilities = String(rest[capIndex + 1] || '').split(',').map((c) => c.trim()).filter(Boolean);
+    if (!rest.includes('--no-workspace')) announced.workspace = await sealJson(await detectWorkspace());
+    if (Object.keys(announced).length) {
+      const p = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PATCH', headers: { ...tokenHeaders(state), 'content-type': 'application/json' }, body: JSON.stringify(announced) });
+      if (!p.ok) die(formatErrorBody(p.body));
+    }
     const profile = { access: roomUrl, participant_id: me, participant_token: state.participantToken, key_file: keyFile };
     await rememberRoom();
     // Start oriented: include the board's kickoff (if the board read fails, the join still succeeded).
@@ -415,7 +443,7 @@ const COMMANDS = {
     const opened = await decryptedMessages(state, pending.map((a) => a.message));
     const questions = pending.map((a, i) => ({ id: a.ask_id, seq: a.seq, from: a.from, body: opened[i].body, due_at: a.due_at, overdue: a.overdue, ...(opened[i].decrypt_error ? { decrypt_error: opened[i].decrypt_error } : {}) }));
     // The whole board: every key with value, version, updated_by and updated_at.
-    console.log(JSON.stringify({ ...profile, ...kickoff, board: board.ok ? board.body.board ?? {} : null, questions }, null, 2));
+    console.log(JSON.stringify({ ...profile, ...kickoff, board: board.ok ? board.body.board ?? {} : null, questions, team: await team(state) }, null, 2));
   },
   async send(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
     const [to, ...args] = rest;

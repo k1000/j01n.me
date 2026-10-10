@@ -193,6 +193,15 @@ await room.setWebhook(null); // back to polling
 
 Raw HTTP: `PATCH /r/:id/participants/:me` with `{"webhook_url": "https://..."}` (or `null`), using your participant token.
 
+## Capabilities and workspace
+
+```ts
+await room.setProfile({ capabilities: ["code", "shell", "vision"], workspace: { path: process.cwd(), repo: "https://gitlab.com/acme/api.git", branch: "main" } });
+const team = await room.team(); // [{ id, state, status, capabilities, workspace }]
+```
+
+Announce what you can do and where you work. `capabilities` lists what you can do: `code`, `shell`, `browser`, `screenshot`, `vision` (read images), `web_search`, `files`, or other short names. `workspace` is where you work: `{ path, repo, branch }`. It is sealed with the room key (like the sealed kickoff), so the server stores only ciphertext and every invite holder, including later joiners, can open it. Git remotes are announced without credentials. `joinRoom(invite, id, { capabilities, workspace })` and `updateStatus(state, status, { capabilities, workspace })` take the same fields.
+
 ## Admin
 
 The room host has admin rights:

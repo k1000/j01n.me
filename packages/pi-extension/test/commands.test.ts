@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SDK_CLIENT_PROTOCOL } from "@j01n/sdk";
 
 const ROOM = "https://j01n.me/r/room-1";
-const calls: Array<{ method: string; url: string; auth: string | null }> = [];
+const calls: Array<{ method: string; url: string; auth: string | null; body?: string }> = [];
 let boardResponse: Response | undefined;
 
 describe("pi-extension sessions", () => {
@@ -17,7 +17,7 @@ describe("pi-extension sessions", () => {
     process.chdir(mkdtempSync(join(tmpdir(), "j01n-pi-")));
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
-      calls.push({ method, url: String(url), auth: new Headers(init?.headers).get("authorization") });
+      calls.push({ method, url: String(url), auth: new Headers(init?.headers).get("authorization"), ...(init?.body ? { body: String(init.body) } : {}) });
       if (method === "PUT") return Response.json({ ok: true, cursor: 0, participant_token: "tok-1" });
       if (method === "GET" && String(url).endsWith("/wait")) return Response.json({ timeout: true, cursor: 0 });
       if (method === "GET" && String(url).endsWith("/board")) return boardResponse ?? Response.json({ board: {}, board_schema: null });
@@ -50,6 +50,19 @@ describe("pi-extension sessions", () => {
     await runj01n(["join", ROOM, "secret", "pi-agent"]);
     await runj01n(["host", "claude-code"]);
     expect(calls).toContainEqual(expect.objectContaining({ method: "POST", url: `${ROOM}/host`, auth: "Bearer tok-1" }));
+  });
+
+  it("join announces capabilities and a sealed workspace (never the plaintext path); --no-workspace skips it", async () => {
+    const { runj01n } = await import("../commands");
+    await runj01n(["join", ROOM, "secret", "pi-agent", "--capabilities", "code,shell,vision"]);
+    const profile = JSON.parse(calls.find((c) => c.method === "PATCH")!.body!);
+    expect(profile.capabilities).toEqual(["code", "shell", "vision"]);
+    expect(profile.workspace).toMatch(/^jsk1:/);
+    expect(JSON.stringify(calls)).not.toContain(process.cwd());
+
+    calls.length = 0;
+    await runj01n(["join", ROOM, "secret", "pi-agent", "--no-workspace"]);
+    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
   });
 
   it("returns no kickoff for an empty board without failing the join", async () => {

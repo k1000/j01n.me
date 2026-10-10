@@ -1,6 +1,7 @@
 import { createSdkCryptoSession } from "./sdk-crypto-session";
 import type { SdkCryptoSession } from "./sdk-crypto-session";
-import { isEncryptedBody, isSealedKickoff, openKickoff } from "./crypto";
+import { isEncryptedBody, isSealedKickoff, openKickoff, openWorkspace, sealWorkspace } from "./crypto";
+import type { Workspace } from "./crypto";
 import { request } from "./transport";
 import type {
   Recipient,
@@ -140,7 +141,12 @@ export interface RoomClient {
   /** Open questions you owe (addressed to you, or to all and unanswered), decrypted, newest first. Does not move the read cursor. */
   openQuestions(): Promise<OpenQuestion[]>;
   participants(): Promise<ParticipantsResponse>;
-  updateStatus(state: "free" | "busy", status: string, options?: { model?: string; skills?: string[] }): Promise<{ ok: true; participant: Participant }>;
+  /** workspace is sealed with the room key before it is sent; null clears it. */
+  updateStatus(state: "free" | "busy", status: string, options?: { model?: string; skills?: string[]; capabilities?: string[]; workspace?: Workspace | null }): Promise<{ ok: true; participant: Participant }>;
+  /** Announce what you can do and where you work (only the given fields change; workspace is sealed, null clears it). */
+  setProfile(profile: { capabilities?: string[]; workspace?: Workspace | null }): Promise<{ ok: true; participant: Participant }>;
+  /** Everyone in the room with their capabilities and opened workspace (null when it cannot be opened). */
+  team(): Promise<Array<{ id: string; state: string; status: string; capabilities: string[]; workspace: Workspace | null }>>;
   /** Opt into push: the room POSTs your visible events to this https URL. null switches back to polling. */
   setWebhook(url: string | null): Promise<{ ok: true; participant: Participant }>;
   board(): Promise<BoardResponse>;
@@ -277,12 +283,34 @@ export async function buildRoomClient(
     async participants() {
       return request<ParticipantsResponse>(invite.api.participants, invite);
     },
-    async updateStatus(state: "free" | "busy", status: string, opts = {}) {
+    async updateStatus(state: "free" | "busy", status: string, opts: { workspace?: Workspace | null } = {}) {
+      const { workspace, ...profile } = opts;
+      const sealed = workspace === undefined ? {} : { workspace: workspace && await sealWorkspace(workspace, invite.join_secret, invite.room_id) };
       return request<{ ok: true; participant: Participant }>(
         `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
         invite,
-        { method: "PATCH", participantId, body: { state, status, ...opts } },
+        { method: "PATCH", participantId, body: { state, status, ...profile, ...sealed } },
       );
+    },
+    async setProfile(profile) {
+      const body: Record<string, unknown> = {};
+      if (profile.capabilities !== undefined) body.capabilities = profile.capabilities;
+      if (profile.workspace !== undefined) body.workspace = profile.workspace && await sealWorkspace(profile.workspace, invite.join_secret, invite.room_id);
+      return request<{ ok: true; participant: Participant }>(
+        `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
+        invite,
+        { method: "PATCH", participantId, body },
+      );
+    },
+    async team() {
+      const { participants = [] } = await client.participants();
+      return Promise.all(participants.filter((p) => !p.left_at).map(async (p) => ({
+        id: p.id,
+        state: p.state,
+        status: p.status,
+        capabilities: p.capabilities ?? [],
+        workspace: p.workspace ? await openWorkspace(p.workspace, invite.join_secret, invite.room_id).catch(() => null) : null,
+      })));
     },
     async setWebhook(url: string | null) {
       return request<{ ok: true; participant: Participant }>(

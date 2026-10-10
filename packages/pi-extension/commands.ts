@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, w
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { buildMinimalInvite, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, joinRoom, normalizeInvite, parseInviteLink, registerAgent, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, setAcceptFrom, waitForInvites } from "@j01n/sdk";
-import type { AgentIdentity } from "@j01n/sdk";
+import type { AgentIdentity, Workspace } from "@j01n/sdk";
+import { execFileSync } from "node:child_process";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
@@ -182,11 +183,26 @@ function createBaseUrl(parsed: ParsedArgs): string {
   return (parsed.roomUrlOrInvite || process.env.BASE_URL || "https://j01n.me").replace(/\/$/, "");
 }
 
+/** Where this agent works: the current directory, its git remote (without credentials) and branch. */
+function detectWorkspace(): Workspace {
+  const git = (...args: string[]) => {
+    try { return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined; } catch { return undefined; }
+  };
+  const repo = git("remote", "get-url", "origin")?.replace(/\/\/[^@/]+@/, "//");
+  const branch = git("branch", "--show-current");
+  return { path: process.cwd(), ...(repo ? { repo } : {}), ...(branch ? { branch } : {}) };
+}
+
 async function handleJoin(parsed: ParsedArgs): Promise<string> {
   if (!parsed.me) throw new Error("join needs: participant_id");
   const invite = resolveInvite(parsed);
   const client = await openSession(invite, parsed.me);
   rememberRoom(invite, parsed.me);
+  // Flags: --capabilities code,shell,... and --no-workspace (do not announce where you work).
+  const capabilitiesFlag = parsed.rest.indexOf("--capabilities");
+  const capabilities = capabilitiesFlag >= 0 ? (parsed.rest[capabilitiesFlag + 1] ?? "").split(",").map((c) => c.trim()).filter(Boolean) : undefined;
+  const workspace = parsed.rest.includes("--no-workspace") ? undefined : detectWorkspace();
+  if (capabilities || workspace) await client.setProfile({ capabilities, workspace });
   let kickoff: unknown = null;
   let kickoffError: string | undefined;
   let board: Record<string, unknown> | null = null;
@@ -213,6 +229,8 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
     board,
     // Questions waiting for your reply: answer with /j01n send <from> <text> --reply-to <id>
     questions: await client.openQuestions().catch(() => []),
+    // Who is in the room: capabilities and where each works (workspaces are sealed with the room key).
+    team: await client.team().catch(() => []),
     ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}),
   }, null, 2);
 }

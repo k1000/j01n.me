@@ -4,6 +4,7 @@
    Create:   node .j01n/j01n.js create '{"host_id":"agent-a"}' > docs-review.json
    Join:     node .j01n/j01n.js join invitation.json agent-b > agent-b.j01n.json
    Doctor:   node .j01n/j01n.js doctor agent-b.j01n.json
+   Team:     node .j01n/j01n.js team agent-b.j01n.json   (participants, status, capabilities, workspace, last activity)
    Send:     node .j01n/j01n.js send agent-b.j01n.json all hello there   (or a JSON object body)
    Read:     node .j01n/j01n.js read agent-b.j01n.json
    Full:     node .j01n/j01n.js send "$ROOM_URL" "$PARTICIPANT_TOKEN" "$ME" all '{"text":"hello"}'
@@ -20,7 +21,7 @@
              later: profile --capabilities code,browser  |  profile <link> <me> --workspace (re-detect)  |  profile --no-workspace
    Reserve:  node .j01n/j01n.js reserve src/auth/ --reason refactoring auth  |  release [path...]  |  reservations  |  leave [--release]
    Host:     node .j01n/j01n.js host <participant>   (host only: hand the host role over; the host cannot leave others without one)
-   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, profile, host, reserve, release, reservations, leave, register, allow, invite, invites, listen
+   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, profile, host, reserve, release, reservations, leave, register, allow, invite, invites, listen, team
 */
 const fs = await import('node:fs/promises');
 const { webcrypto, createHash } = await import('node:crypto');
@@ -58,7 +59,7 @@ const roomUrl = resolved.roomUrl;
 let joinSecret = resolved.joinSecret;
 const me = resolved.me;
 const rest = resolved.rest;
-if (!cmd || !roomUrl || !joinSecret || !me) die('usage: j01n <create|join|send|read|watch|doctor> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.');
+if (!cmd || !roomUrl || !joinSecret || !me) die('usage: j01n <create|join|send|read|team|watch|doctor> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.');
 let headers = { authorization: 'Bearer ' + joinSecret, 'x-participant-id': me };
 const keyFile = '.j01n-' + new URL(roomUrl).pathname.replace(/[^a-zA-Z0-9_-]/g, '_') + '-' + me.replace(/[^a-zA-Z0-9_-]/g, '_') + '.json';
 
@@ -138,7 +139,7 @@ async function rememberRoom() {
 }
 function usesEnvRoom(args) { return hasEnvRoom() && isEnvShape(args[0], args.length); }
 function hasEnvRoom() { return process.env.ROOM_URL && (process.env.PARTICIPANT_TOKEN || process.env.JOIN_SECRET) && process.env.ME; }
-function isEnvShape(command, argc) { return (command === 'send' && argc <= 3) || (['join', 'read', 'inbox', 'watch', 'doctor'].includes(command) && argc === 1); }
+function isEnvShape(command, argc) { return (command === 'send' && argc <= 3) || (['join', 'read', 'team', 'inbox', 'watch', 'doctor'].includes(command) && argc === 1); }
 function isRoomUrl(value) { return value && /^https?:/.test(value); }
 // One-line room link: https://j01n.me/room/<id>#<join_secret>
 function parseInviteLink(value) { const m = /^(https?:\/\/[^/\s]+)\/room\/([^/#?\s]+)#(\S+)$/.exec(String(value || '').trim()); return m ? { access: m[1] + '/r/' + m[2], join_secret: m[3] } : undefined; }
@@ -516,6 +517,19 @@ const COMMANDS = {
     const messages = await syncKeys(state);
     console.log(JSON.stringify(withReplyHints(await decryptedMessages(state, messages)), null, 2));
   },
+  async team(state) {
+    for (const p of await team(state)) {
+      const minutes = p.last_seen_at ? Math.max(0, Math.floor((Date.now() - Date.parse(p.last_seen_at)) / 60000)) : null;
+      console.log([
+        p.id,
+        'state: ' + p.state,
+        'status: ' + (p.status || '—'),
+        'capabilities: ' + (p.capabilities.length ? p.capabilities.join(', ') : 'none'),
+        'workspace: ' + (p.workspace ? JSON.stringify(p.workspace) : 'not shared'),
+        'active ' + (minutes === null || !Number.isFinite(minutes) ? 'unknown' : minutes + ' min ago'),
+      ].join(' | '));
+    }
+  },
   async watch(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
     await announce(state).catch(() => undefined);
     const since = Number(rest[0] || 0);
@@ -626,7 +640,7 @@ const COMMANDS = {
 };
 
 const handler = COMMANDS[cmd];
-if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|leave');
+if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|leave');
 
 const state = await loadState();
 if (resolved.participantToken) state.participantToken = resolved.participantToken;

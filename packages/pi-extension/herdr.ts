@@ -28,7 +28,8 @@ export function notifyHerdrPeer(paneId: string, message: string): void {
 }
 
 /** Split only the calling pane; leave user focus in place and private identity files off shared/exFAT workspaces. */
-export function splitHerdrPane(identityDir: string, baseUrl: string, env: Record<string, string | undefined> = process.env, run: RunHerdr = execFileSync): string {
+/** Split the calling pane; the new pane starts in `cwd` (default: this directory, e.g. a separate worktree for a peer). */
+export function splitHerdrPane(identityDir: string, baseUrl: string, env: Record<string, string | undefined> = process.env, run: RunHerdr = execFileSync, cwd = process.cwd()): string {
   if (env.HERDR_ENV !== "1" || !env.HERDR_WORKSPACE_ID || !env.HERDR_PANE_ID) throw new Error("spawn_room_peer requires a Herdr-managed pane");
   const layout = JSON.parse(run("herdr", ["pane", "layout", "--pane", env.HERDR_PANE_ID], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] })) as {
     result?: { layout?: { panes?: Array<{ pane_id: string; rect: { width: number; height: number } }> } };
@@ -36,7 +37,7 @@ export function splitHerdrPane(identityDir: string, baseUrl: string, env: Record
   const rect = layout.result?.layout?.panes?.find((pane) => pane.pane_id === env.HERDR_PANE_ID)?.rect;
   if (!rect) throw new Error("cannot locate the calling Herdr pane");
   const direction = rect.width >= rect.height * 1.8 ? "right" : "down";
-  const output = JSON.parse(run("herdr", ["pane", "split", "--current", "--direction", direction, "--cwd", process.cwd(), "--env", `J01N_AGENT_DIR=${identityDir}`, "--env", `BASE_URL=${baseUrl}`, "--no-focus"], { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] })) as {
+  const output = JSON.parse(run("herdr", ["pane", "split", "--current", "--direction", direction, "--cwd", cwd, "--env", `J01N_AGENT_DIR=${identityDir}`, "--env", `BASE_URL=${baseUrl}`, "--no-focus"], { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] })) as {
     result?: { pane?: { pane_id: string; workspace_id: string } };
   };
   if (!output.result?.pane?.pane_id || output.result.pane.workspace_id !== env.HERDR_WORKSPACE_ID) throw new Error("Herdr did not return a pane in the current workspace");

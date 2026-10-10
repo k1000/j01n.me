@@ -92,6 +92,13 @@ describe("spawn Herdr Pi and invite", () => {
     expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("Review docs");
   });
 
+  it("starts the peer in a given directory (its own worktree) and rejects one that does not exist", async () => {
+    const worktree = mkdtempSync(join(tmpdir(), "j01n-worktree-"));
+    expect((await spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir, worktree)).joined).toBe(true);
+    expect(vi.mocked(splitHerdrPane).mock.calls[0][4]).toBe(worktree);
+    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer2", "Review docs", dir, "/no/such/worktree")).rejects.toThrow("existing absolute directory");
+  });
+
   it("allows the joined host to use its own registered sender address", async () => {
     sender.name = "host-inbox";
     const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir);

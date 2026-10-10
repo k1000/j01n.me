@@ -43,6 +43,23 @@ describe("host-agent peer tool", () => {
     expect(spawnAndInviteHerdr).toHaveBeenCalledTimes(1);
   });
 
+  it("allows as many spawns per session as the human set in J01N_PEER_SPAWNS (still only on direct requests)", async () => {
+    vi.stubEnv("J01N_PEER_SPAWNS", "3");
+    try {
+      vi.mocked(prepareRoomPeerSpawn).mockResolvedValue({ client: {} as never, sender: {} as never, link: "https://j01n.me/room/r#secret", name: "peer", role: "worker", identityDir: "/private" });
+      vi.mocked(spawnAndInviteHerdr).mockResolvedValue({ ok: true, pane_id: "wV:p5", invited: true, joined: true });
+      const h = harness();
+      h.input("interactive");
+      for (const task of ["T1", "T2", "T3"]) expect((await h.call({ task })).isError).toBeUndefined();
+      const fourth = await h.call({ task: "T4" });
+      expect(fourth.isError).toBe(true);
+      expect(fourth.content[0].text).toContain("used its 3 peer spawns");
+      expect(spawnAndInviteHerdr).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("does not let a room message independently authorize a spawn", async () => {
     const h = harness();
     expect((await h.call({ task: "Create a peer" })).isError).toBe(true);

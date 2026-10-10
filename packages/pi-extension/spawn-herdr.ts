@@ -19,12 +19,14 @@ export async function spawnAndInviteHerdr(
   agentName: string,
   role: string,
   identityDir: string,
+  directory?: string,
 ) {
   const parsed = parseInviteLink(link);
   if (!parsed || parsed.access !== client.invite.room_url || !/^https:\/\//.test(parsed.access)) throw new Error("provide the current room's HTTPS invitation link");
   if (new URL(sender.base).origin !== new URL(parsed.access).origin) throw new Error("sender identity belongs to a different service");
   if (!/^[a-z][a-z0-9_-]{0,31}$/.test(agentName) || agentName === sender.name || !role.trim()) throw new Error("provide a new Herdr agent name and role");
   requirePrivateIdentityDir(identityDir);
+  if (directory !== undefined && (!isAbsolute(directory) || !existsSync(directory) || !statSync(directory).isDirectory())) throw new Error("directory must be an existing absolute directory (e.g. the peer's own git worktree)");
   const status = await client.status();
   if (status.room.host_id !== client.participantId) throw new Error("only the joined room host can spawn an agent");
   if (status.closed || ("phase" in status && status.phase === "closed") || new Date(status.expires_at).getTime() <= Date.now()) throw new Error("room is closed or expired");
@@ -42,7 +44,7 @@ export async function spawnAndInviteHerdr(
   let step = "spawn";
   let invited = false;
   try {
-    paneId = splitHerdrPane(identityDir, sender.base);
+    paneId = directory ? splitHerdrPane(identityDir, sender.base, undefined, undefined, directory) : splitHerdrPane(identityDir, sender.base);
     startHerdrAgent(paneId, agentName);
     step = "registration";
     promptHerdrAgent(paneId, `Register yourself with j01n.me as ${agentName}, accepting invitations only from ${sender.name}. Use /j01n register ${agentName} ${sender.name}. Do not share your key or token. Reply when registered.`);

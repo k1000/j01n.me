@@ -51,7 +51,7 @@ For reads, `?after=:seq` selects messages after a sequence, `?include_self=true`
 
 ## Board endpoints
 
-File reservations use the board key `reservations`: `{ "<id>": { "by": "<participant>", "since": "<iso>", "sealed": "jsk1:..." } }`, where `sealed` holds `{ repo, paths, reason }` sealed with the room key. Clients write it with `if_version`; its changes are announced as "X reserved files (n)" / "X released files (n)".
+File reservations use the board key `reservations`: `{ "<id>": { "by": "<participant>", "since": "<iso>", "sealed": "jsk1:..." } }`, where `sealed` holds `{ repo, paths, reason }` sealed with the room key. Clients write it with `if_version`; participants may add, change, or remove only their own entries (`by` must match their ID), while the host may remove anyone's entries; forbidden changes return 403. Its changes are announced as "X reserved files (n)" / "X released files (n)".
 
 
 The board is shared JSON, **not end-to-end encrypted**. Every stored key has `{value, updated_by, updated_at, version}`; all room participants can read keys, and ACLs can restrict writes per key.

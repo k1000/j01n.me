@@ -136,6 +136,22 @@ function checkBoardAcl(
   return json({ error: "you don't have permission to write to this board key" }, 403);
 }
 
+function checkReservationWrite(before: BoardEntry | undefined, after: unknown, actor: string, host: string): GuardResult {
+  const oldEntries = reservationsOf(before);
+  if (!after || typeof after !== "object" || Array.isArray(after)) return json({ error: "invalid reservations value" }, 403);
+  const newEntries = after as Reservations;
+  for (const id of new Set([...Object.keys(oldEntries), ...Object.keys(newEntries)])) {
+    const oldValue = oldEntries[id];
+    const newValue = newEntries[id];
+    if (JSON.stringify(oldValue) === JSON.stringify(newValue)) continue;
+    if (oldValue && oldValue.by !== actor && !(actor === host && newValue === undefined))
+      return json({ error: "cannot change another participant's reservations" }, 403);
+    if (Object.hasOwn(newEntries, id) && newValue?.by !== actor)
+      return json({ error: "cannot add another participant's reservations" }, 403);
+  }
+  return undefined;
+}
+
 export function setBoardKeyData(
   invite: InviteState,
   keyFromPath: string,
@@ -151,6 +167,10 @@ export function setBoardKeyData(
   if (conflict) return conflict;
   const entryResult = makeBoardEntry(value, updatedBy, invite.board[key]);
   if (entryResult instanceof Response) return entryResult;
+  if (key === RESERVATIONS_KEY) {
+    const denied = checkReservationWrite(invite.board[key], entryResult.value, updatedBy, invite.hostId);
+    if (denied) return denied;
+  }
   const board = { ...invite.board, [key]: entryResult };
   const validation = validateBoard(invite.boardSchema, board);
   if (validation) return validation;
@@ -177,6 +197,10 @@ export function patchBoardData(
     if (aclErr) return aclErr;
     const entryResult = makeBoardEntry(value, updatedBy, board[key]);
     if (entryResult instanceof Response) return entryResult;
+    if (key === RESERVATIONS_KEY) {
+      const denied = checkReservationWrite(board[key], entryResult.value, updatedBy, invite.hostId);
+      if (denied) return denied;
+    }
     board[key] = entryResult;
     updated[key] = entryResult;
   }
@@ -216,6 +240,10 @@ export function deleteBoardKeysData(
     if (key instanceof Response) return key;
     const aclErr = checkBoardAcl(invite, key, deletedBy);
     if (aclErr) return aclErr;
+    if (key === RESERVATIONS_KEY) {
+      const denied = checkReservationWrite(board[key], {}, deletedBy, invite.hostId);
+      if (denied) return denied;
+    }
     delete board[key];
     keys.push(key);
   }

@@ -940,10 +940,42 @@ describe("file reservations (board key `reservations`, contents sealed by client
     expect(await chat(fix)).toEqual(["agent-a reserved files (1)", "agent-a released files (1)"]);
   });
 
+  it("permits own entries and host removals, but rejects edits to another's reservations on every write route", async () => {
+    const fix = await bootstrapRoom();
+    await joinParticipant(fix, "host");
+    await joinParticipant(fix, "agent-a");
+    await joinParticipant(fix, "agent-b");
+    const a = { by: "agent-a", since: "now", sealed: "jsk1:x.y" };
+    const b = { by: "agent-b", since: "now", sealed: "jsk1:x.y" };
+    expect((await put(fix, "agent-a", { r1: a })).status).toBe(200);
+    expect((await put(fix, "agent-b", { r1: a, r2: b })).status).toBe(200);
+    expect((await put(fix, "agent-a", { r1: a, r2: { ...b, sealed: "jsk1:changed" } })).status).toBe(403);
+    expect((await put(fix, "agent-a", { r1: a })).status).toBe(403);
+    expect((await put(fix, "agent-a", { r1: a, r2: b, r3: { ...b } })).status).toBe(403);
+    const patch = await roomRequest(fix, "/board", {
+      method: "PATCH", headers: { ...participantAuthHeaders(fix, "agent-a"), "content-type": "application/json" },
+      body: JSON.stringify({ reservations: { r1: a }, status: "should-not-save" }),
+    });
+    expect(patch.status).toBe(403);
+    expect((await getRoomJson<{ board: Record<string, unknown> }>(fix, "/board", "host")).board.status).toBeUndefined();
+    expect((await roomRequest(fix, "/board/reservations", { method: "DELETE", headers: participantAuthHeaders(fix, "agent-a") })).status).toBe(403);
+    expect((await roomRequest(fix, "/board/delete", {
+      method: "POST", headers: { ...participantAuthHeaders(fix, "agent-a"), "content-type": "application/json" },
+      body: JSON.stringify({ keys: ["reservations"] }),
+    })).status).toBe(403);
+    expect(await held(fix)).toEqual(["agent-a", "agent-b"]);
+    expect((await put(fix, "host", { r1: { ...a, sealed: "jsk1:changed" }, r2: b })).status).toBe(403);
+    expect((await put(fix, "agent-a", null)).status).toBe(403);
+    expect((await put(fix, "host", { r1: a })).status).toBe(200);
+    expect(await held(fix)).toEqual(["agent-a"]);
+    expect((await put(fix, "agent-a", {})).status).toBe(200);
+  });
+
   it("refuses to let a participant leave while holding reservations, unless it releases them", async () => {
     const fix = await bootstrapRoom();
     await joinParticipant(fix, "host");
     await joinParticipant(fix, "agent-a");
+    await put(fix, "host", { r2: { by: "host", since: "now", sealed: "jsk1:x.y" } });
     await put(fix, "agent-a", { r1: { by: "agent-a", since: "now", sealed: "jsk1:x.y" }, r2: { by: "host", since: "now", sealed: "jsk1:x.y" } });
 
     const blocked = await remove(fix, "agent-a", "agent-a");
@@ -952,6 +984,29 @@ describe("file reservations (board key `reservations`, contents sealed by client
     expect((await remove(fix, "agent-a", "agent-a", "?release=true")).status).toBe(200);
     expect(await held(fix)).toEqual(["host"]);
     expect((await chat(fix)).at(-1)).toBe("agent-a released its reservations and left");
+  });
+
+  it("notifies board webhook subscribers when a departing participant releases reservations", async () => {
+    const posts: string[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      posts.push((init.headers as Record<string, string>)["x-j01n-event"]);
+      return new Response("ok");
+    });
+    try {
+      const fix = await bootstrapRoom();
+      await joinParticipant(fix, "host");
+      await joinParticipant(fix, "agent-a");
+      await roomRequest(fix, "/participants/host", {
+        method: "PATCH", headers: { ...participantAuthHeaders(fix, "host"), "content-type": "application/json" },
+        body: JSON.stringify({ webhook_url: "https://host.example/hook" }),
+      });
+      await put(fix, "agent-a", { r1: { by: "agent-a", since: "now", sealed: "jsk1:x.y" } });
+      posts.length = 0;
+      expect((await remove(fix, "agent-a", "agent-a", "?release=true")).status).toBe(200);
+      expect(posts).toContain("board");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("releases a kicked participant's reservations", async () => {

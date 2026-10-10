@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { splitArgs } from "./args";
 import { runj01n } from "./commands";
 import { registerLive } from "./live";
+import { registerPeerSpawnTool } from "./peer-spawn-tool";
 
 const USAGE = "Usage: /j01n <create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|herdr_agents|invite_herdr|leave|close|participants|room_status|transition|host|profile|reserve|release|reservations|live> ...";
 
@@ -10,6 +11,7 @@ type Notify = (message: string, level: "info" | "error") => void;
 
 export default function (pi: ExtensionAPI) {
   const live = registerLive(pi);
+  registerPeerSpawnTool(pi);
   pi.registerCommand("j01n", {
     description: "j01n.me encrypted room helper: create, join, doctor, send, read, board, board_set, board_patch, board_delete, status, webhook, wait, register, allow, invite, listen, herdr_agents, invite_herdr, leave, close, participants, room_status, transition, host, profile, reserve, release, reservations, live",
     handler: async (args, ctx) => {

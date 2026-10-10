@@ -1,13 +1,15 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { buildMinimalInvite, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, joinRoom, listReservations, normalizeInvite, parseInviteLink, registerAgent, releasePaths, reservePaths, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, setAcceptFrom, waitForInvites } from "@j01n/sdk";
+import { buildMinimalInvite, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, inviteLink, joinRoom, listReservations, normalizeInvite, parseInviteLink, registerAgent, releasePaths, reservePaths, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, setAcceptFrom, waitForInvites } from "@j01n/sdk";
 import type { AgentIdentity, Workspace } from "@j01n/sdk";
 import { execFileSync } from "node:child_process";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
 import { listHerdrPeers, notifyHerdrPeer } from "./herdr";
+import { requirePrivateIdentityDir } from "./spawn-herdr";
 
 const sessions = new Map<string, RoomClient>();
 const ACTIVE_ROOMS_DIR = ".j01n-rooms";
@@ -588,6 +590,46 @@ async function handleInviteHerdr(parsed: ParsedArgs): Promise<string> {
     }
   }
   return JSON.stringify({ ok: invited.every((item) => item.queued), invited }, null, 2);
+}
+
+export async function prepareRoomPeerSpawn(options: { task: string; role?: string; name?: string; roomId?: string }) {
+  const task = options.task.trim();
+  if (!task) throw new Error("provide a bounded peer task");
+  if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_WORKSPACE_ID || !process.env.HERDR_PANE_ID) throw new Error("spawn_room_peer requires a Herdr-managed pane");
+  const clients = await activeRoomClients();
+  const hosted = [] as RoomClient[];
+  for (const client of clients) {
+    try { if ((await client.status()).room.host_id === client.participantId) hosted.push(client); } catch { /* unavailable room */ }
+  }
+  const candidates = options.roomId ? hosted.filter((client) => client.invite.room_id === options.roomId) : hosted;
+  if (candidates.length !== 1) throw new Error(candidates.length ? "multiple hosted rooms; provide roomId" : "no hosted room joined in this directory");
+  const client = candidates[0];
+  if (!client.invite.join_secret || client.invite.join_secret === "resume-only") throw new Error("room secret unavailable; rejoin this room using its invitation");
+  if (`${task} ${options.role ?? ""}`.includes(client.invite.join_secret)) throw new Error("peer task and role must not contain the room secret");
+  const identityDir = process.env.J01N_AGENT_DIR || join(homedir(), ".local", "share", "j01n", "agents");
+  mkdirSync(identityDir, { recursive: true, mode: 0o700 });
+  requirePrivateIdentityDir(identityDir);
+  const base = new URL(client.invite.room_url).origin;
+  const preferredName = "host-" + createHash("sha256").update(`${client.invite.room_url}\0${client.participantId}`).digest("hex").slice(0, 16);
+  const aliasFile = join(identityDir, `.j01n-host-${preferredName}.json`);
+  const savedName = existsSync(aliasFile) ? (JSON.parse(readFileSync(aliasFile, "utf8")) as { name: string }).name : preferredName;
+  if (!/^[a-z][a-z0-9_-]{0,31}$/.test(savedName)) throw new Error("invalid saved host inbox address");
+  const senderFile = join(identityDir, `.j01n-agent-${savedName}.json`);
+  let sender: AgentIdentity;
+  if (existsSync(senderFile)) {
+    sender = JSON.parse(readFileSync(senderFile, "utf8")) as AgentIdentity;
+    if (sender.name !== savedName || sender.base !== base) throw new Error("saved host inbox identity does not match this room");
+  } else {
+    if (existsSync(aliasFile)) throw new Error("saved host inbox identity is missing");
+    try { sender = await registerAgent(base, preferredName, []); }
+    catch (error) {
+      if (!(error instanceof Error) || !/failed: 409\b/.test(error.message)) throw error;
+      sender = await registerAgent(base, "host-" + crypto.randomUUID().replaceAll("-", "").slice(0, 16), []);
+    }
+    writeFileSync(join(identityDir, `.j01n-agent-${sender.name}.json`), JSON.stringify(sender, null, 2), { flag: "wx", mode: 0o600 });
+    if (sender.name !== preferredName) writeFileSync(aliasFile, JSON.stringify({ name: sender.name }), { flag: "wx", mode: 0o600 });
+  }
+  return { client, sender, link: inviteLink(client.invite.room_url, client.invite.join_secret), name: options.name || "peer-" + crypto.randomUUID().replaceAll("-", "").slice(0, 12), role: `${options.role?.trim() || "collaborator"}: ${task}`, identityDir };
 }
 
 /** Wait for an invitation from an allowlisted agent, then join that room (kickoff, board and questions included). */

@@ -12,7 +12,7 @@ export const DEFAULT_EXTEND_MS = 5 * 60_000;
  * `x-j01n-client-update` header with its update command. Bump together with CLIENT_PROTOCOL in
  * packages/helper/client/j01n.js and packages/sdk/src/transport.ts whenever clients must update.
  */
-export const CLIENT_PROTOCOL = 4;
+export const CLIENT_PROTOCOL = 5;
 export const CLIENT_UPDATE_COMMANDS: Record<string, string> = {
   helper: "curl -fsSL https://j01n.me/client/j01n.js -o .j01n/j01n.js",
   sdk: "pi install https://gitlab.com/k1000/j01n.me (Pi), or update @j01n/sdk from https://gitlab.com/k1000/j01n.me",

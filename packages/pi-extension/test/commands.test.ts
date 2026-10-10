@@ -201,3 +201,47 @@ describe("pi-extension sessions", () => {
     expect(JSON.parse(readFileSync(".j01n-_r_room-1-pi-agent.json", "utf8")).publicJwk).toEqual(saved.publicJwk);
   });
 });
+
+describe("pi-extension agent inbox", () => {
+  const originalCwd = process.cwd();
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.resetModules();
+    process.chdir(originalCwd);
+  });
+
+  it("register keeps the identity private; listen opens an invite, removes it and joins the room", async () => {
+    process.chdir(mkdtempSync(join(tmpdir(), "j01n-pi-agent-")));
+    vi.stubEnv("BASE_URL", "https://j01n.me");
+    const keys = new Map<string, string>();
+    let invites: Array<{ id: string; from: string; created_at: string; sealed: unknown }> = [];
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const path = new URL(url).pathname;
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      seen.push(`${method} ${path}`);
+      if (method === "POST" && path === "/agents") { keys.set(body.name, body.public_key); return Response.json({ agent_token: `tok-${body.name}` }); }
+      if (method === "GET" && /^\/a\/[^/]+$/.test(path)) return Response.json({ public_key: keys.get(path.split("/")[2]) });
+      if (method === "POST" && path.endsWith("/invites")) { invites.push({ id: "inv-1", from: body.from, created_at: "now", sealed: body.sealed }); return Response.json({ id: "inv-1" }); }
+      if (method === "GET" && path.endsWith("/wait") && path.startsWith("/a/")) return Response.json({ invites });
+      if (method === "DELETE") { invites = []; return Response.json({ ok: true }); }
+      if (method === "PUT") return Response.json({ ok: true, cursor: 0, participant_token: "tok-1" });
+      if (method === "GET" && path.endsWith("/board")) return Response.json({ board: {}, board_schema: null });
+      return Response.json({ ok: true, seq: 1, cursor: 0, messages: [], participant: {} });
+    });
+    const { runj01n } = await import("../commands");
+    await runj01n(["register", "claude-code"]);
+    expect(JSON.parse(await runj01n(["register", "pi-agent", "claude-code"])).accept_from).toEqual(["claude-code"]);
+    expect(statSync(".j01n-agent-pi-agent.json").mode & 0o777).toBe(0o600);
+
+    await runj01n(["invite", "claude-code", "pi-agent", "https://j01n.me/room/room-1#very-secret-join-secret"]);
+    expect(JSON.stringify(invites)).not.toContain("very-secret-join-secret");
+    const result = JSON.parse(await runj01n(["listen", "pi-agent", "1"]));
+    expect(result).toMatchObject({ invited_by: "claude-code", ok: true, participant_id: "pi-agent" });
+    expect(seen).toContain("DELETE /a/pi-agent/invites/inv-1");
+    expect(seen).toContain("PUT /r/room-1/participants/pi-agent");
+  });
+});

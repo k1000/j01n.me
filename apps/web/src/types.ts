@@ -5,6 +5,7 @@ export type { Recipient } from "@j01n/sdk/types";
 export interface Env {
   RENDEZVOUS: DurableObjectNamespace;
   ROOM_REGISTRY?: DurableObjectNamespace;
+  AGENT_INBOX?: DurableObjectNamespace;
 }
 
 /** Key-level board write permission: anyone, host_only, or specific participant IDs. */

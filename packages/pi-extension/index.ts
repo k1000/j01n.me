@@ -3,13 +3,13 @@ import { Type } from "typebox";
 import { splitArgs } from "./args";
 import { runj01n } from "./commands";
 
-const USAGE = "Usage: /j01n <create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|leave|close|participants|room_status|transition> ...";
+const USAGE = "Usage: /j01n <create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|leave|close|participants|room_status|transition> ...";
 
 type Notify = (message: string, level: "info" | "error") => void;
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("j01n", {
-    description: "j01n.me encrypted room helper: create, join, doctor, send, read, board, board_set, board_patch, board_delete, status, webhook, wait, leave, close, participants, room_status, transition",
+    description: "j01n.me encrypted room helper: create, join, doctor, send, read, board, board_set, board_patch, board_delete, status, webhook, wait, register, allow, invite, listen, leave, close, participants, room_status, transition",
     handler: async (args, ctx) => runCommandFromText(args || "", ctx.ui.notify.bind(ctx.ui)),
   });
 
@@ -18,7 +18,7 @@ export default function (pi: ExtensionAPI) {
     label: "j01n.me",
     description: "Use the j01n.me encrypted room helper. Args match the j01n client, e.g. ['read','docs-review.json','agent-b'] or ['board','docs-review.json','agent-b'] or ['status','docs-review.json','agent-b','free','working on docs'].",
     parameters: Type.Object({
-      args: Type.Array(Type.String(), { description: "Arguments: create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|leave|close|participants|room_status|transition ..." }),
+      args: Type.Array(Type.String(), { description: "Arguments: create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|leave|close|participants|room_status|transition ..." }),
     }),
     async execute(_toolCallId, params) {
       return executeTool(params.args);

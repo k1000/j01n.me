@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { buildMinimalInvite, createRoom, getClientUpdateNotice, joinRoom, normalizeInvite, parseInviteLink, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL } from "@j01n/sdk";
+import { buildMinimalInvite, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, joinRoom, normalizeInvite, parseInviteLink, registerAgent, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, setAcceptFrom, waitForInvites } from "@j01n/sdk";
+import type { AgentIdentity } from "@j01n/sdk";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
@@ -85,8 +86,11 @@ const ACTIVE_COMMANDS = new Set([
   "status", "webhook", "participants", "room_status", "transition", "leave", "close",
 ]);
 
+const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen"]);
+
 function parseCommand(args: string[]): ParsedArgs {
   const cmd = args[0];
+  if (AGENT_COMMANDS.has(cmd)) return { cmd, rest: args.slice(1) };
   if (!ACTIVE_COMMANDS.has(cmd) || (args[1] && hasExplicitInvite(args[1]))) return parseArgs(args);
   if (process.env.ROOM_URL && process.env.JOIN_SECRET && process.env.ME) {
     return { cmd, roomUrlOrInvite: process.env.ROOM_URL, joinSecret: process.env.JOIN_SECRET,
@@ -234,8 +238,8 @@ async function handleSend(parsed: ParsedArgs): Promise<string> {
 }
 
 /** Block until the next event you can see (or the timeout), then return the new messages, decrypted. */
-async function waitAndRead(client: RoomClient, timeoutSeconds?: number): Promise<Record<string, unknown>> {
-  const woke = await client.wait({ timeoutSeconds });
+async function waitAndRead(client: RoomClient, timeoutSeconds?: number, filter: Parameters<RoomClient["wait"]>[0] = {}): Promise<Record<string, unknown>> {
+  const woke = await client.wait({ ...filter, timeoutSeconds });
   if (woke.timeout) return { timeout: true };
   return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), messages: await client.read() };
 }
@@ -251,8 +255,17 @@ function parseMessageBody(raw: string): unknown {
 
 async function handleWait(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
-  const [timeout] = parsed.rest;
-  return JSON.stringify(await waitAndRead(client, timeout ? Number(timeout) : undefined), null, 2);
+  // Flags: --from <ids,...> (only events they caused), --board <key prefix> (only matching board changes), --no-system.
+  const args = parsed.rest;
+  let timeout: string | undefined;
+  const filter: Parameters<RoomClient["wait"]>[0] = {};
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--from") filter.from = (args[++i] ?? "").split(",").filter(Boolean);
+    else if (args[i] === "--board") filter.board = args[++i] ?? "";
+    else if (args[i] === "--no-system") filter.system = false;
+    else timeout = args[i];
+  }
+  return JSON.stringify(await waitAndRead(client, timeout ? Number(timeout) : undefined, filter), null, 2);
 }
 
 async function handleDoctor(parsed: ParsedArgs): Promise<string> {
@@ -390,7 +403,54 @@ async function handleTransition(parsed: ParsedArgs): Promise<string> {
   return JSON.stringify(result, null, 2);
 }
 
+// ── Agent inbox: invite agents by name (j01n.me/a/<name>); same identity file as the CLI helper ──
+function agentFile(me: string): string {
+  return `.j01n-agent-${me.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`;
+}
+
+function loadAgent(me: string | undefined): AgentIdentity {
+  if (!me) throw new Error("needs: your agent name");
+  if (!existsSync(agentFile(me))) throw new Error(`no agent identity ${agentFile(me)}; run: register ${me} [allowed,agents]`);
+  return JSON.parse(readFileSync(agentFile(me), "utf8")) as AgentIdentity;
+}
+
+const agentNames = (value: string | undefined) => (value ?? "").split(",").map((v) => v.trim()).filter(Boolean);
+
+async function handleRegister(parsed: ParsedArgs): Promise<string> {
+  const [me, allowed] = parsed.rest;
+  if (!me) throw new Error("register needs: <your name> [allowed,agents]");
+  const identity = await registerAgent((process.env.BASE_URL || "https://j01n.me").replace(/\/$/, ""), me, agentNames(allowed));
+  writeFileSync(agentFile(me), JSON.stringify(identity, null, 2), { mode: 0o600 });
+  return JSON.stringify({ ok: true, address: `${identity.base}/a/${me}`, accept_from: agentNames(allowed), identity_file: agentFile(me) }, null, 2);
+}
+
+async function handleAllow(parsed: ParsedArgs): Promise<string> {
+  const [me, allowed] = parsed.rest;
+  return JSON.stringify(await setAcceptFrom(loadAgent(me), agentNames(allowed)), null, 2);
+}
+
+async function handleInviteAgent(parsed: ParsedArgs): Promise<string> {
+  const [me, to, link] = parsed.rest;
+  if (!to || !link) throw new Error("invite needs: <your name> <agent to invite> <room link>");
+  return JSON.stringify(await inviteAgent(loadAgent(me), to, link), null, 2);
+}
+
+/** Wait for an invitation from an allowlisted agent, then join that room (kickoff, board and questions included). */
+async function handleListen(parsed: ParsedArgs): Promise<string> {
+  const [me, timeout] = parsed.rest;
+  const identity = loadAgent(me);
+  const [invite] = await waitForInvites(identity, timeout ? Number(timeout) : undefined);
+  if (!invite) return JSON.stringify({ timeout: true }, null, 2);
+  await deleteInvite(identity, invite.id);
+  const joined = JSON.parse(await handleJoin({ cmd: "join", roomUrlOrInvite: invite.room_link, me: identity.name, rest: [] }));
+  return JSON.stringify({ invited_by: invite.from, ...joined }, null, 2);
+}
+
 const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
+  register: handleRegister,
+  allow: handleAllow,
+  invite: handleInviteAgent,
+  listen: handleListen,
   create: handleCreate,
   join: handleJoin,
   send: handleSend,

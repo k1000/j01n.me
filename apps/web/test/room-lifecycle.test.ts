@@ -181,8 +181,8 @@ describe("room lifecycle", () => {
 
     expect((await status("helper/0")).headers.get("x-j01n-client-update")).toContain("curl -fsSL https://j01n.me/client/j01n.js");
     expect((await status("sdk/0")).headers.get("x-j01n-client-update")).toContain("pi install https://gitlab.com/k1000/j01n.me");
-    expect((await status("helper/4")).headers.get("x-j01n-client-update")).toBeNull();
-    expect((await status("helper/3")).headers.get("x-j01n-client-update")).toContain("older than 4");
+    expect((await status("helper/5")).headers.get("x-j01n-client-update")).toBeNull();
+    expect((await status("helper/4")).headers.get("x-j01n-client-update")).toContain("older than 5");
     expect((await status()).headers.get("x-j01n-client-update")).toBeNull();
   });
 
@@ -330,6 +330,48 @@ describe("room lifecycle", () => {
       await joinParticipant(fix, "agent-a");
       const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-a");
       expect(await wait("agent-a", `after=${cursor}&timeout=1`)).toEqual({ timeout: true, cursor });
+    });
+
+    const putBoard = (participantId: string, key: string, value: unknown) => roomRequest(fix, `/board/${key}`, {
+      method: "PUT",
+      headers: { ...participantAuthHeaders(fix, participantId), "content-type": "application/json" },
+      body: JSON.stringify(value),
+    });
+
+    it("from= wakes only on events caused by those participants, live and pending", async () => {
+      for (const id of ["agent-a", "agent-b", "agent-c"]) await joinParticipant(fix, id);
+      const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-a");
+      await sendMessage(fix, "agent-c", "agent-a", { text: "unread, but not from b" });
+      const waiting = wait("agent-a", `after=${cursor}&timeout=5&from=agent-b`);
+      await new Promise((r) => setTimeout(r, 50));
+      await sendMessage(fix, "agent-c", "agent-a", { text: "still not from b" });
+      await sendMessage(fix, "agent-b", "agent-a", { text: "from b" });
+      expect(((await waiting).message as RoomMessage).from).toBe("agent-b");
+    });
+
+    it("board= wakes only on board changes to matching keys, live and pending", async () => {
+      await joinParticipant(fix, "agent-a");
+      await joinParticipant(fix, "agent-b");
+      const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-a");
+      await putBoard("agent-b", "notes", { n: 1 });
+      expect(await wait("agent-a", `after=${cursor}&timeout=1&board=task`)).toMatchObject({ timeout: true });
+      const waiting = wait("agent-a", `after=${cursor}&timeout=5&board=task`);
+      await new Promise((r) => setTimeout(r, 50));
+      await sendMessage(fix, "agent-b", "agent-a", { text: "chat is not a board change" });
+      await putBoard("agent-b", "notes", { n: 2 });
+      await putBoard("agent-b", "task_T1", { state: "review" });
+      expect(await waiting).toMatchObject({ event: "board", keys: ["task_T1"] });
+    });
+
+    it("system=false skips joins and system notices but keeps board changes and messages", async () => {
+      await joinParticipant(fix, "agent-a");
+      await joinParticipant(fix, "agent-b");
+      const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-a");
+      const waiting = wait("agent-a", `after=${cursor}&timeout=5&system=false`);
+      await new Promise((r) => setTimeout(r, 50));
+      await joinParticipant(fix, "agent-c");
+      await sendMessage(fix, "agent-b", "agent-a", { text: "real work" });
+      expect(((await waiting).message as RoomMessage).from).toBe("agent-b");
     });
   });
 

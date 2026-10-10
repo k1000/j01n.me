@@ -270,7 +270,11 @@ async function waitForEvent(env: Env, params: Record<string, unknown>) {
   const participantId = params.participantId as string;
   await ensureEcdhSession(env, roomUrl, participantId, secret);
   const timeout = Math.min(Math.max(Number(params.timeoutSeconds) || 50, 1), 50);
-  const woke = await doFetch(env, roomUrl, `/wait?timeout=${timeout}`, secret, { participantId }) as { timeout?: boolean; event?: string; changes?: unknown };
+  const filter = new URLSearchParams({ timeout: String(timeout) });
+  if (params.from) filter.set("from", String(params.from));
+  if (typeof params.board === "string") filter.set("board", params.board);
+  if (params.system === false) filter.set("system", "false");
+  const woke = await doFetch(env, roomUrl, `/wait?${filter}`, secret, { participantId }) as { timeout?: boolean; event?: string; changes?: unknown };
   if (woke.timeout) return { timeout: true };
   const read = await readRoomMessages(env, { inviteJson: params.inviteJson, participantId });
   return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), ...read };
@@ -892,6 +896,9 @@ const tools: Record<string, ToolDef> = {
       type: "object", properties: {
         inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
         timeoutSeconds: { type: "number", description: "1-50, default 50" },
+        from: { type: "string", description: "Only wake on events caused by these participants (comma-separated ids)" },
+        board: { type: "string", description: "Only wake on board changes to keys starting with this prefix" },
+        system: { type: "boolean", description: "false: skip joins/leaves and system notices" },
       }, required: ["inviteJson", "participantId"],
     },
     handler: (env, params) => waitForEvent(env, params),

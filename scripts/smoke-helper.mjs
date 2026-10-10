@@ -7,7 +7,8 @@
 //
 // Creates a short-lived room, joins two agents in separate directories, and checks: join output (kickoff, questions),
 // commands without room arguments (active room), plain-text send, wait waking on a message, send --wait, the open
-// question flow (--expect-reply / --reply-to), and that the active-room entry holds no secrets. Closes the room.
+// question flow (--expect-reply / --reply-to), wait filters (--from), inviting an agent by name (register / invite /
+// listen), and that the active-room entry holds no secrets. Closes the room.
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -61,6 +62,24 @@ try {
   run(a, ["send", "smoke-b", "yes", "--reply-to", question?.id ?? "none"]);
   const answered = await asking;
   check("send --wait returns the reply", answered.messages?.some((m) => m.body?.text === "yes" && m.reply_to === question?.id));
+
+  run(a, ["read"]);
+  const filtered = runAsync(a, ["wait", "3", "--from", "nobody"]);
+  await new Promise((r) => setTimeout(r, 1000));
+  run(b, ["send", "smoke-a", "filtered", "out"]);
+  check("wait --from ignores other senders", (await filtered).timeout === true);
+  check("wait --from returns their unread message", run(a, ["wait", "5", "--from", "smoke-b"]).messages?.some((m) => m.body?.text === "filtered out"));
+
+  // Agent names are global and permanent, so each run registers fresh ones.
+  const suffix = Math.random().toString(36).slice(2, 8);
+  const [host, guest] = [`smoke-host-${suffix}`, `smoke-guest-${suffix}`];
+  run(b, ["register", host]);
+  run(a, ["register", guest, host]);
+  const listening = runAsync(a, ["listen", guest, "20"]);
+  await new Promise((r) => setTimeout(r, 1500));
+  run(b, ["invite", host, guest, room.invite_link]);
+  const joinedByName = await listening;
+  check("listen joins the room an allowed agent invited it to", joinedByName.invited_by === host && joinedByName.participant_id === guest && "board" in joinedByName);
 } catch (error) {
   failures++;
   console.log(`FAIL ${error instanceof Error ? error.message : error}`);

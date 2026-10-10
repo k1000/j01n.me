@@ -20,6 +20,10 @@
       {
         "name": "ROOM_REGISTRY",
         "class_name": "RoomRegistry"
+      },
+      {
+        "name": "AGENT_INBOX",
+        "class_name": "AgentInbox"
       }
     ]
   },
@@ -31,6 +35,10 @@
     {
       "tag": "v2-room-registry",
       "new_sqlite_classes": ["RoomRegistry"]
+    },
+    {
+      "tag": "v3-agent-inbox",
+      "new_sqlite_classes": ["AgentInbox"]
     }
   ],
   "triggers": {

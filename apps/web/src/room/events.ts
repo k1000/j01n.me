@@ -21,15 +21,44 @@ export type WaitEvent =
   | { event: "board"; keys: string[]; updated_by: string; changes: Record<string, BoardChange> }
   | { event: "participant"; participant_id: string; action: string };
 
+/** Optional wait filters: only events caused by `from`, only board changes to keys starting with `board`, no system notices. */
+export interface WaitFilter {
+  from?: string[];
+  board?: string;
+  system?: boolean;
+}
+
+export function parseWaitFilter(params: URLSearchParams): WaitFilter {
+  const from = params.get("from")?.split(",").map((id) => id.trim()).filter(Boolean);
+  return {
+    ...(from?.length ? { from } : {}),
+    ...(params.has("board") ? { board: params.get("board")! } : {}),
+    ...(params.get("system") === "false" ? { system: false } : {}),
+  };
+}
+
+/** Whether an event passes the filter. A board.changed announcement counts as a board change, not a system notice. */
+export function matchesWaitFilter(event: WaitEvent, filter: WaitFilter): boolean {
+  const actor = event.event === "message" ? messageActor(event.message) : event.event === "board" ? event.updated_by : event.participant_id;
+  if (filter.from && !filter.from.includes(actor)) return false;
+  const boardKeys = event.event === "board" ? event.keys
+    : event.event === "message" && event.message.intent === "board.changed" ? Object.keys((event.message.body as { changes?: object }).changes ?? {})
+    : undefined;
+  if (filter.board !== undefined && !boardKeys?.some((key) => key.startsWith(filter.board!))) return false;
+  if (filter.system === false && !boardKeys && (event.event === "participant" || (event.event === "message" && event.message.from === "system"))) return false;
+  return true;
+}
+
 interface Waiter {
   participantId: string;
+  filter: WaitFilter;
   wake: (event: WaitEvent | null) => void;
 }
 
 export interface RoomEventBus {
   subscribe(participantId: string, includeSelf: boolean, lastSeq: number, includeAll?: boolean): Response;
   /** Resolve with the next event this participant can see (never its own action), or null after timeoutMs. */
-  wait(participantId: string, timeoutMs: number): Promise<WaitEvent | null>;
+  wait(participantId: string, timeoutMs: number, filter?: WaitFilter): Promise<WaitEvent | null>;
   notifyMessage(message: RoomMessage, lastSeq: number): void;
   /** `changes` (new value + version, or null when deleted) is passed to waiters so a board wake is actionable. */
   notifyBoard(keys: string | string[], updatedBy: string, changes?: Record<string, BoardChange>): void;
@@ -46,10 +75,11 @@ export class RoomEvents implements RoomEventBus {
   private readonly waiters = new Set<Waiter>();
   private notificationCount = 0;
 
-  wait(participantId: string, timeoutMs: number): Promise<WaitEvent | null> {
+  wait(participantId: string, timeoutMs: number, filter: WaitFilter = {}): Promise<WaitEvent | null> {
     return new Promise((resolve) => {
       const waiter: Waiter = {
         participantId,
+        filter,
         wake: (event) => {
           clearTimeout(timer);
           this.waiters.delete(waiter);
@@ -64,7 +94,7 @@ export class RoomEvents implements RoomEventBus {
   /** Wake every waiter that can see this event, except the participant who caused it. */
   private wakeWaiters(event: WaitEvent, actor: string, canSee: (participantId: string) => boolean = () => true): void {
     for (const waiter of [...this.waiters]) {
-      if (waiter.participantId !== actor && canSee(waiter.participantId)) waiter.wake(event);
+      if (waiter.participantId !== actor && canSee(waiter.participantId) && matchesWaitFilter(event, waiter.filter)) waiter.wake(event);
     }
   }
 

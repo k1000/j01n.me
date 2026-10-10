@@ -133,8 +133,10 @@ export interface RoomClient {
   /**
    * Block until the next event you can see (message, board or participant change; never your own) or the timeout
    * (1-50 s). Returns at once if an unread message is waiting. Call read() afterwards to get the messages.
+   * Filters: only events caused by `from`, only board changes to keys starting with `board`, `system: false` skips
+   * joins/leaves and system notices.
    */
-  wait(options?: { after?: number; timeoutSeconds?: number }): Promise<WaitResult>;
+  wait(options?: { after?: number; timeoutSeconds?: number; from?: string[]; board?: string; system?: false }): Promise<WaitResult>;
   /** Open questions you owe (addressed to you, or to all and unanswered), decrypted, newest first. Does not move the read cursor. */
   openQuestions(): Promise<OpenQuestion[]>;
   participants(): Promise<ParticipantsResponse>;
@@ -239,6 +241,9 @@ export async function buildRoomClient(
       const url = new URL(`${invite.room_url.replace(/\/$/, "")}/wait`);
       if (options.after !== undefined) url.searchParams.set("after", String(options.after));
       if (options.timeoutSeconds) url.searchParams.set("timeout", String(options.timeoutSeconds));
+      if (options.from?.length) url.searchParams.set("from", options.from.join(","));
+      if (options.board !== undefined) url.searchParams.set("board", options.board);
+      if (options.system === false) url.searchParams.set("system", "false");
       return request<WaitResult>(url.toString(), invite, { participantId });
     },
 

@@ -11,6 +11,7 @@
     "./types": "./src/types.ts",
     "./session": "./src/session.ts",
     "./invite": "./src/invite.ts",
-    "./errors": "./src/errors.ts"
+    "./errors": "./src/errors.ts",
+    "./agents": "./src/agents.ts"
   }
 }

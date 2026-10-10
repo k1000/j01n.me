@@ -9,13 +9,14 @@
    Full:     node .j01n/j01n.js send "$ROOM_URL" "$PARTICIPANT_TOKEN" "$ME" all '{"text":"hello"}'
    Env:      ROOM_URL=... PARTICIPANT_TOKEN=... ME=... node .j01n/j01n.js send all '{"text":"hello"}'
    Watch:    node .j01n/j01n.js watch agent-b.j01n.json
-   Wait:     node .j01n/j01n.js wait agent-b.j01n.json   (block until the next event, then print new messages)
+   Wait:     node .j01n/j01n.js wait agent-b.j01n.json [--from a,b] [--board task_] [--no-system]   (block until the next event, then print new messages)
    Webhook:  node .j01n/j01n.js webhook agent-b.j01n.json https://me.example/hook   (optional push; 'off' = poll)
    Link:     node .j01n/j01n.js join https://j01n.me/room/<id>#<join_secret> agent-b > agent-b.j01n.json
    Current:  after join, with one room joined from this directory: node .j01n/j01n.js send claude-code hi --wait
    Kickoff:  node .j01n/j01n.js kickoff <room link> <me> Goal: review the SDK docs   (sealed: only invite holders can read it)
    Asks:     node .j01n/j01n.js send <to> Can you review? --expect-reply   /   send <from> done --reply-to <message id>
-   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff
+   Agents:   register <me> [allowed,agents]  |  invite <me> <to> <room link>  |  listen <me>   (invite agents by name)
+   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, register, allow, invite, invites, listen
 */
 const fs = await import('node:fs/promises');
 const { webcrypto, createHash } = await import('node:crypto');
@@ -25,6 +26,10 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const rawArgs = process.argv.slice(2).filter((arg, index) => index !== 0 || arg !== '--');
 const cmd = rawArgs[0];
+// Room-feature version this helper speaks; bump with CLIENT_PROTOCOL in apps/web/src/constants.ts.
+const CLIENT_PROTOCOL = 5;
+let updateNoticeShown = false;
+let clientUpdateNotice = null;
 if (cmd === 'create') {
   const hasBaseUrl = isRoomUrl(rawArgs[1]);
   const baseUrl = ((hasBaseUrl ? rawArgs[1] : process.env.BASE_URL) || 'https://j01n.me').replace(/\/$/, '');
@@ -34,6 +39,11 @@ if (cmd === 'create') {
   const text = await r.text();
   if (!r.ok) die(text);
   console.log(text);
+  process.exit(0);
+}
+// Agent inbox commands: invite agents by name (j01n.me/a/<name>) instead of pasting room links.
+if (['register', 'allow', 'invite', 'listen', 'invites'].includes(cmd)) {
+  await agentCommand(rawArgs.slice(1));
   process.exit(0);
 }
 // Rooms joined from this directory, shared with the Pi extension: one file per room with only the room URL and
@@ -49,6 +59,46 @@ let headers = { authorization: 'Bearer ' + joinSecret, 'x-participant-id': me };
 const keyFile = '.j01n-' + new URL(roomUrl).pathname.replace(/[^a-zA-Z0-9_-]/g, '_') + '-' + me.replace(/[^a-zA-Z0-9_-]/g, '_') + '.json';
 
 function die(message) { console.error(message); process.exit(1); }
+async function agentCommand([me, ...rest]) {
+  const base = (process.env.BASE_URL || 'https://j01n.me').replace(/\/$/, '');
+  if (!me) die('usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]');
+  const file = '.j01n-agent-' + me.replace(/[^a-zA-Z0-9_-]/g, '_') + '.json';
+  const names = (value) => String(value || '').split(',').map((v) => v.trim()).filter(Boolean);
+  const ok = (r) => { if (!r.ok) die(formatErrorBody(r.body)); return r.body; };
+  if (cmd === 'register') {
+    const keys = await makeKeys();
+    const r = ok(await requestJson(base + '/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: me, public_key: await exportPublic(keys.publicKey), accept_from: names(rest[0]) }) }));
+    await fs.writeFile(file, JSON.stringify({ name: me, base, agentToken: r.agent_token, privateJwk: await subtle.exportKey('jwk', keys.privateKey), publicJwk: await subtle.exportKey('jwk', keys.publicKey) }, null, 2), { mode: 0o600 });
+    console.log(JSON.stringify({ ok: true, address: base + '/a/' + me, accept_from: r.accept_from, identity_file: file }, null, 2));
+    return;
+  }
+  let identity;
+  try { identity = JSON.parse(await fs.readFile(file, 'utf8')); } catch { die('no agent identity ' + file + '; run: register ' + me + ' [allowed,agents]'); }
+  const headers = { authorization: 'Bearer ' + identity.agentToken, 'content-type': 'application/json' };
+  const inbox = base + '/a/' + encodeURIComponent(me);
+  // The key shared with another agent (ECDH with its registered public key) seals and opens room links.
+  const sharedWith = async (other) => derive(await subtle.importKey('jwk', identity.privateJwk, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']), await importPublic(ok(await requestJson(base + '/a/' + encodeURIComponent(other))).public_key));
+  if (cmd === 'allow') {
+    console.log(JSON.stringify(ok(await requestJson(inbox, { method: 'PATCH', headers, body: JSON.stringify({ accept_from: names(rest[0]) }) })), null, 2));
+  } else if (cmd === 'invite') {
+    const [to, link] = rest;
+    if (!to || !link) die('invite needs: <me> <to> <room link>');
+    const sealed = await aesEncrypt(await sharedWith(to), link);
+    console.log(JSON.stringify(ok(await requestJson(base + '/a/' + encodeURIComponent(to) + '/invites', { method: 'POST', headers, body: JSON.stringify({ from: me, sealed }) })), null, 2));
+  } else if (cmd === 'invites') {
+    console.log(JSON.stringify((ok(await requestJson(inbox + '/invites', { headers })).invites || []).map((i) => ({ id: i.id, from: i.from, created_at: i.created_at })), null, 2));
+  } else if (cmd === 'listen') {
+    // Wait for an invitation, open it, remove it from the inbox and join the room (allowlisted inviters only).
+    const r = ok(await requestJson(inbox + '/wait?timeout=' + (Number(rest[0]) || 50), { headers }));
+    if (!r.invites) { console.log(JSON.stringify({ timeout: true }, null, 2)); return; }
+    const invite = r.invites[0];
+    const link = await aesDecrypt(await sharedWith(invite.from), invite.sealed.ciphertext, invite.sealed.iv);
+    ok(await requestJson(inbox + '/invites/' + encodeURIComponent(invite.id), { method: 'DELETE', headers }));
+    const { execFileSync } = await import('node:child_process');
+    const joined = JSON.parse(execFileSync(process.execPath, [process.argv[1], 'join', link, me], { encoding: 'utf8', env: process.env }));
+    console.log(JSON.stringify({ invited_by: invite.from, ...joined }, null, 2));
+  }
+}
 async function resolveRoomArgs(args) {
   if (usesEnvRoom(args)) return envRoomArgs(args);
   const link = parseInviteLink(args[1]);
@@ -128,10 +178,6 @@ async function loadState() {
 async function saveState(state) { await fs.writeFile(keyFile, JSON.stringify({ privateJwk: state.privateJwk, publicJwk: state.publicJwk, peers: state.peers, participantToken: state.participantToken, announcedKey: state.announcedKey, roomUrl }, null, 2), { mode: 0o600 }); }
 function tokenHeaders(state) { return state.participantToken ? { authorization: 'Bearer ' + state.participantToken } : headers; }
 function requireParticipantToken(state) { if (!state.participantToken) die('participant token missing; run join first'); return state.participantToken; }
-// Room-feature version this helper speaks; bump with CLIENT_PROTOCOL in apps/web/src/constants.ts.
-const CLIENT_PROTOCOL = 4;
-let updateNoticeShown = false;
-let clientUpdateNotice = null;
 async function requestJson(url, init = {}) {
   const r = await fetch(url, { ...init, headers: { ...(init.headers || {}), 'x-j01n-client': 'helper/' + CLIENT_PROTOCOL } });
   const notice = r.headers.get('x-j01n-client-update');
@@ -328,8 +374,8 @@ function doctorReport(state, joinedResult, messages, stats, openQuestions, openQ
 }
 
 // Block until the next event this participant can see (or the timeout), then return the new messages, decrypted.
-async function waitForEvent(state, timeout) {
-  const r = await requestJson(roomUrl + '/wait?timeout=' + timeout, { headers: { authorization: 'Bearer ' + requireParticipantToken(state) } });
+async function waitForEvent(state, timeout, filter = '') {
+  const r = await requestJson(roomUrl + '/wait?timeout=' + timeout + filter, { headers: { authorization: 'Bearer ' + requireParticipantToken(state) } });
   if (!r.ok) die(formatErrorBody(r.body));
   if (r.body.timeout) return { timeout: true };
   // Unread first (this also marks them read), then sync peer keys to decrypt them.
@@ -421,7 +467,15 @@ const COMMANDS = {
     console.log(JSON.stringify(await post({ to: 'all', intent: 'kickoff', body }), null, 2));
   },
   async wait(state, { rest }) {
-    console.log(JSON.stringify(await waitForEvent(state, Number(rest[0]) || 50), null, 2));
+    // Flags: --from <ids,...> (only events they caused), --board <key prefix> (only matching board changes), --no-system.
+    let timeout = 50, filter = '';
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--from') filter += '&from=' + encodeURIComponent(rest[++i] || '');
+      else if (rest[i] === '--board') filter += '&board=' + encodeURIComponent(rest[++i] || '');
+      else if (rest[i] === '--no-system') filter += '&system=false';
+      else timeout = Number(rest[i]) || 50;
+    }
+    console.log(JSON.stringify(await waitForEvent(state, timeout, filter), null, 2));
   },
   async webhook(state, { roomUrl, me, rest }) {
     const [url] = rest;

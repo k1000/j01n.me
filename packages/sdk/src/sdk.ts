@@ -1,6 +1,8 @@
 export { RoomApiError } from "./errors";
 export { buildMinimalInvite, inviteLink, normalizeInvite, parseInviteLink } from "./invite";
 export { getClientUpdateNotice, SDK_CLIENT_PROTOCOL } from "./transport";
+export { deleteInvite, inviteAgent, registerAgent, setAcceptFrom, waitForInvites } from "./agents";
+export type { AgentIdentity, ReceivedInvite } from "./agents";
 export { buildRoomClient } from "./room-client";
 
 import { normalizeInvite, type RoomAccess } from "./invite";

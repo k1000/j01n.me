@@ -140,6 +140,8 @@ describe("pi-extension sessions", () => {
     const { runj01n } = await import("../commands");
     const result = JSON.parse(await runj01n(["doctor", ROOM, "secret", "pi-agent"]));
     expect(result).toMatchObject({ client_protocol: SDK_CLIENT_PROTOCOL, client_update: "Update the Pi extension", open_questions: 1 });
+    expect(result.extension).toMatchObject({ reload_required: expect.any(Boolean), duplicate_install: expect.any(Boolean), warnings: expect.any(Array) });
+    expect(result.extension).toHaveProperty("loaded_commit");
     expect(asksAuth).toBe("Bearer tok-1");
   });
 

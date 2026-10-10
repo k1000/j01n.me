@@ -10,6 +10,7 @@ import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
 import { listHerdrPeers, notifyHerdrPeer } from "./herdr";
 import { requirePrivateIdentityDir } from "./spawn-herdr";
+import { getExtensionDiagnostics } from "./version";
 
 const sessions = new Map<string, RoomClient>();
 const ACTIVE_ROOMS_DIR = ".j01n-rooms";
@@ -265,6 +266,7 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
     const sealed = (await client.read({ all: true, includeSelf: true }).catch(() => [])).find((m) => m.intent === "kickoff" && !m.decrypt_error);
     if (sealed) kickoff = sealed.body;
   }
+  const extension = getExtensionDiagnostics();
   return JSON.stringify({
     ok: true,
     participant_id: parsed.me,
@@ -280,6 +282,7 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
     // Who is in the room: capabilities and where each works (workspaces are sealed with the room key).
     team: await client.team().catch(() => []),
     ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}),
+    ...(extension.warnings.length ? { extension_warning: extension.warnings } : {}),
   }, null, 2);
 }
 
@@ -375,6 +378,7 @@ async function handleDoctor(parsed: ParsedArgs): Promise<string> {
     ok: participants.participants.some((p) => p.id === parsed.me),
     client_protocol: SDK_CLIENT_PROTOCOL,
     ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}),
+    extension: getExtensionDiagnostics(),
     open_questions: openQuestions,
     ...(openQuestionsError ? { open_questions_error: openQuestionsError } : {}),
     participant_id: parsed.me,

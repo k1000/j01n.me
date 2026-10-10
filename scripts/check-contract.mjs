@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -86,7 +86,17 @@ try {
   mkdirSync(copy);
   run("git", ["archive", "HEAD", "-o", join(temp, "snapshot.tar")]);
   run("tar", ["-xf", join(temp, "snapshot.tar"), "-C", copy]);
+  // Pi installs git packages with npm by default...
   run("npm", ["install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund"], copy);
+  // ...or with bun when Pi's npmCommand is ["bun"] (it then runs plain `install`).
+  if (spawnSync("bun", ["--version"], { stdio: "ignore" }).status === 0) {
+    const bunCopy = join(temp, "repo-bun");
+    mkdirSync(bunCopy);
+    run("tar", ["-xf", join(temp, "snapshot.tar"), "-C", bunCopy]);
+    run("bun", ["install"], bunCopy);
+  } else {
+    console.log("bun not installed: skipped the bun install check");
+  }
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }

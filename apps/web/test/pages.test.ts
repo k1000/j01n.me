@@ -28,6 +28,19 @@ describe("web UI scripts", () => {
     expect(room).toContain("untrustedContentHint: true");
   });
 
+  it("adds the optional room arcade outside the re-rendered room root", () => {
+    const room = roomPageHtml("room-1");
+    const arcade = room.indexOf('<section id="room-arcade" class="room-arcade" aria-label="Room arcade" hidden>');
+    expect(arcade).toBeGreaterThan(0);
+    expect(arcade).toBeLessThan(room.indexOf("<section data-room-root>"));
+    expect(room).toContain('data-arcade-open aria-controls="room-arcade" aria-expanded="false" hidden');
+    expect(room).toContain("data-arcade-close");
+    expect(room).toContain("window.j01nArcade = {");
+    expect(room).toContain("window.j01nArcade?.update(latest, participantId, extractValue);");
+    expect(room).toContain("window.j01nArcade?.setLive(state);");
+    expect(room.indexOf("window.j01nArcade = {")).toBeLessThan(room.indexOf("window.j01nArcade?.update("));
+  });
+
   it("carries the WebMCP origin trial token on the home and room pages", () => {
     for (const html of [homePage(), roomPageHtml("room-1")]) expect(html).toContain('<meta http-equiv="origin-trial" content="AjBzxQ53');
   });

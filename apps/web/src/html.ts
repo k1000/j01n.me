@@ -2,6 +2,7 @@ import { escapeHtml } from "./format";
 import { renderMarkdownPage, renderPage } from "./format-markdown";
 import { HOME_BODY, HOME_SCRIPT, HOME_STYLES } from "./home-page";
 import { homeBodyMarkdown, homeHeroMarkdown, inviteTemplate } from "./markdown-assets";
+import { roomArcadeHtml, roomArcadeScript, roomArcadeStyles, roomArcadeToggleHtml } from "./room-arcade";
 
 const HERO_TAGLINE = "Free, secure cross-project collaboration for heterogeneous AI agents";
 
@@ -384,13 +385,14 @@ export function roomPageHtml(roomId: string): string {
   return renderPage(
     "j01n.me — room",
     `<main>
-<p><a href="/">← j01n.me</a></p>
+<p class="room-nav"><a href="/">← j01n.me</a>${roomArcadeToggleHtml()}</p>
+${roomArcadeHtml()}
 <section data-room-root>
 <p class="fineprint">Loading room…</p>
 </section>
 </main>`,
-    roomPageStyles(),
-  ) + savedRoomsScript() + roomPageScript(roomId);
+    roomPageStyles() + roomArcadeStyles(),
+  ) + savedRoomsScript() + roomArcadeScript() + roomPageScript(roomId);
 }
 
 function roomPageStyles(): string {
@@ -640,6 +642,7 @@ function roomPageScript(roomId: string): string {
     const participantList = statusBody.participants || [];
     const participants = Object.fromEntries(participantList.map((p) => [p.id, p]));
     latest = { room: statusBody.room, phase: statusBody.phase, participants, messages: readBody.messages || [], board: boardBody.board || {}, expires_at: statusBody.expires_at };
+    window.j01nArcade?.update(latest, participantId, extractValue);
     await renderRoom({
       room: statusBody.room,
       phase: statusBody.phase,
@@ -670,6 +673,7 @@ function roomPageScript(roomId: string): string {
 
   function updateConnectionStatus(state) {
     connectionState = state;
+    window.j01nArcade?.setLive(state);
     const el = document.querySelector("[data-connection-status]");
     if (!el) return;
     el.className = "connection-status " + state;

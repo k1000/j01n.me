@@ -396,11 +396,18 @@ export function roomPageHtml(roomId: string): string {
 function roomPageStyles(): string {
   return `
   [data-room-root] { margin-top: 2rem; }
+  .connection-status { display: inline-flex; align-items: center; gap: 0.4rem; vertical-align: middle; font-size: 0.9rem; font-weight: 400; color: color-mix(in srgb, CanvasText 72%, Canvas 28%); }
+  .connection-dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: currentColor; }
+  .connection-status.connected .connection-dot { background: #3fb950; }
+  .connection-status.connecting .connection-dot { background: #d29922; }
+  .connection-status.disconnected .connection-dot { background: #f85149; }
   .room-meta { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; font-size: 0.95rem; margin-bottom: 1.5rem; }
   .room-meta dt { opacity: 0.72; }
   .room-meta dd { margin: 0; }
   .room-board { margin: 1.5rem 0; padding: 1.25rem; background: var(--highlight); color: #000; }
-  .room-board h3 { margin-top: 0; color: #fff; }
+  .room-board h3 { margin-top: 0; color: #000; }
+  .room-board h3::before { color: rgb(0 0 0 / 0.45); }
+  .room-board .button { background: #000; border-color: #000; color: var(--highlight); }
   .room-board .board-empty { opacity: 0.72; }
   .board-empty { opacity: 0.72; font-size: 0.95rem; }
   .board-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 0.75rem 0 1rem; }
@@ -416,12 +423,12 @@ function roomPageStyles(): string {
   .kanban-column { background: color-mix(in srgb, currentColor 6%, transparent); padding: 0.75rem; min-height: 6rem; }
   .kanban-column-title { margin: 0 0 0.5rem; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.72; }
   .kanban-cards { display: grid; gap: 0.5rem; }
-  .kanban-card { background: var(--background); color: var(--color); padding: 0.5rem 0.75rem; border: 1px solid color-mix(in srgb, currentColor 22%, transparent); }
+  .kanban-card { background: Canvas; color: CanvasText; padding: 0.5rem 0.75rem; border: 1px solid color-mix(in srgb, currentColor 22%, transparent); }
   .kanban-card-title { display: block; font-weight: 700; font-size: 0.95rem; }
   .kanban-card-owner { display: block; font-size: 0.85rem; opacity: 0.6; margin-top: 0.15rem; }
   .kanban-add-task { margin: 0.75rem 0; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; }
   .kanban-add-task label { display: grid; gap: 0.2rem; font-size: 0.85rem; }
-  .kanban-add-task input, .kanban-add-task select { font: inherit; border: 2px solid currentColor; background: var(--background); color: currentColor; padding: 0.25rem 0.5rem; }
+  .kanban-add-task input, .kanban-add-task select { font: inherit; border: 2px solid currentColor; background: Canvas; color: currentColor; padding: 0.25rem 0.5rem; }
   .board-entry { display: grid; grid-template-columns: auto 1fr auto; gap: 0.25rem 1rem; font-size: 0.95rem; padding: 0.5rem 0; border-top: 1px dashed rgb(0 0 0 / 0.28); }
   .board-entry:first-child { border-top: none; }
   .board-entry .board-key { font-weight: 700; color: #000; }
@@ -434,7 +441,7 @@ function roomPageStyles(): string {
   .participant-card .participant-status { font-size: 0.9rem; }
   .message-composer { display: grid; gap: 0.75rem; margin: 0.75rem 0 1rem; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
   .message-composer label { display: grid; gap: 0.35rem; font-weight: 700; }
-  .message-composer select, .message-composer textarea { width: 100%; box-sizing: border-box; font: inherit; border: 2px solid currentColor; background: var(--background); color: currentColor; }
+  .message-composer select, .message-composer textarea { width: 100%; box-sizing: border-box; font: inherit; border: 2px solid currentColor; background: Canvas; color: currentColor; }
   .message-composer textarea { min-height: 7rem; resize: vertical; }
   .message-compose-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: end; }
   .message-entry { padding: 0.75rem 0; border-top: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }

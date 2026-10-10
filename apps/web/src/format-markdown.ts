@@ -2,7 +2,7 @@ import { marked, Renderer } from "marked";
 import { escapeHtml } from "./format";
 
 const SHARED_STYLES = `
-  :root { color-scheme: light dark; --highlight: #fff1d7; }
+  :root { color-scheme: dark; --highlight: #fff1d7; }
   body {
     max-width: 760px;
     margin: 0 auto;

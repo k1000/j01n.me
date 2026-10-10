@@ -1,7 +1,24 @@
 import type { RoomClient } from "./room-client";
 import type { Workspace } from "./crypto";
 import { listReservations, releasePaths, reservePaths } from "./reservations";
+import { addDecision, addNote, notesAndDecisions } from "./notes";
 import { blockTask, claimTask, completeTask, listTasks, unblockTask } from "./tasks";
+
+const MESSAGE_KINDS = ["finding", "question", "decision", "blocker", "handoff"] as const;
+type MessageKind = typeof MESSAGE_KINDS[number];
+function kinds(value: string): MessageKind[] {
+  const values = value.split(",").map((kind) => kind.trim());
+  if (!values.length || values.some((kind) => !MESSAGE_KINDS.includes(kind as MessageKind))) throw new Error(`--kind needs: ${MESSAGE_KINDS.join("|")}`);
+  return values as MessageKind[];
+}
+
+export async function roomSummary(client: RoomClient) {
+  // These endpoints inspect state without reading messages or advancing the participant's cursor.
+  const [board, tasks, reservations, participants] = await Promise.all([
+    client.board(), listTasks(client), listReservations(client), client.team(),
+  ]);
+  return { tasks, reservations, participants, report: board.board.report?.value ?? null, ...notesAndDecisions(board.board) };
+}
 
 export function parseRoomBody(raw: string): unknown {
   try {
@@ -19,10 +36,14 @@ export function roomReplyHints<T extends { id: string; from: string; intent?: st
   return messages.map((m) => m.from === "system" || m.intent === "key.exchange" ? m : { ...m, reply: roomReplyHint(m, prefix) });
 }
 
-export async function waitRoom(client: RoomClient, timeoutSeconds?: number, filter: Parameters<RoomClient["wait"]>[0] = {}, prefix = "/j01n") {
+export async function waitRoom(client: RoomClient, timeoutSeconds?: number, filter: Parameters<RoomClient["wait"]>[0] & { kind?: MessageKind[] } = {}, prefix = "/j01n") {
   const woke = await client.wait({ ...filter, timeoutSeconds });
   if (woke.timeout) return { timeout: true };
-  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), messages: roomReplyHints(await client.read(), prefix) };
+  // read() advances the cursor for every unread message, including other kinds. Return those too.
+  const messages = roomReplyHints(await client.read(), prefix);
+  if (!filter.kind?.length) return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), messages };
+  const matching = messages.filter((message) => filter.kind?.includes((message as typeof message & { kind?: MessageKind }).kind as MessageKind));
+  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), messages: matching, other_messages: messages.filter((message) => !matching.includes(message)) };
 }
 
 /** Shared room-command execution; entry points retain their own session, key-file and output policies. */
@@ -40,6 +61,21 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
 } = {}): Promise<unknown> {
   const prefix = options.prefix ?? "/j01n";
   if (cmd === "tasks") return { tasks: await listTasks(client) };
+  if (cmd === "summary") return roomSummary(client);
+  if (cmd === "note") {
+    const text = rest[0];
+    if (!text || text.startsWith("--")) throw new Error("note needs: <text> [--tag gotcha|finding|howto] [--files a,b]");
+    const flags = new Map<string, string>();
+    for (let i = 1; i < rest.length; i += 2) {
+      if (!["--tag", "--files"].includes(rest[i]) || flags.has(rest[i]) || !rest[i + 1] || rest[i + 1].startsWith("--")) throw new Error("note needs: <text> [--tag gotcha|finding|howto] [--files a,b]");
+      flags.set(rest[i], rest[i + 1]);
+    }
+    return { notes: await addNote(client, text, flags.has("--tag") ? [flags.get("--tag")!] : [], flags.get("--files")?.split(",").map((file) => file.trim()).filter(Boolean) ?? []) };
+  }
+  if (cmd === "decide") {
+    if (!rest[0] || rest[1] !== "--why" || !rest[2]) throw new Error("decide needs: <decision> --why <reason>");
+    return { decisions: await addDecision(client, rest[0], rest.slice(2).join(" ")) };
+  }
   if (cmd === "conflicts") {
     if (!options.conflicts) throw new Error("conflicts needs a local git checkout");
     return options.conflicts();
@@ -78,17 +114,19 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
   if (cmd === "send") {
     const [toRaw, ...args] = rest;
     const words: string[] = [];
-    let andWait = false, replyTo: string | undefined, expectsReply = false;
+    let andWait = false, replyTo: string | undefined, expectsReply = false, kind: MessageKind | undefined;
     for (let i = 0; i < args.length; i++) {
       if (args[i] === "--wait") andWait = true;
       else if (args[i] === "--expect-reply") expectsReply = true;
       else if (args[i] === "--reply-to") replyTo = args[++i];
+      else if (args[i] === "--kind") { const parsed = kinds(args[++i] ?? ""); if (parsed.length !== 1) throw new Error("send --kind needs one kind"); kind = parsed[0]; }
       else words.push(args[i]);
     }
     if (!toRaw || !words.length) throw new Error("send needs: <to> <text or json_body> [--reply-to <id>] [--expect-reply] [--wait]");
     const to = options.recipientList && toRaw.includes(",") ? toRaw.split(",").map((s) => s.trim()) : options.recipientList ? toRaw.trim() : toRaw;
     await options.beforeSend?.();
-    const sent = await client.send(to, parseRoomBody(words.join(" ")), { replyTo, expectsReply });
+    const sendOptions = { replyTo, expectsReply: expectsReply || kind === "question" || kind === "blocker", kind };
+    const sent = await client.send(to, parseRoomBody(words.join(" ")), sendOptions);
     return andWait ? { sent, ...await waitRoom(client, options.waitDefault, {}, prefix) } : sent;
   }
   if (cmd === "read" || cmd === "inbox") {
@@ -96,10 +134,11 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
   }
   if (cmd === "wait") {
     let timeout: string | undefined;
-    const filter: Parameters<RoomClient["wait"]>[0] = {};
+    const filter: Parameters<RoomClient["wait"]>[0] & { kind?: MessageKind[] } = {};
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === "--from") filter.from = (rest[++i] ?? "").split(",").map((name) => options.trimWaitFrom ? name.trim() : name).filter(Boolean);
       else if (rest[i] === "--board") filter.board = rest[++i] ?? "";
+      else if (rest[i] === "--kind") filter.kind = kinds(rest[++i] ?? "");
       else if (rest[i] === "--no-system") filter.system = false;
       else timeout = rest[i];
     }

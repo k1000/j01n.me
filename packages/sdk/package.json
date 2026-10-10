@@ -17,6 +17,7 @@
     "./agents": "./src/agents.ts",
     "./reservations": "./src/reservations.ts",
     "./tasks": "./src/tasks.ts",
+    "./notes": "./src/notes.ts",
     "./room-commands": "./src/room-commands.ts",
     "./transport": "./src/transport.ts"
   }

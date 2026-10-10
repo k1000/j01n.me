@@ -92,7 +92,7 @@ describe("hosted MCP handler", () => {
 
     expect(body.result.tools.map((tool) => tool.name)).toContain("create_room");
     expect(body.result.tools.map((tool) => tool.name)).toContain("send_message");
-    for (const name of ["list_tasks", "claim_task", "complete_task", "block_task"]) {
+    for (const name of ["list_tasks", "claim_task", "complete_task", "block_task", "room_summary", "add_note", "add_decision"]) {
       expect(body.result.tools.map((tool) => tool.name)).toContain(name);
     }
   });
@@ -546,8 +546,32 @@ describe("hosted MCP handler", () => {
     }
   });
 
+  it("appends notes and decisions via MCP and summarizes without reading messages", async () => {
+    const board: Record<string, { value: unknown; version: number }> = {};
+    const paths: string[] = [];
+    const env = { RENDEZVOUS: { idFromName: () => "id", get: () => ({ fetch: async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      paths.push(path);
+      if (path.endsWith("/participants")) return Response.json({ participants: [{ id: "maya", state: "free", status: "ready", last_seen_at: "2026-01-01", capabilities: [] }] });
+      if (init?.method === "PUT" && path.includes("/board/")) {
+        const key = decodeURIComponent(path.split("/").pop()!);
+        board[key] = { value: JSON.parse(String(init.body)), version: (board[key]?.version ?? 0) + 1 };
+        return Response.json({ ok: true });
+      }
+      return Response.json({ board, cursor: 0, messages: [] });
+    } }) } } as never;
+    const call = (name: string, args: Record<string, unknown> = {}) =>
+      handleMcpRequest(rpc("tools/call", { name, arguments: { inviteJson: TEST_INVITE, participantId: "maya", ...args } }), env).then((r) => toolResultText<Record<string, unknown>>(r));
+    expect(await call("add_note", { text: "Pin versions", tag: "gotcha", files: "package.json" })).toMatchObject({ notes: [{ by: "maya", tags: ["gotcha"] }] });
+    expect(await call("add_decision", { decision: "Ship", why: "Checks pass" })).toMatchObject({ decisions: [{ decision: "Ship", why: "Checks pass" }] });
+    const before = paths.length;
+    expect(await call("room_summary")).toMatchObject({ notes: [{ text: "Pin versions" }], decisions: [{ decision: "Ship" }], participants: [{ id: "maya" }] });
+    expect(paths.slice(before)).not.toContain("/"); // reading messages would advance the cursor
+  });
+
   it("waits for an event, takes a room link and plain text, and reads others' messages by default", async () => {
     const requests: Array<[string | undefined, string, unknown]> = [];
+    let unreadMessages: unknown[] = [];
     const env = {
       RENDEZVOUS: {
         idFromName: () => "id",
@@ -557,7 +581,7 @@ describe("hosted MCP handler", () => {
             requests.push([init?.method ?? "GET", u.pathname + u.search, init?.body ? JSON.parse(init.body as string) : undefined]);
             if (u.pathname.endsWith("/wait")) return Response.json({ event: "message", cursor: 3 });
             if (u.pathname.endsWith("/participants")) return Response.json({ participants: [] });
-            return Response.json({ ok: true, cursor: 3, messages: [], seq: 4 });
+            return Response.json({ ok: true, cursor: 3, messages: unreadMessages, seq: 4 });
           },
         }),
       },
@@ -570,6 +594,14 @@ describe("hosted MCP handler", () => {
     expect(requests.some(([, path]) => path === "/wait?timeout=5")).toBe(true);
     expect(requests.some(([method, path]) => method === "GET" && path === "/")).toBe(true);
 
+    unreadMessages = [
+      { id: "finding-1", seq: 1, from: "b", to: "a", kind: "finding", intent: "notify", body: { text: "context" }, created_at: "2026-01-01" },
+      { id: "blocker-1", seq: 2, from: "b", to: "a", kind: "blocker", intent: "notify", body: { text: "help" }, created_at: "2026-01-01" },
+    ];
+    expect(await call("wait_for_event", { kind: "blocker" })).toMatchObject({
+      messages: [{ id: "blocker-1" }], other_messages: [{ id: "finding-1" }],
+    });
+    unreadMessages = [];
     requests.length = 0;
     await call("send_message", { to: "all", body: "hello there" });
     const sent = requests.find(([method, path]) => method === "POST" && path === "/");

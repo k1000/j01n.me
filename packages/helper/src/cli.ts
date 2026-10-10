@@ -5,7 +5,7 @@ import { createHash, webcrypto } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { relative, resolve } from "node:path";
 import {
-  buildMinimalInvite, getClientUpdateNotice, joinRoom, resumeRoom, parseInviteLink,
+  buildMinimalInvite, getClientUpdateNotice, inviteLink, joinRoom, resumeRoom, parseInviteLink,
   registerAgent, setAcceptFrom, inviteAgent, waitForInvites, deleteInvite,
   sealForRoom, SDK_CLIENT_PROTOCOL,
   type AgentIdentity, type RoomAccess,
@@ -14,6 +14,7 @@ import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { RoomApiError } from "@j01n/sdk/errors";
 import { request } from "@j01n/sdk/transport";
 import { parseRoomBody, runProfileCommand, runReservationCommand, runRoomCommand } from "@j01n/sdk/room-commands";
+import { notesAndDecisions } from "@j01n/sdk/notes";
 import { detectWorkspace } from "@j01n/sdk/node";
 import { checkConflicts } from "@j01n/sdk/conflicts-node";
 import type { RoomClient } from "@j01n/sdk";
@@ -163,7 +164,16 @@ async function main() {
     try { board = (await client.board()).board; } catch { /* join still succeeded */ }
     let kickoff: unknown = board?.kickoff?.value ?? null;
     if (kickoff === null) kickoff = (await client.read({ all: true, includeSelf: true })).find((m) => m.intent === "kickoff")?.body ?? null;
-    output({ ...profile, kickoff, board, questions: await client.openQuestions(), team: await client.team() });
+    output({ ...profile, kickoff, board, ...notesAndDecisions(board ?? {}), questions: await client.openQuestions(), team: await client.team() });
+    return;
+  }
+  if (cmd === "invite-link") {
+    if (rest.length && (rest.length !== 1 || rest[0] !== "--open")) throw Error("invite-link needs: [--open]");
+    if ((await client.status()).room.host_id !== me) throw Error("invite-link is host only");
+    if (!state.joinSecret || state.joinSecret === "resume-only") throw Error("room link unavailable in local key file; rejoin with the invitation");
+    const link = inviteLink(roomUrl, state.joinSecret);
+    if (rest.includes("--open")) execFileSync("open", [link], { stdio: "ignore" });
+    output({ invite_link: link, ...(rest.includes("--open") ? { opened: true } : {}) });
     return;
   }
   if (["send", "read", "inbox", "wait"].includes(cmd)) {
@@ -221,7 +231,7 @@ async function main() {
     output({ ok: joined, client_protocol: SDK_CLIENT_PROTOCOL, ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}), open_questions: openQuestions, ...(openQuestionsError ? { open_questions_error: openQuestionsError } : {}), participant_id: me, joined, key_file: keyFile, local_key_created: created, key_announced: messages.some((m) => m.from === me && m.intent === "key.exchange"), known_peers: participants.participants.filter((p) => p.id !== me && p.public_key).map((p) => p.id), encrypted_messages_seen: encrypted.length, encrypted_messages_decryptable: decryptable, key_note: `Reuse this key file from the same directory to retain your ECDH keypair across sessions: ${keyFile}` }); return;
   }
   if (cmd === "kickoff") { if (!rest.length) throw Error("kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)"); output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true })); return; }
-  if (["webhook", "tasks", "claim", "done", "block", "unblock", "conflicts"].includes(cmd || "")) { output(await roomCommand(client, cmd!, rest)); return; }
+  if (["webhook", "tasks", "claim", "done", "block", "unblock", "conflicts", "summary", "note", "decide"].includes(cmd || "")) { output(await roomCommand(client, cmd!, rest)); return; }
   if (cmd === "profile") {
     output(await runProfileCommand(client, rest, {
       modelFallback: process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL,
@@ -240,6 +250,6 @@ async function main() {
   }
   if (cmd === "leave") { await client.leave({ release: rest.includes("--release") }); await fs.rm(activePath(roomUrl, me), { force: true }); output({ ok: true, left: true }); return; }
   if (cmd === "host") { output(await roomCommand(client, cmd, rest)); return; }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|invite-link|note|decide|leave`);
 }
 main().catch((error: unknown) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

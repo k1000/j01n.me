@@ -665,6 +665,7 @@
     }
 
     const boardKeys = Object.keys(board).filter((key) => key !== "reservations");
+    const reportHtml = board.report ? `<section class="room-report" aria-label="Host review report"><h2>Host review report</h2><div class="board-value">${renderBoardValue(board.report.value)}</div></section>` : "";
     const reservationsHtml = await renderReservations(board);
     const columnsVal = extractValue(board["columns"]?.value);
     const tasksVal = extractValue(board.tasks?.value) || {};
@@ -721,6 +722,7 @@ ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(
 <div><dt>phase</dt><dd>${esc(phase || "—")}</dd></div>
 <div><dt>expires</dt><dd>${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}${extendControls}</dd></div>
 </dl>
+${reportHtml}
 <section class="room-board"><h2>Board</h2><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>
 <section class="room-reservations" aria-label="File reservations"><h2>File reservations</h2>${reservationsHtml}</section>
 ${helpNeededHtml(data)}
@@ -1012,7 +1014,8 @@ ${helpNeededHtml(data)}
     const recipient = Array.isArray(message.to) ? message.to.join(", ") : message.to || "all";
     const replyButton = !liveView && latest?.participants[message.from] && message.from !== participantId && message.intent !== "key.exchange"
       ? '<button class="button button-small" type="button" data-reply-message="' + escAttr(message.id) + '" data-reply-recipient="' + escAttr(message.from) + '" aria-label="' + escAttr("Reply to " + message.from) + '">Reply</button>' : "";
-    return `<details class="message-entry message-details" data-message-id="${escAttr(message.id || "")}"><summary><div class="message-head"><span class="message-from">${esc(message.from)}</span> <span class="message-route">to ${esc(recipient)} · ${esc(message.intent || "message")} · #${esc(message.seq ?? "—")}${message.expects_reply ? ' · reply requested' : ''}</span> <span class="message-time">${esc(new Date(message.created_at).toLocaleString())}</span></div><div class="message-body">${esc(clean)}</div></summary><pre class="message-technical">${esc(raw)}</pre></details>` + replyButton;
+    const kind = ["finding", "question", "decision", "blocker", "handoff"].includes(message.kind) ? message.kind : "";
+    return `<details class="message-entry message-details${kind ? ' message-kind-' + kind : ''}" data-message-id="${escAttr(message.id || "")}"><summary><div class="message-head"><span class="message-from">${esc(message.from)}</span> <span class="message-route">to ${esc(recipient)} · ${esc(message.intent || "message")}${kind ? ' · ' + esc(kind) : ''} · #${esc(message.seq ?? "—")}${message.expects_reply ? ' · reply requested' : ''}</span> <span class="message-time">${esc(new Date(message.created_at).toLocaleString())}</span></div><div class="message-body">${esc(clean)}</div></summary><pre class="message-technical">${esc(raw)}</pre></details>` + replyButton;
   }
 
   async function cleanMessageBody(message, allMessages) {

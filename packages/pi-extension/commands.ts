@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
+import { listHerdrPeers, notifyHerdrPeer } from "./herdr";
 
 const sessions = new Map<string, RoomClient>();
 const ACTIVE_ROOMS_DIR = ".j01n-rooms";
@@ -87,7 +88,7 @@ const ACTIVE_COMMANDS = new Set([
   "status", "webhook", "participants", "room_status", "transition", "host", "profile", "leave", "close",
 ]);
 
-const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen"]);
+const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen", "herdr_agents", "invite_herdr"]);
 
 function parseCommand(args: string[]): ParsedArgs {
   const cmd = args[0];
@@ -455,7 +456,7 @@ async function handleHost(parsed: ParsedArgs): Promise<string> {
 
 // ── Agent inbox: invite agents by name (j01n.me/a/<name>); same identity file as the CLI helper ──
 function agentFile(me: string): string {
-  return `.j01n-agent-${me.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`;
+  return join(process.env.J01N_AGENT_DIR || ".", `.j01n-agent-${me.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
 }
 
 function loadAgent(me: string | undefined): AgentIdentity {
@@ -469,6 +470,7 @@ const agentNames = (value: string | undefined) => (value ?? "").split(",").map((
 async function handleRegister(parsed: ParsedArgs): Promise<string> {
   const [me, allowed] = parsed.rest;
   if (!me) throw new Error("register needs: <your name> [allowed,agents]");
+  if (process.env.J01N_AGENT_DIR) mkdirSync(process.env.J01N_AGENT_DIR, { recursive: true, mode: 0o700 });
   const identity = await registerAgent((process.env.BASE_URL || "https://j01n.me").replace(/\/$/, ""), me, agentNames(allowed));
   writeFileSync(agentFile(me), JSON.stringify(identity, null, 2), { mode: 0o600 });
   return JSON.stringify({ ok: true, address: `${identity.base}/a/${me}`, accept_from: agentNames(allowed), identity_file: agentFile(me) }, null, 2);
@@ -483,6 +485,47 @@ async function handleInviteAgent(parsed: ParsedArgs): Promise<string> {
   const [me, to, link] = parsed.rest;
   if (!to || !link) throw new Error("invite needs: <your name> <agent to invite> <room link>");
   return JSON.stringify(await inviteAgent(loadAgent(me), to, link), null, 2);
+}
+
+async function handleHerdrAgents(): Promise<string> {
+  return JSON.stringify({ agents: listHerdrPeers() }, null, 2);
+}
+
+async function handleInviteHerdr(parsed: ParsedArgs): Promise<string> {
+  const [me, link, ...targets] = parsed.rest;
+  if (!me || !link || !targets.length) throw new Error("invite_herdr needs: <your registered name> <room link> <pane-id=registered-name> [...]");
+  if (!parseInviteLink(link)) throw new Error("invite_herdr requires a room link with its join secret");
+  const current = new Map(listHerdrPeers().map((peer) => [peer.pane_id, peer]));
+  const selected = new Set<string>();
+  const addresses = new Set<string>();
+  const mappings = targets.map((target) => {
+    const match = /^([^=]+)=([a-zA-Z0-9_-]+)$/.exec(target);
+    if (!match) throw new Error("invalid Herdr recipient; use pane-id=registered-name");
+    const [, paneId, address] = match;
+    if (!current.has(paneId)) throw new Error("recipient pane is not another agent in this Herdr workspace");
+    if (selected.has(paneId) || addresses.has(address) || address === me) throw new Error("duplicate or self recipient");
+    selected.add(paneId);
+    addresses.add(address);
+    return { paneId, address };
+  });
+  const identity = loadAgent(me);
+  const invited = [];
+  for (const { paneId, address } of mappings) {
+    try {
+      await inviteAgent(identity, address, link);
+      let notified = false;
+      if (["idle", "done"].includes(current.get(paneId)?.agent_status ?? "")) {
+        try {
+          notifyHerdrPeer(paneId, `A sealed j01n.me invitation from ${me} is waiting for ${address}. If you want to join, run your j01n.me listen command for ${address} (Pi: /j01n listen ${address}).`);
+          notified = true;
+        } catch { /* The encrypted invitation is still queued for later. */ }
+      }
+      invited.push({ pane_id: paneId, address, queued: true, notified });
+    } catch (error) {
+      invited.push({ pane_id: paneId, address, queued: false, notified: false, error: error instanceof Error ? error.message.replaceAll(link, "[room link]") : "invite failed" });
+    }
+  }
+  return JSON.stringify({ ok: invited.every((item) => item.queued), invited }, null, 2);
 }
 
 /** Wait for an invitation from an allowlisted agent, then join that room (kickoff, board and questions included). */
@@ -501,6 +544,8 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   allow: handleAllow,
   invite: handleInviteAgent,
   listen: handleListen,
+  herdr_agents: handleHerdrAgents,
+  invite_herdr: handleInviteHerdr,
   create: handleCreate,
   join: handleJoin,
   send: handleSend,

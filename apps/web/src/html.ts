@@ -401,44 +401,62 @@ function roomPageStyles(): string {
   .connection-status.connected .connection-dot { background: #3fb950; }
   .connection-status.connecting .connection-dot { background: #d29922; }
   .connection-status.disconnected .connection-dot { background: #f85149; }
-  .room-meta { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; font-size: 0.95rem; margin-bottom: 1.5rem; }
+  .room-overview { border: 2px solid var(--highlight); padding: 1.25rem; min-width: 0; }
+  .room-overview-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 1rem; }
+  .room-overview h1 { margin: 0; font-size: clamp(2rem, 6vw, 3rem); overflow-wrap: anywhere; }
+  .room-purpose { margin: 0.75rem 0 1.25rem; overflow-wrap: anywhere; }
+  .room-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 1rem; margin: 0; padding: 1rem 0; border-block: 1px dashed color-mix(in srgb, currentColor 22%, transparent); font-size: 0.95rem; }
+  .room-meta > div { min-width: 0; }
   .room-meta dt { opacity: 0.72; }
-  .room-meta dd { margin: 0; min-width: 0; }
+  .room-meta dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
+  .room-expiry { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+  .room-expiry .button { margin: 0; padding: 0.45rem 0.7rem; font-size: 0.85rem; }
+  .room-expiry .room-ttl-status { flex-basis: 100%; }
+  .room-share { padding-top: 1rem; }
+  .room-share h2 { margin: 0 0 0.65rem; font-size: 1rem; }
+  .room-share h2::before { content: "## "; color: var(--highlight); }
+  .room-invite { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
+  .room-invite summary { cursor: pointer; color: var(--highlight); font-weight: 700; }
+  .room-invite .snippet { margin-top: 0.75rem; }
   /* Same code box as the home page: dashed frame, small copy button in the corner. */
   .snippet { position: relative; min-width: 0; }
   .invite-note { margin: 0.4rem 0 0; font-size: 0.85rem; opacity: 0.72; }
   .snippet pre { margin: 0; background: Canvas; border: 1px dashed color-mix(in srgb, CanvasText 28%, transparent); padding: 16px; padding-right: 76px; overflow-x: auto; font-size: 0.95rem; color: color-mix(in srgb, CanvasText 88%, Canvas 12%); }
   .copy { position: absolute; top: 8px; right: 8px; font-family: inherit; font-weight: 700; font-size: 0.75rem; line-height: 1; background: var(--highlight); color: #000; border: 0; padding: 8px 10px; cursor: pointer; }
-  .room-board { margin: 1.5rem 0; padding: 1.25rem; background: var(--highlight); color: #000; }
-  .room-board h3 { margin-top: 0; color: #000; }
-  .room-board h3::before { color: rgb(0 0 0 / 0.45); }
-  .room-board .button { background: #000; border-color: #000; color: var(--highlight); }
+  .room-board { margin: 1.5rem 0; padding: 1.25rem; border: 2px solid var(--highlight); background: Canvas; color: CanvasText; }
+  .room-board h3 { margin-top: 0; color: CanvasText; }
+  .room-board h3::before { color: var(--highlight); }
+  .room-board .button { background: var(--highlight); border-color: var(--highlight); color: #000; }
   .room-board .board-empty { opacity: 0.72; }
   .board-empty { opacity: 0.72; font-size: 0.95rem; }
-  .board-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 0.75rem 0 1rem; }
-  .board-toolbar .button, .board-entry .button, .board-edit-form .button { margin: 0; }
-  .board-edit-form { display: none; gap: 0.75rem; margin: 0 0 1rem; padding: 1rem; border: 1px dashed rgb(0 0 0 / 0.35); }
+  .board-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 0.75rem 0 1.25rem; }
+  .board-toolbar .button, .board-entry .button, .board-edit-form .button { margin: 0; padding: 0.55rem 0.85rem; }
+  .board-edit-form { display: none; gap: 0.75rem; margin: 0 0 1rem; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 35%, transparent); }
   .board-edit-form.is-visible { display: grid; }
   .board-edit-form label { display: grid; gap: 0.35rem; font-weight: 700; }
-  .board-edit-form input, .board-edit-form textarea { width: 100%; box-sizing: border-box; font: inherit; border: 2px solid #000; background: #fff; color: #000; }
+  .board-edit-form input, .board-edit-form textarea { width: 100%; box-sizing: border-box; font: inherit; border: 2px solid color-mix(in srgb, currentColor 45%, transparent); background: Canvas; color: CanvasText; }
   .board-edit-form textarea { min-height: 8rem; resize: vertical; }
   .board-edit-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: end; }
   .board-status, .message-compose-status, .room-ttl-status { min-height: 1.2em; margin: 0; font-size: 0.9rem; opacity: 0.72; }
-  .kanban-board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin: 1rem 0; }
-  .kanban-column { background: color-mix(in srgb, currentColor 6%, transparent); padding: 0.75rem; min-height: 6rem; }
+  .kanban-board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; margin: 0; }
+  @media (max-width: 720px) { .kanban-board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 460px) { .kanban-board { grid-template-columns: 1fr; } }
+  .kanban-column { min-width: 0; min-height: 6rem; padding: 0.75rem; border: 1px dashed color-mix(in srgb, currentColor 30%, transparent); background: color-mix(in srgb, CanvasText 6%, Canvas 94%); overflow-wrap: anywhere; }
   .kanban-column-title { margin: 0 0 0.5rem; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.72; }
   .kanban-cards { display: grid; gap: 0.5rem; }
   .kanban-card { background: Canvas; color: CanvasText; padding: 0.5rem 0.75rem; border: 1px solid color-mix(in srgb, currentColor 22%, transparent); }
   .kanban-card-title { display: block; font-weight: 700; font-size: 0.95rem; }
   .kanban-card-owner { display: block; font-size: 0.85rem; opacity: 0.6; margin-top: 0.15rem; }
-  .kanban-add-task { margin: 0.75rem 0; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; }
-  .kanban-add-task label { display: grid; gap: 0.2rem; font-size: 0.85rem; }
-  .kanban-add-task input, .kanban-add-task select { font: inherit; border: 2px solid currentColor; background: Canvas; color: currentColor; padding: 0.25rem 0.5rem; }
-  .board-entry { display: grid; grid-template-columns: auto 1fr auto; gap: 0.25rem 1rem; font-size: 0.95rem; padding: 0.5rem 0; border-top: 1px dashed rgb(0 0 0 / 0.28); }
+  .kanban-add-task { margin: 0 0 1.25rem; display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; }
+  .kanban-add-task label { display: grid; gap: 0.35rem; min-width: 0; flex: 1 1 10rem; font-size: 0.85rem; }
+  .kanban-add-task label:first-child { flex-grow: 2; }
+  .kanban-add-task input, .kanban-add-task select { width: 100%; box-sizing: border-box; font: inherit; border: 2px solid color-mix(in srgb, currentColor 45%, transparent); background: Canvas; color: CanvasText; padding: 0.5rem; }
+  .kanban-add-task .button { margin: 0; padding: 0.55rem 0.85rem; }
+  .board-entry { display: grid; grid-template-columns: auto 1fr auto; gap: 0.25rem 1rem; font-size: 0.95rem; padding: 0.5rem 0; border-top: 1px dashed color-mix(in srgb, currentColor 28%, transparent); }
   .board-entry:first-child { border-top: none; }
-  .board-entry .board-key { font-weight: 700; color: #000; }
+  .board-entry .board-key { font-weight: 700; color: var(--highlight); }
   .board-entry .board-meta { font-size: 0.85rem; opacity: 0.6; }
-  .board-entry pre { grid-column: 1 / -1; margin: 0; white-space: pre-wrap; word-break: break-word; background: #000; color: var(--highlight); }
+  .board-entry pre { grid-column: 1 / -1; margin: 0; white-space: pre-wrap; word-break: break-word; background: Canvas; color: var(--highlight); }
   .participant-card { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-top: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
   .participant-card:first-child { border-top: none; }
   .participant-card .participant-name { font-weight: 700; }
@@ -776,7 +794,8 @@ function roomPageScript(roomId: string): string {
       : (await Promise.all(messages.map((m) => renderMessage(m, messages)))).join("");
     const extendControls = isHost ? \` <button class="button button-small" type="button" data-extend-room title="Extend invite by 30 minutes">Extend 30 min</button><p class="room-ttl-status" data-room-ttl-status aria-live="polite"></p>\` : "";
 
-    root.innerHTML = \`\n<h1>\${esc(room.name || "Room")} <span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></h1>\n<dl class="room-meta">\n<dt>room URL</dt><dd><div class="snippet"><pre>\${esc("https://j01n.me/r/" + rid)}</pre><button class="copy" type="button" data-copy-room-url title="Copy room URL">copy</button></div></dd>\n<dt>purpose</dt><dd>\${esc(room.purpose || "—")}</dd>\n<dt>host</dt><dd>\${esc(room.host_id || "—")}</dd>\n<dt>phase</dt><dd>\${esc(phase || "—")}</dd>\n<dt>expires</dt><dd>\${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}\${extendControls}</dd>\n\${isHost ? \`<dt>invite</dt><dd><div class="snippet"><pre>\${esc(invitationJson)}</pre><button class="copy" type="button" title="Copy the invitation">copy</button></div><p class="invite-note">Save this safely and use it to invite bots &amp; humans.</p></dd>\n\` : ""}</dl>\n<section class="room-board"><h3>Board</h3><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>\${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>\${isKanban ? '<form class="kanban-add-task" data-kanban-add-task><label>Title<input name="task_title" placeholder="Task title" /></label><label>Column<select name="task_column"><option value="todo">To Do</option><option value="doing" selected>Doing</option><option value="review">Review</option><option value="done">Done</option></select></label><button class="button" type="submit">Add task</button></form>' : ""}\${boardHtml}</section>\n<section class="room-participants"><h3>Participants</h3>\${participantsHtml}</section>\n<section class="room-messages"><h3>Messages</h3>\${messagesHtml}<form class="message-composer" data-message-form><label>to<select name="to">\${recipientOptions}</select></label><label>message<textarea name="message" placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><button class="button" type="submit">Send</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>\`;
+    const inviteWasOpen = root.querySelector(".room-invite")?.open;
+    root.innerHTML = \`\n<section class="room-overview" aria-label="Room overview">\n<div class="room-overview-head"><h1>\${esc(room.name || "Room")}</h1><span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></div>\n<p class="room-purpose">\${esc(room.purpose || "—")}</p>\n<dl class="room-meta">\n<div><dt>host</dt><dd>\${esc(room.host_id || "—")}</dd></div>\n<div><dt>phase</dt><dd>\${esc(phase || "—")}</dd></div>\n<div><dt>expires</dt><dd class="room-expiry"><span>\${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}</span>\${extendControls}</dd></div>\n</dl>\n<div class="room-share"><h2>Room URL</h2><div class="snippet"><pre>\${esc("https://j01n.me/r/" + rid)}</pre><button class="copy" type="button" data-copy-room-url title="Copy room URL">copy</button></div>\n\${isHost ? \`<details class="room-invite"\${inviteWasOpen ? " open" : ""}><summary>Invitation JSON — keep secret</summary><p class="invite-note">Save this safely and use it to invite bots &amp; humans.</p><div class="snippet"><pre>\${esc(invitationJson)}</pre><button class="copy" type="button" title="Copy the invitation">copy</button></div></details>\` : ""}</div>\n</section>\n<section class="room-board"><h3>Board</h3><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>\${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>\${isKanban ? '<form class="kanban-add-task" data-kanban-add-task><label>Title<input name="task_title" placeholder="Task title" /></label><label>Column<select name="task_column"><option value="todo">To Do</option><option value="doing" selected>Doing</option><option value="review">Review</option><option value="done">Done</option></select></label><button class="button" type="submit">Add task</button></form>' : ""}\${boardHtml}</section>\n<section class="room-participants"><h3>Participants</h3>\${participantsHtml}</section>\n<section class="room-messages"><h3>Messages</h3>\${messagesHtml}<form class="message-composer" data-message-form><label>to<select name="to">\${recipientOptions}</select></label><label>message<textarea name="message" placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><button class="button" type="submit">Send</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>\`;
     updateConnectionStatus(connectionState);
     root.querySelectorAll(".snippet .copy").forEach((button) => button.addEventListener("click", () => {
       const pre = button.previousElementSibling;

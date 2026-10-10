@@ -185,6 +185,27 @@ describe("room page", () => {
     expect(await viewer.decryptMessageBody(message, keys)).toEqual({ ok: true, value: { text: "My direct message" } });
   });
 
+  it("groups room details like the home page and keeps the host invitation collapsible", () => {
+    const html = roomPageHtml("room-1");
+
+    expect(html).toContain('class="room-overview"');
+    expect(html).toContain('class="room-overview-head"');
+    expect(html).toContain('class="room-share"');
+    expect(html).toContain('<details class="room-invite"');
+    expect(html).toContain('root.querySelector(".room-invite")?.open');
+    expect(html).toContain('data-copy-room-url');
+    expect(html).toContain('data-extend-room');
+  });
+
+  it("keeps the Kanban controls readable and the columns within the board", () => {
+    const html = roomPageHtml("room-1");
+
+    expect(html).toMatch(/\.room-board\s*\{[^}]*border: 2px solid var\(--highlight\)[^}]*background: Canvas; color: CanvasText/);
+    expect(html).toMatch(/\.kanban-add-task input, \.kanban-add-task select\s*\{[^}]*background: Canvas; color: CanvasText/);
+    expect(html).toContain('grid-template-columns: repeat(4, minmax(0, 1fr))');
+    expect(html).toContain('@media (max-width: 720px) { .kanban-board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }');
+  });
+
   it("keeps the recipient list current and excludes the sender", () => {
     const html = roomPageHtml("room-1");
 

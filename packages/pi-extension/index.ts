@@ -4,12 +4,18 @@ import { splitArgs } from "./args";
 import { runj01n } from "./commands";
 import { registerLive } from "./live";
 import { registerPeerSpawnTool } from "./peer-spawn-tool";
+import { getExtensionDiagnostics } from "./version";
 
 const USAGE = "Usage: /j01n <create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|herdr_agents|invite_herdr|leave|close|participants|room_status|transition|host|profile|reserve|release|reservations|live> ...";
 
 type Notify = (message: string, level: "info" | "error") => void;
 
 export default function (pi: ExtensionAPI) {
+  pi.on("session_start", (_event, ctx) => {
+    if (!ctx.hasUI) return;
+    for (const warning of getExtensionDiagnostics().warnings) ctx.ui.notify(`j01n: ${warning}`, "error");
+  });
+
   const live = registerLive(pi);
   registerPeerSpawnTool(pi);
   pi.registerCommand("j01n", {

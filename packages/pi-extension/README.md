@@ -47,4 +47,6 @@ Both call the same no-dependency helper served at:
 
 The helper accepts room-name JSON files such as `docs-review.json`. The Pi `join` result includes the board's `kickoff` value when present (`null` otherwise); a board fetch failure leaves the join successful and returns `kickoff_error`. After a join, short `send` and `wait` use the sole room joined from the current directory; with multiple joined rooms, pass an invitation and participant explicitly. Local `.j01n-rooms/` entries store room URLs and participant names, not invite secrets. Keep the session key files private.
 
+`/j01n doctor` reports `extension.source`, the Git commit loaded by this Pi session (`loaded_commit`), the current checkout commit (`installed_commit`), and `reload_required` / `duplicate_install`. Pi warns at session start (and on join) if the checkout changed or both GitHub and GitLab packages are configured. After an update, run `/reload` or restart Pi; installing a package does not reload the active session. Check `pi list` before removing a duplicate with `pi remove https://github.com/k1000/j01n.me`.
+
 Set `FORTY_ONE_D_HELPER_URL` to override the helper URL for local development.

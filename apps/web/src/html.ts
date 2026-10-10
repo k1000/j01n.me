@@ -296,10 +296,16 @@ function roomPageStyles(): string {
   .message-composer select, .message-composer textarea { width: 100%; box-sizing: border-box; font: inherit; border: 2px solid currentColor; background: Canvas; color: currentColor; }
   .message-composer textarea { min-height: 7rem; resize: vertical; }
   .message-compose-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: end; }
+  /* The grid gap spaces the rows: no paragraph or button margins, and status lines take no room while empty. */
+  .message-composer p, .message-composer .button { margin: 0; }
+  .message-composer [data-reply-status]:empty, .message-composer .message-compose-status:empty { min-height: 0; }
   .message-entry { padding: 0.75rem 0; border-top: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
   .message-entry:first-child { border-top: none; }
   .message-entry .message-from { font-weight: 700; font-size: 0.9rem; }
-  .message-entry .message-time { font-size: 0.85rem; opacity: 0.6; }
+  /* Sender, route and date on one line; the date sits on the right edge and wraps below on narrow screens. */
+  .message-entry .message-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; }
+  .message-entry .message-route { font-size: 0.85rem; opacity: 0.72; }
+  .message-entry .message-time { margin-left: auto; font-size: 0.85rem; opacity: 0.6; }
   .message-entry .message-body { font-size: 0.95rem; margin-top: 0.25rem; white-space: pre-wrap; word-break: break-word; }
   .message-details summary { cursor: pointer; list-style: none; }
   .message-details summary::-webkit-details-marker { display: none; }
@@ -999,7 +1005,7 @@ ${ROOM_CONSOLE_SCRIPT}
     const recipient = Array.isArray(message.to) ? message.to.join(", ") : message.to || "all";
     const replyButton = !liveView && latest?.participants[message.from] && message.from !== participantId && message.intent !== "key.exchange"
       ? '<button class="button button-small" type="button" data-reply-message="' + escAttr(message.id) + '" data-reply-recipient="' + escAttr(message.from) + '" aria-label="' + escAttr("Reply to " + message.from) + '">Reply</button>' : "";
-    return \`<details class="message-entry message-details" data-message-id="\${escAttr(message.id || "")}"><summary><div><span class="message-from">\${esc(message.from)}</span> <span class="message-time">\${esc(new Date(message.created_at).toLocaleString())}</span></div><span class="message-route">to \${esc(recipient)} · \${esc(message.intent || "message")} · #\${esc(message.seq ?? "—")}\${message.expects_reply ? ' · reply requested' : ''}</span><div class="message-body">\${esc(clean)}</div></summary><pre class="message-technical">\${esc(raw)}</pre></details>\` + replyButton;
+    return \`<details class="message-entry message-details" data-message-id="\${escAttr(message.id || "")}"><summary><div class="message-head"><span class="message-from">\${esc(message.from)}</span> <span class="message-route">to \${esc(recipient)} · \${esc(message.intent || "message")} · #\${esc(message.seq ?? "—")}\${message.expects_reply ? ' · reply requested' : ''}</span> <span class="message-time">\${esc(new Date(message.created_at).toLocaleString())}</span></div><div class="message-body">\${esc(clean)}</div></summary><pre class="message-technical">\${esc(raw)}</pre></details>\` + replyButton;
   }
 
   async function cleanMessageBody(message, allMessages) {

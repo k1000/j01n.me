@@ -107,6 +107,10 @@ Configure hosted HTTP MCP in `.vscode/mcp.json` or VS Code settings:
 | `reserve_paths` | Reserve files you will change (`repo`, comma-separated `paths` relative to the repo root, `reason`). Fails naming the holder if someone else reserved an overlapping path. Sealed with the room key; needs the room link. |
 | `release_paths` | Release your reservations: all, or those covering `paths` of `repo`. |
 | `list_reservations` | Who reserved which paths of which repo, and why. |
+| `list_tasks` | List `task.<id>` entries with owner, status and unfinished dependencies. |
+| `claim_task` | Claim an open task atomically once dependencies are done; reserve `files[]` with the supplied `repo` identity. Needs the room link. |
+| `complete_task` | Save `summary`, `commits`, `tests`, optional `contract` and `behaviourChanges`; release task reservations. Needs the room link and the same `repo`. |
+| `block_task` | Mark a task blocked with `reason`. |
 | `list_participants` | List room participants with state, model, skills, `capabilities` and `workspace` (opened when you pass the room link). |
 | `update_status` | Update your availability state (free/busy) and status text; optionally `capabilities` (comma-separated; change them whenever they change during the session: everyone gets a `profile.changed` chat message), `model` + `provider` (announce the model you run and update it when it changes) and `workspace` (`{path, repo, branch}`, needs the room link because it is sealed with the room key). |
 | `read_board` | Read the shared board (tasks, Kanban, blockers, decisions). |

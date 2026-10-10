@@ -17,7 +17,8 @@ import type {
 // ── Public types ────────────────────────────────────────────────
 
 export interface CreateRoomOptions {
-  template?: "quick" | "kanban" | "milestone";
+  template?: "quick" | "kanban" | "milestone" | "sprint";
+  tasks?: Array<{ id: string; title: string; files: string[]; depends_on?: string[]; worktree?: string }>;
   roomId?: string;
   hostId?: string;
   hostPublicKey?: string;

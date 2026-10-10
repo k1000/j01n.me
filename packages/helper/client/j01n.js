@@ -20,8 +20,9 @@
    Profile:  join <link> <me> --capabilities code,shell,browser,screenshot,vision   (workspace: cwd + git remote/branch, sealed; --no-workspace skips)
              later: profile --capabilities code,browser --model gpt-5  |  profile <link> <me> --workspace (re-detect)  |  profile --no-workspace
    Reserve:  node .j01n/j01n.js reserve src/auth/ --reason refactoring auth  |  release [path...]  |  reservations  |  leave [--release]
+   Tasks:    tasks  |  claim <id>  |  done <id> --summary <text> --commit <sha> --tests <text>  |  block <id> --reason <text>  |  unblock <id>
    Host:     node .j01n/j01n.js host <participant>   (host only: hand the host role over; the host cannot leave others without one)
-   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, profile, host, reserve, release, reservations, leave, register, allow, invite, invites, listen, team
+   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, profile, host, reserve, release, reservations, tasks, claim, done, block, unblock, leave, register, allow, invite, invites, listen, team
 */
 
 // packages/helper/src/cli.ts
@@ -131,8 +132,8 @@ async function generateECDHKeyPair() {
     ["deriveKey"]
   );
 }
-async function exportPublicKey(key) {
-  const raw = await crypto.subtle.exportKey("raw", key);
+async function exportPublicKey(key2) {
+  const raw = await crypto.subtle.exportKey("raw", key2);
   return base64Url(new Uint8Array(raw));
 }
 async function importPublicKey(base64url) {
@@ -154,19 +155,19 @@ async function deriveSharedKey(privateKey, peerPublicKey) {
     ["encrypt", "decrypt"]
   );
 }
-async function encryptWithKey(key, plaintext) {
+async function encryptWithKey(key2, plaintext) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encoded = new TextEncoder().encode(plaintext);
-  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoded);
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key2, encoded);
   return {
     ciphertext: base64Url(new Uint8Array(ciphertext)),
     iv: base64Url(iv)
   };
 }
-async function decryptWithKey(key, ciphertextB64, ivB64) {
+async function decryptWithKey(key2, ciphertextB64, ivB64) {
   const ciphertext = base64UrlToBytes(ciphertextB64);
   const iv = base64UrlToBytes(ivB64);
-  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key2, ciphertext);
   return new TextDecoder().decode(plaintext);
 }
 async function generateMessageKey() {
@@ -332,12 +333,126 @@ async function reservePaths(client, repo2, paths, reason) {
     return { ...stored, [crypto.randomUUID()]: { by: client.participantId, since: (/* @__PURE__ */ new Date()).toISOString(), sealed } };
   });
 }
+async function releaseReservationIds(client, ids) {
+  return update(client, async ({ stored, reservations }) => {
+    const owned2 = new Set(reservations.filter((r) => r.by === client.participantId && ids.includes(r.id)).map((r) => r.id));
+    if (!owned2.size) return null;
+    return Object.fromEntries(Object.entries(stored).filter(([id]) => !owned2.has(id)));
+  });
+}
 async function releasePaths(client, repo2, paths = []) {
   return update(client, async ({ stored, reservations }) => {
     const mine = reservations.filter((r) => r.by === client.participantId && (paths.length === 0 || r.repo === repo2 && r.paths.some((p) => paths.some((q) => pathsOverlap(p, q)))));
     if (mine.length === 0) return null;
     return Object.fromEntries(Object.entries(stored).filter(([id]) => !mine.some((r) => r.id === id)));
   });
+}
+
+// packages/sdk/src/tasks.ts
+var key = (id) => {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error("invalid task id");
+  return `task.${id}`;
+};
+function taskFrom(value) {
+  if (!value || typeof value !== "object") throw new Error("invalid task entry");
+  const task = value;
+  if (typeof task.title !== "string" || !Array.isArray(task.files) || !task.files.every((x) => typeof x === "string") || !Array.isArray(task.depends_on) || !task.depends_on.every((x) => typeof x === "string") || task.waiting_for !== void 0 && (!Array.isArray(task.waiting_for) || !task.waiting_for.every((x) => typeof x === "string")) || !["open", "claimed", "blocked", "done"].includes(task.status)) throw new Error("invalid task entry");
+  return task;
+}
+async function listTasks(client) {
+  const board = (await client.board()).board;
+  const tasks = Object.entries(board).filter(([name]) => name.startsWith("task.")).map(([name, entry]) => ({ id: name.slice(5), ...taskFrom(entry.value) }));
+  const done = new Set(tasks.filter((task) => task.status === "done").map((task) => task.id));
+  return tasks.map((task) => {
+    const blocked_by = task.depends_on.filter((id) => !done.has(id));
+    return { ...task, blocked_by, unblocked: task.status === "open" && blocked_by.length === 0 };
+  });
+}
+async function load2(client, id) {
+  const entry = (await client.board()).board[key(id)];
+  if (!entry) throw new Error(`task ${id} does not exist`);
+  return { task: taskFrom(entry.value), version: entry.version ?? 0 };
+}
+function owned(client, id, task) {
+  if (task.owner !== client.participantId) throw new Error(`task ${id} is ${task.status}${task.owner ? ` by ${task.owner}` : ""}`);
+}
+async function claimTask(client, id, repo2) {
+  let task, version = 0;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const board = (await client.board()).board;
+    const entry = board[key(id)];
+    if (!entry) throw new Error(`task ${id} does not exist`);
+    const current = taskFrom(entry.value);
+    if (current.status !== "open") throw new Error(`task ${id} is ${current.status}${current.owner ? ` by ${current.owner}` : ""}`);
+    const unfinished = (entries) => current.depends_on.filter((dep) => entries[key(dep)]?.value && taskFrom(entries[key(dep)].value).status === "done" ? false : true);
+    const waiting = unfinished(board);
+    if (waiting.length) {
+      if (!current.waiting_for?.includes(client.participantId)) {
+        try {
+          await client.setBoardKey(key(id), { ...current, waiting_for: [...current.waiting_for ?? [], client.participantId] }, { ifVersion: entry.version ?? 0 });
+        } catch (error) {
+          if (error instanceof RoomApiError && error.status === 409) continue;
+          throw error;
+        }
+      }
+      if (unfinished((await client.board()).board).length === 0) continue;
+      throw new Error(`task ${id} waits for ${waiting.join(", ")}`);
+    }
+    task = current;
+    version = entry.version ?? 0;
+    break;
+  }
+  if (!task) throw new Error(`task ${id} kept changing; try again`);
+  if (task.files.length && !repo2) throw new Error("repo is required to reserve task files");
+  const before = task.files.length ? new Set((await listReservations(client)).map((r) => r.id)) : /* @__PURE__ */ new Set();
+  const reserved = task.files.length ? await reservePaths(client, repo2, task.files, `task ${id}`) : [];
+  const newIds = reserved.filter((r) => r.by === client.participantId && !before.has(r.id) && r.reason === `task ${id}`).map((r) => r.id);
+  const claimed = { ...task, status: "claimed", owner: client.participantId };
+  delete claimed.waiting_for;
+  try {
+    await client.setBoardKey(key(id), claimed, { ifVersion: version });
+  } catch (error) {
+    if (newIds.length) await releaseReservationIds(client, newIds);
+    if (error instanceof RoomApiError && error.status === 409) {
+      const current = await load2(client, id);
+      throw new Error(`task ${id} is ${current.task.status}${current.task.owner ? ` by ${current.task.owner}` : ""}`);
+    }
+    throw error;
+  }
+  return claimed;
+}
+async function completeTask(client, id, repo2, summary, evidence, behaviourChanges) {
+  const { task, version } = await load2(client, id);
+  owned(client, id, task);
+  if (task.status !== "claimed" && task.status !== "blocked") throw new Error(`task ${id} is ${task.status}`);
+  if (!summary.trim() || !evidence.tests?.trim() || !Array.isArray(evidence.commits)) throw new Error("done needs summary, commits and tests");
+  if (task.files.length && !repo2) throw new Error("repo is required to release task files");
+  const next = { ...task, status: "done", summary, ...behaviourChanges ? { behaviour_changes: behaviourChanges } : {}, evidence };
+  delete next.blocked_reason;
+  await client.setBoardKey(key(id), next, { ifVersion: version });
+  if (task.files.length) {
+    const reservations = await listReservations(client);
+    await releaseReservationIds(client, reservations.filter((r) => r.by === client.participantId && r.repo === repo2 && r.reason === `task ${id}` && JSON.stringify(r.paths) === JSON.stringify(task.files)).map((r) => r.id));
+  }
+  return next;
+}
+async function blockTask(client, id, reason) {
+  const { task, version } = await load2(client, id);
+  if (!reason.trim()) throw new Error("block needs a reason");
+  if (task.status === "done") throw new Error(`task ${id} is done`);
+  if (task.owner) owned(client, id, task);
+  const next = { ...task, status: "blocked", blocked_reason: reason };
+  await client.setBoardKey(key(id), next, { ifVersion: version });
+  return next;
+}
+async function unblockTask(client, id) {
+  const { task, version } = await load2(client, id);
+  if (task.status !== "blocked") throw new Error(`task ${id} is not blocked`);
+  if (task.owner) owned(client, id, task);
+  const next = { ...task, status: task.owner ? "claimed" : "open" };
+  delete next.blocked_reason;
+  await client.setBoardKey(key(id), next, { ifVersion: version });
+  return next;
 }
 
 // packages/sdk/src/sdk-crypto-session.ts
@@ -438,8 +553,8 @@ async function createSdkCryptoSession(participantId, privateJwk, publicJwk) {
 }
 
 // packages/sdk/src/room-client.ts
-function boardKeyUrl(roomUrl, key, ifVersion) {
-  return `${roomUrl}/board/${encodeURIComponent(key)}${ifVersion === void 0 ? "" : `?if_version=${ifVersion}`}`;
+function boardKeyUrl(roomUrl, key2, ifVersion) {
+  return `${roomUrl}/board/${encodeURIComponent(key2)}${ifVersion === void 0 ? "" : `?if_version=${ifVersion}`}`;
 }
 function shouldEncrypt(options) {
   return options.plain !== true && (options.forceEncrypt === true || options.intent !== "key.exchange");
@@ -594,9 +709,9 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
     async board() {
       return request(invite.api.board, invite, { participantId });
     },
-    async setBoardKey(key, value, options = {}) {
+    async setBoardKey(key2, value, options = {}) {
       return request(
-        boardKeyUrl(invite.room_url, key, options.ifVersion),
+        boardKeyUrl(invite.room_url, key2, options.ifVersion),
         invite,
         { method: "PUT", participantId, body: value }
       );
@@ -609,9 +724,9 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
         { method: "PATCH", participantId, body: values }
       );
     },
-    async deleteBoardKey(key, options = {}) {
+    async deleteBoardKey(key2, options = {}) {
       return request(
-        boardKeyUrl(invite.room_url, key, options.ifVersion),
+        boardKeyUrl(invite.room_url, key2, options.ifVersion),
         invite,
         { method: "DELETE", participantId }
       );
@@ -715,6 +830,34 @@ async function waitRoom(client, timeoutSeconds, filter = {}, prefix = "/j01n") {
 }
 async function runRoomCommand(client, cmd2, rest, options = {}) {
   const prefix = options.prefix ?? "/j01n";
+  if (cmd2 === "tasks") return { tasks: await listTasks(client) };
+  if (cmd2 === "claim") {
+    if (!rest[0]) throw new Error("claim needs: <id>");
+    return { task: await claimTask(client, rest[0], options.repo ?? "") };
+  }
+  if (cmd2 === "done") {
+    const [id, ...args2] = rest;
+    if (!id) throw new Error("done needs: <id> --summary <text> --commit <sha>... --tests <text> [--contract <text>]");
+    const flag = (name) => {
+      const at = args2.indexOf(name);
+      return at < 0 ? void 0 : args2[at + 1];
+    };
+    const commits = [];
+    for (let i = 0; i < args2.length; i++) if (args2[i] === "--commit" && args2[i + 1] && !args2[i + 1].startsWith("--")) commits.push(args2[++i]);
+    const summary = flag("--summary"), tests = flag("--tests"), contract = flag("--contract"), changes = flag("--behaviour-changes");
+    if (!summary || !tests || !commits.length) throw new Error("done needs --summary, --commit and --tests");
+    return { task: await completeTask(client, id, options.repo ?? "", summary, { commits, tests, ...contract ? { contract } : {} }, changes) };
+  }
+  if (cmd2 === "block") {
+    const [id, ...args2] = rest;
+    const at = args2.indexOf("--reason");
+    if (!id || at < 0 || !args2[at + 1]) throw new Error("block needs: <id> --reason <text>");
+    return { task: await blockTask(client, id, args2.slice(at + 1).join(" ")) };
+  }
+  if (cmd2 === "unblock") {
+    if (!rest[0]) throw new Error("unblock needs: <id>");
+    return { task: await unblockTask(client, rest[0]) };
+  }
   if (cmd2 === "send") {
     const [toRaw, ...args2] = rest;
     const words = [];
@@ -748,9 +891,9 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
   }
   if (cmd2 === "board") return client.board();
   if (cmd2 === "board_set") {
-    const [key, valueJson, ifVersion] = rest;
-    if (!key || !valueJson) throw new Error("board_set needs: <key> <json_value> [if_version]");
-    return client.setBoardKey(key, JSON.parse(valueJson), { ifVersion: ifVersion === void 0 ? void 0 : Number(ifVersion) });
+    const [key2, valueJson, ifVersion] = rest;
+    if (!key2 || !valueJson) throw new Error("board_set needs: <key> <json_value> [if_version]");
+    return client.setBoardKey(key2, JSON.parse(valueJson), { ifVersion: ifVersion === void 0 ? void 0 : Number(ifVersion) });
   }
   if (cmd2 === "board_patch") {
     const [valueJson, ifVersionsJson] = rest;
@@ -758,9 +901,9 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
     return client.patchBoard(JSON.parse(valueJson), { ifVersions: ifVersionsJson ? JSON.parse(ifVersionsJson) : void 0 });
   }
   if (cmd2 === "board_delete") {
-    const [key, ifVersion] = rest;
-    if (!key) throw new Error("board_delete needs: <key> [if_version]");
-    return client.deleteBoardKey(key, { ifVersion: ifVersion === void 0 ? void 0 : Number(ifVersion) });
+    const [key2, ifVersion] = rest;
+    if (!key2) throw new Error("board_delete needs: <key> [if_version]");
+    return client.deleteBoardKey(key2, { ifVersion: ifVersion === void 0 ? void 0 : Number(ifVersion) });
   }
   if (cmd2 === "status") {
     const [state, status] = rest;
@@ -845,7 +988,7 @@ var modelProfile = (rest) => {
   };
   return { ...flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL ? { model: flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL } : {}, ...flag("--provider") || process.env.J01N_PROVIDER ? { provider: flag("--provider") || process.env.J01N_PROVIDER } : {} };
 };
-var roomCommand = (client, command, rest, beforeSend) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend });
+var roomCommand = (client, command, rest, beforeSend) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend, repo: repo().id });
 async function isRoomRef(ref) {
   if (!ref) return false;
   if (ref.trim().startsWith("{")) return true;
@@ -979,10 +1122,10 @@ async function main() {
     await save();
   } else client = await resumeRoom(invite, me, session);
   const announce = async () => {
-    const key = (await session.announceKeyBody()).public_key;
-    if (state.announcedKey !== key) {
+    const key2 = (await session.announceKeyBody()).public_key;
+    if (state.announcedKey !== key2) {
       await client.announceKey();
-      state.announcedKey = key;
+      state.announcedKey = key2;
       await save();
     }
   };
@@ -1088,7 +1231,7 @@ async function main() {
     output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true }));
     return;
   }
-  if (cmd === "webhook") {
+  if (["webhook", "tasks", "claim", "done", "block", "unblock"].includes(cmd || "")) {
     output(await roomCommand(client, cmd, rest));
     return;
   }
@@ -1122,7 +1265,7 @@ async function main() {
     output(await roomCommand(client, cmd, rest));
     return;
   }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|leave`);
 }
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));

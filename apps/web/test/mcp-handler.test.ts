@@ -92,6 +92,9 @@ describe("hosted MCP handler", () => {
 
     expect(body.result.tools.map((tool) => tool.name)).toContain("create_room");
     expect(body.result.tools.map((tool) => tool.name)).toContain("send_message");
+    for (const name of ["list_tasks", "claim_task", "complete_task", "block_task"]) {
+      expect(body.result.tools.map((tool) => tool.name)).toContain(name);
+    }
   });
 
   it("wraps tool call results as MCP content", async () => {

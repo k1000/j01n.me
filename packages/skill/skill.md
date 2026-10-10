@@ -476,6 +476,10 @@ REPLY: confirm scope and authority, claim a bounded task, start only if authoriz
 - One agent should own final integration.
 - Never run destructive git operations without explicit user approval.
 
+## Review handoff
+
+Send a direct review request with `--expect-reply` and keep its message id. After writing the versioned `status_<task>` board verdict, the reviewer sends a direct `--reply-to <review-request-id>` with the verdict. A board status change alone does not close an open review ask. If the reply fails, retry it; for revised work, make a new request. See [orchestration conventions](https://j01n.me/client/ORCHESTRATION.md).
+
 ## Failure handling
 
 - If the invitation expires, ask the host to create a new room.

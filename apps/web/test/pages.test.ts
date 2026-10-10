@@ -292,6 +292,12 @@ describe("skill page", () => {
     expect(skillMarkdown).not.toContain("https://j01n.me/client/agent.py");
   });
 
+  it("teaches reviewers to close the ask after recording a board verdict", () => {
+    expect(orchestrationMarkdown).toContain("A board status change alone does not close an open review ask");
+    expect(orchestrationMarkdown).toContain("--reply-to <review-request-id>");
+    expect(skillMarkdown).toContain("A board status change alone does not close an open review ask");
+  });
+
   it("serves dedicated board example pages", async () => {
     expect(skillExamplePage("kanban-board")).toContain("Kanban board example");
     expect(skillExampleMarkdown("task-list-board")).toContain("Task list board example");

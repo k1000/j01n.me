@@ -693,6 +693,128 @@ async function resumeRoom(invite, participantId, cryptoSession) {
   return buildRoomClient(normalizeInvite(invite), participantId, 0, cryptoSession);
 }
 
+// packages/sdk/src/room-commands.ts
+function parseRoomBody(raw) {
+  try {
+    const value = JSON.parse(raw);
+    if (value && typeof value === "object") return value;
+  } catch {
+  }
+  return { text: raw };
+}
+function roomReplyHint(message, prefix = "/j01n") {
+  return `${prefix} send ${message.from} <text> --reply-to ${message.id}`;
+}
+function roomReplyHints(messages, prefix = "/j01n") {
+  return messages.map((m) => m.from === "system" || m.intent === "key.exchange" ? m : { ...m, reply: roomReplyHint(m, prefix) });
+}
+async function waitRoom(client, timeoutSeconds, filter = {}, prefix = "/j01n") {
+  const woke = await client.wait({ ...filter, timeoutSeconds });
+  if (woke.timeout) return { timeout: true };
+  return { woke: woke.event, ...woke.changes ? { board: woke.changes } : {}, messages: roomReplyHints(await client.read(), prefix) };
+}
+async function runRoomCommand(client, cmd2, rest, options = {}) {
+  const prefix = options.prefix ?? "/j01n";
+  if (cmd2 === "send") {
+    const [toRaw, ...args2] = rest;
+    const words = [];
+    let andWait = false, replyTo, expectsReply = false;
+    for (let i = 0; i < args2.length; i++) {
+      if (args2[i] === "--wait") andWait = true;
+      else if (args2[i] === "--expect-reply") expectsReply = true;
+      else if (args2[i] === "--reply-to") replyTo = args2[++i];
+      else words.push(args2[i]);
+    }
+    if (!toRaw || !words.length) throw new Error("send needs: <to> <text or json_body> [--reply-to <id>] [--expect-reply] [--wait]");
+    const to = options.recipientList && toRaw.includes(",") ? toRaw.split(",").map((s) => s.trim()) : options.recipientList ? toRaw.trim() : toRaw;
+    await options.beforeSend?.();
+    const sent = await client.send(to, parseRoomBody(words.join(" ")), { replyTo, expectsReply });
+    return andWait ? { sent, ...await waitRoom(client, options.waitDefault, {}, prefix) } : sent;
+  }
+  if (cmd2 === "read" || cmd2 === "inbox") {
+    return roomReplyHints(await client.read({ all: options.readAll || cmd2 === "inbox", includeSelf: true }), prefix);
+  }
+  if (cmd2 === "wait") {
+    let timeout;
+    const filter = {};
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--from") filter.from = (rest[++i] ?? "").split(",").map((name) => options.trimWaitFrom ? name.trim() : name).filter(Boolean);
+      else if (rest[i] === "--board") filter.board = rest[++i] ?? "";
+      else if (rest[i] === "--no-system") filter.system = false;
+      else timeout = rest[i];
+    }
+    const seconds = timeout === void 0 ? options.waitDefault : options.parseWaitFallback ? Number(timeout) || options.waitDefault : timeout ? Number(timeout) : void 0;
+    return waitRoom(client, seconds, filter, prefix);
+  }
+  if (cmd2 === "board") return client.board();
+  if (cmd2 === "board_set") {
+    const [key, valueJson, ifVersion] = rest;
+    if (!key || !valueJson) throw new Error("board_set needs: <key> <json_value> [if_version]");
+    return client.setBoardKey(key, JSON.parse(valueJson), { ifVersion: ifVersion === void 0 ? void 0 : Number(ifVersion) });
+  }
+  if (cmd2 === "board_patch") {
+    const [valueJson, ifVersionsJson] = rest;
+    if (!valueJson) throw new Error("board_patch needs: <json_values> [if_versions_json]");
+    return client.patchBoard(JSON.parse(valueJson), { ifVersions: ifVersionsJson ? JSON.parse(ifVersionsJson) : void 0 });
+  }
+  if (cmd2 === "board_delete") {
+    const [key, ifVersion] = rest;
+    if (!key) throw new Error("board_delete needs: <key> [if_version]");
+    return client.deleteBoardKey(key, { ifVersion: ifVersion === void 0 ? void 0 : Number(ifVersion) });
+  }
+  if (cmd2 === "status") {
+    const [state, status] = rest;
+    if (!state || !status) throw new Error("status needs: <free|busy> <status_text>");
+    return client.updateStatus(state, status);
+  }
+  if (cmd2 === "webhook") {
+    const [url] = rest;
+    if (!url) throw new Error("webhook needs: <https_url|off>");
+    const result = await client.setWebhook(url === "off" ? null : url);
+    return options.webhookResult === "helper" ? { ok: true, webhook: url === "off" ? "off (poll with read/watch)" : url } : result;
+  }
+  if (cmd2 === "participants") return client.participants();
+  if (cmd2 === "room_status") return client.status();
+  if (cmd2 === "transition") {
+    if (!rest[0]) throw new Error("transition needs: <event>");
+    return client.transition(rest[0]);
+  }
+  if (cmd2 === "host") {
+    if (!rest[0]) throw new Error("host needs: <participant to make host>");
+    return client.transferHost(rest[0]);
+  }
+  throw new Error(`unknown room command: ${cmd2}`);
+}
+async function runReservationCommand(client, cmd2, rest, options) {
+  if (cmd2 === "reservations") return { reservations: await listReservations(client) };
+  const at = rest.indexOf("--reason");
+  if (cmd2 === "release") return { ok: true, reservations: await releasePaths(client, options.repo, (options.releaseReasonDelimiter && at >= 0 ? rest.slice(0, at) : rest).map(options.path)) };
+  const paths = (at >= 0 ? rest.slice(0, at) : rest).map(options.path);
+  if (options.requirePaths && !paths.length) throw new Error("reserve needs: <path>... [--reason text]");
+  const reason = at >= 0 ? rest.slice(at + 1).join(" ") || void 0 : void 0;
+  return { ok: true, reservations: await reservePaths(client, options.repo, paths, reason) };
+}
+async function runProfileCommand(client, rest, options) {
+  const flag = (name) => {
+    const at2 = rest.indexOf(name);
+    return at2 >= 0 && rest[at2 + 1] && !rest[at2 + 1].startsWith("--") ? rest[at2 + 1] : void 0;
+  };
+  const profile = {};
+  const at = rest.indexOf("--capabilities");
+  if (at >= 0) profile.capabilities = (flag("--capabilities") || "").split(",").map((name) => name.trim()).filter(Boolean);
+  const model = flag("--model") || options.modelFallback;
+  const provider = flag("--provider") || options.providerFallback;
+  if (model) profile.model = model;
+  if (provider) profile.provider = provider;
+  if (rest.includes("--no-workspace")) profile.workspace = null;
+  else if (rest.includes("--workspace")) {
+    if (options.secret === "resume-only") throw new Error(options.workspaceError);
+    profile.workspace = options.workspace();
+  }
+  if (Object.keys(profile).length) await client.setProfile(profile);
+  return { ok: true, team: await client.team() };
+}
+
 // packages/helper/src/cli.ts
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 var args = process.argv.slice(2).filter((arg, i) => i !== 0 || arg !== "--");
@@ -723,15 +845,7 @@ var modelProfile = (rest) => {
   };
   return { ...flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL ? { model: flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL } : {}, ...flag("--provider") || process.env.J01N_PROVIDER ? { provider: flag("--provider") || process.env.J01N_PROVIDER } : {} };
 };
-var parseBody = (text) => {
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed && typeof parsed === "object") return parsed;
-  } catch {
-  }
-  return { text };
-};
-var withReplies = (messages) => messages.map((m) => m.from === "system" || m.intent === "key.exchange" ? m : { ...m, reply: `node .j01n/j01n.js send ${m.from} <text> --reply-to ${m.id}` });
+var roomCommand = (client, command, rest, beforeSend) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend });
 async function isRoomRef(ref) {
   if (!ref) return false;
   if (ref.trim().startsWith("{")) return true;
@@ -872,13 +986,6 @@ async function main() {
       await save();
     }
   };
-  const read = async () => withReplies(await client.read({ all: true, includeSelf: true }));
-  const wait = async (timeout, from, board, system) => {
-    const event = await client.wait({ timeoutSeconds: timeout, from, board, system });
-    if (event.timeout) return { timeout: true };
-    const messages = withReplies(await client.read());
-    return { woke: event.event, ...event.changes ? { board: event.changes } : {}, messages };
-  };
   if (cmd === "join") {
     const announced = {};
     const i = rest.indexOf("--capabilities");
@@ -901,39 +1008,12 @@ async function main() {
     output({ ...profile, kickoff, board, questions: await client.openQuestions(), team: await client.team() });
     return;
   }
-  if (cmd === "send") {
-    const [to, ...words] = rest;
-    let andWait = false, expectsReply = false, replyTo;
-    const body = [];
-    for (let i = 0; i < words.length; i++) {
-      if (words[i] === "--wait") andWait = true;
-      else if (words[i] === "--expect-reply") expectsReply = true;
-      else if (words[i] === "--reply-to") replyTo = words[++i];
-      else body.push(words[i]);
-    }
-    if (!to || !body.length) throw Error("send needs: <to> <text or json_body> [--reply-to <id>] [--expect-reply] [--wait]");
-    await announce();
-    const sent = await client.send(to, parseBody(body.join(" ")), { replyTo, expectsReply });
-    output(andWait ? { sent, ...await wait(50) } : sent);
-    return;
-  }
-  if (cmd === "read" || cmd === "inbox") {
-    output(await read());
+  if (["send", "read", "inbox", "wait"].includes(cmd)) {
+    output(await roomCommand(client, cmd, rest, cmd === "send" ? announce : void 0));
     return;
   }
   if (cmd === "team") {
     output({ ok: true, team: await client.team() });
-    return;
-  }
-  if (cmd === "wait") {
-    let timeout = 50, from, board, system;
-    for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === "--from") from = names(rest[++i]);
-      else if (rest[i] === "--board") board = rest[++i] || "";
-      else if (rest[i] === "--no-system") system = false;
-      else timeout = Number(rest[i]) || 50;
-    }
-    output(await wait(timeout, from, board, system));
     return;
   }
   if (cmd === "watch") {
@@ -1005,38 +1085,31 @@ async function main() {
   }
   if (cmd === "kickoff") {
     if (!rest.length) throw Error("kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)");
-    output(await client.send("all", { encrypted_payload: await sealForRoom(parseBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true }));
+    output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true }));
     return;
   }
   if (cmd === "webhook") {
-    if (!rest[0]) throw Error("webhook needs: <https_url|off>");
-    await client.setWebhook(rest[0] === "off" ? null : rest[0]);
-    output({ ok: true, webhook: rest[0] === "off" ? "off (poll with read/watch)" : rest[0] });
+    output(await roomCommand(client, cmd, rest));
     return;
   }
   if (cmd === "profile") {
-    const body = { ...modelProfile(rest) };
-    const i = rest.indexOf("--capabilities");
-    if (i >= 0) body.capabilities = names(rest[i + 1]?.startsWith("--") ? "" : rest[i + 1]);
-    if (rest.includes("--no-workspace")) body.workspace = null;
-    else if (rest.includes("--workspace")) {
-      if (roomSecret === "resume-only") throw Error("re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace");
-      body.workspace = workspace();
-    }
-    if (Object.keys(body).length) await client.setProfile(body);
-    output({ ok: true, team: await client.team() });
+    output(await runProfileCommand(client, rest, {
+      modelFallback: process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL,
+      providerFallback: process.env.J01N_PROVIDER,
+      workspace,
+      secret: roomSecret,
+      workspaceError: "re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace"
+    }));
     return;
   }
-  if (cmd === "reserve" || cmd === "release") {
+  if (["reserve", "release", "reservations"].includes(cmd)) {
     const { root, id } = repo();
-    const i = rest.indexOf("--reason");
-    const paths = (i >= 0 ? rest.slice(0, i) : rest).map((p) => relative(root, resolve(p)) || ".");
-    if (cmd === "reserve" && !paths.length) throw Error("reserve needs: <path>... [--reason text]");
-    output({ ok: true, reservations: cmd === "reserve" ? await reservePaths(client, id, paths, i >= 0 ? rest.slice(i + 1).join(" ") || void 0 : void 0) : await releasePaths(client, id, paths) });
-    return;
-  }
-  if (cmd === "reservations") {
-    output({ reservations: await listReservations(client) });
+    output(await runReservationCommand(client, cmd, rest, {
+      repo: id,
+      path: (path) => relative(root, resolve(path)) || ".",
+      requirePaths: true,
+      releaseReasonDelimiter: true
+    }));
     return;
   }
   if (cmd === "leave") {
@@ -1046,8 +1119,7 @@ async function main() {
     return;
   }
   if (cmd === "host") {
-    if (!rest[0]) throw Error("host needs: <participant to make host>");
-    output(await client.transferHost(rest[0]));
+    output(await roomCommand(client, cmd, rest));
     return;
   }
   throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|leave`);

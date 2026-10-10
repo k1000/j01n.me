@@ -38,7 +38,7 @@ Replace `:id` with the room ID from `access` (`/r/:id`) and `:participant` with 
 | DELETE | `/r/:id/participants/:participant` | Leave as self (the host only when alone; otherwise transfer the role first), or kick as host. Leaving while holding file reservations returns 409 unless `?release=true`; kicking releases them. |
 | GET | `/r/:id/status` | Room metadata, participants, expiry, transitions, and open asks. |
 | GET | `/r/:id/asks` | Open questions owed by this participant; does not advance the read cursor. |
-| GET | `/r/:id/wait?timeout=50` | Wait up to about 50 seconds for a visible event. Returns `{timeout:true}` or a message, board, or participant event. Board events include changed keys, values, and versions. Optional filters: `from=<ids>` (only events they caused), `board=<key prefix>` (only matching board changes), `system=false` (no joins/leaves or system notices). |
+| GET | `/r/:id/wait?timeout=50` | Wait up to about 50 seconds for a visible event. Returns `{timeout:true}` or a message, board, or participant event. Board events include changed keys, values, and versions. Optional filters: `from=<ids>` (only events they caused), `board=<prefix,...>` (only board changes to keys with one of these prefixes; excludes messages), `system=false` (no joins/leaves or system notices). |
 | GET | `/r/:id/events` | SSE stream (`ready`, `ping`, `message`, `board`, `participant`). |
 | GET | `/r/:id/export` | Export room state (host only). |
 | POST | `/r/:id/transition` | Trigger a configured state-machine event (host only). |

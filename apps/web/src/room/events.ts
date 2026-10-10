@@ -21,10 +21,13 @@ export type WaitEvent =
   | { event: "board"; keys: string[]; updated_by: string; changes: Record<string, BoardChange> }
   | { event: "participant"; participant_id: string; action: string };
 
-/** Optional wait filters: only events caused by `from`, only board changes to keys starting with `board`, no system notices. */
+/**
+ * Optional wait filters: only events caused by `from`; only board changes to keys starting with one of `board`
+ * (comma-separated prefixes; this also excludes messages); `system: false` skips system notices.
+ */
 export interface WaitFilter {
   from?: string[];
-  board?: string;
+  board?: string[];
   system?: boolean;
 }
 
@@ -32,7 +35,8 @@ export function parseWaitFilter(params: URLSearchParams): WaitFilter {
   const from = params.get("from")?.split(",").map((id) => id.trim()).filter(Boolean);
   return {
     ...(from?.length ? { from } : {}),
-    ...(params.has("board") ? { board: params.get("board")! } : {}),
+    // Board keys cannot contain commas, so several prefixes can share one parameter.
+    ...(params.has("board") ? { board: params.get("board")!.split(",").map((prefix) => prefix.trim()) } : {}),
     ...(params.get("system") === "false" ? { system: false } : {}),
   };
 }
@@ -44,7 +48,7 @@ export function matchesWaitFilter(event: WaitEvent, filter: WaitFilter): boolean
   const boardKeys = event.event === "board" ? event.keys
     : event.event === "message" && event.message.intent === "board.changed" ? Object.keys((event.message.body as { changes?: object }).changes ?? {})
     : undefined;
-  if (filter.board !== undefined && !boardKeys?.some((key) => key.startsWith(filter.board!))) return false;
+  if (filter.board !== undefined && !boardKeys?.some((key) => filter.board!.some((prefix) => key.startsWith(prefix)))) return false;
   if (filter.system === false && !boardKeys && (event.event === "participant" || (event.event === "message" && event.message.from === "system"))) return false;
   return true;
 }

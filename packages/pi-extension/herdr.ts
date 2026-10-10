@@ -49,6 +49,10 @@ export function startHerdrAgent(paneId: string, name: string, run: RunHerdr = ex
   run("herdr", ["agent", "start", name, "--kind", "pi", "--pane", paneId], { encoding: "utf8", timeout: 40000, stdio: ["ignore", "pipe", "pipe"] });
 }
 
+/**
+ * Submit a prompt without `--wait`: Herdr's wait fails with agent_prompt_stalled unless the agent starts working within
+ * 5 s, and a freshly started Pi takes longer. Callers wait for the outcome they need (a file, a room join) instead.
+ */
 export function promptHerdrAgent(paneId: string, message: string, run: RunHerdr = execFileSync): void {
-  run("herdr", ["agent", "prompt", paneId, message, "--wait", "--timeout", "120000"], { encoding: "utf8", timeout: 125000, stdio: ["ignore", "pipe", "pipe"] });
+  run("herdr", ["agent", "prompt", paneId, message], { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] });
 }

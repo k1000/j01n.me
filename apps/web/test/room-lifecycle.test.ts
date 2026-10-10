@@ -364,6 +364,17 @@ describe("room lifecycle", () => {
       expect(await waiting).toMatchObject({ event: "board", keys: ["task_T1"] });
     });
 
+    it("board= takes several comma-separated prefixes", async () => {
+      await joinParticipant(fix, "agent-a");
+      await joinParticipant(fix, "agent-b");
+      const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-a");
+      const waiting = wait("agent-a", `after=${cursor}&timeout=5&board=tasks,reservations`);
+      await new Promise((r) => setTimeout(r, 50));
+      await putBoard("agent-b", "notes", { n: 1 });
+      await putBoard("agent-b", "reservations", {});
+      expect(await waiting).toMatchObject({ event: "board", keys: ["reservations"] });
+    });
+
     it("system=false skips joins and system notices but keeps board changes and messages", async () => {
       await joinParticipant(fix, "agent-a");
       await joinParticipant(fix, "agent-b");

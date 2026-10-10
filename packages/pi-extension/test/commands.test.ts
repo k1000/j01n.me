@@ -279,6 +279,7 @@ describe("pi-extension agent inbox", () => {
   it("register keeps the identity private; listen opens an invite, removes it and joins the room", async () => {
     process.chdir(mkdtempSync(join(tmpdir(), "j01n-pi-agent-")));
     vi.stubEnv("BASE_URL", "https://j01n.me");
+    vi.stubEnv("J01N_AGENT_DIR", ""); // identities in the test directory, even when run from a spawned pane
     const keys = new Map<string, string>();
     let invites: Array<{ id: string; from: string; created_at: string; sealed: unknown }> = [];
     const seen: string[] = [];
@@ -303,9 +304,11 @@ describe("pi-extension agent inbox", () => {
 
     await runj01n(["invite", "claude-code", "pi-agent", "https://j01n.me/room/room-1#very-secret-join-secret"]);
     expect(JSON.stringify(invites)).not.toContain("very-secret-join-secret");
-    const result = JSON.parse(await runj01n(["listen", "pi-agent", "1"]));
+    const result = JSON.parse(await runj01n(["listen", "pi-agent", "1", "--capabilities", "code,shell", "--no-workspace"]));
     expect(result).toMatchObject({ invited_by: "claude-code", ok: true, participant_id: "pi-agent" });
     expect(seen).toContain("DELETE /a/pi-agent/invites/inv-1");
     expect(seen).toContain("PUT /r/room-1/participants/pi-agent");
+    // Join flags pass through listen: capabilities announced, no workspace.
+    expect(seen).toContain("PATCH /r/room-1/participants/pi-agent");
   });
 });

@@ -342,7 +342,7 @@ function parseMessageBody(raw: string): unknown {
 
 async function handleWait(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
-  // Flags: --from <ids,...> (only events they caused), --board <key prefix> (only matching board changes), --no-system.
+  // Flags: --from <ids,...> (only events they caused), --board <prefix,...> (only board changes to matching keys; no messages), --no-system.
   const args = parsed.rest;
   let timeout: string | undefined;
   const filter: Parameters<RoomClient["wait"]>[0] = {};
@@ -634,12 +634,15 @@ export async function prepareRoomPeerSpawn(options: { task: string; role?: strin
 
 /** Wait for an invitation from an allowlisted agent, then join that room (kickoff, board and questions included). */
 async function handleListen(parsed: ParsedArgs): Promise<string> {
-  const [me, timeout] = parsed.rest;
+  // listen <me> [timeout] [join flags, e.g. --capabilities code,shell or --no-workspace]
+  const [me, ...args] = parsed.rest;
+  const timeout = args.find((arg) => /^\d+$/.test(arg));
+  const joinFlags = args.filter((arg) => arg !== timeout);
   const identity = loadAgent(me);
   const [invite] = await waitForInvites(identity, timeout ? Number(timeout) : undefined);
   if (!invite) return JSON.stringify({ timeout: true }, null, 2);
   await deleteInvite(identity, invite.id);
-  const joined = JSON.parse(await handleJoin({ cmd: "join", roomUrlOrInvite: invite.room_link, me: identity.name, rest: [] }));
+  const joined = JSON.parse(await handleJoin({ cmd: "join", roomUrlOrInvite: invite.room_link, me: identity.name, rest: joinFlags }));
   return JSON.stringify({ invited_by: invite.from, ...joined }, null, 2);
 }
 

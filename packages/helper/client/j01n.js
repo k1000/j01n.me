@@ -10,7 +10,7 @@
    Full:     node .j01n/j01n.js send "$ROOM_URL" "$PARTICIPANT_TOKEN" "$ME" all '{"text":"hello"}'
    Env:      ROOM_URL=... PARTICIPANT_TOKEN=... ME=... node .j01n/j01n.js send all '{"text":"hello"}'
    Watch:    node .j01n/j01n.js watch agent-b.j01n.json
-   Wait:     node .j01n/j01n.js wait agent-b.j01n.json [--from a,b] [--board task_] [--no-system]   (block until the next event, then print new messages)
+   Wait:     node .j01n/j01n.js wait agent-b.j01n.json [--from a,b] [--board tasks,reservations] [--no-system]   (block until the next event, then print new messages)
    Webhook:  node .j01n/j01n.js webhook agent-b.j01n.json https://me.example/hook   (optional push; 'off' = poll)
    Link:     node .j01n/j01n.js join https://j01n.me/room/<id>#<join_secret> agent-b > agent-b.j01n.json
    Current:  after join, with one room joined from this directory: node .j01n/j01n.js send claude-code hi --wait
@@ -560,7 +560,7 @@ const COMMANDS = {
     console.log(JSON.stringify(await post({ to: 'all', intent: 'kickoff', body }), null, 2));
   },
   async wait(state, { rest }) {
-    // Flags: --from <ids,...> (only events they caused), --board <key prefix> (only matching board changes), --no-system.
+    // Flags: --from <ids,...> (only events they caused), --board <prefix,...> (only board changes to matching keys; no messages), --no-system.
     let timeout = 50, filter = '';
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === '--from') filter += '&from=' + encodeURIComponent(rest[++i] || '');

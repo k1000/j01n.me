@@ -36,7 +36,7 @@ describe("Herdr peer discovery", () => {
     startHerdrAgent("wV:p5", "reviewer", run);
     promptHerdrAgent("wV:p5", "Register reviewer", run);
     expect(calls[0]).toEqual(["agent", "start", "reviewer", "--kind", "pi", "--pane", "wV:p5"]);
-    expect(calls[1]).toEqual(["agent", "prompt", "wV:p5", "Register reviewer", "--wait", "--timeout", "120000"]);
+    expect(calls[1]).toEqual(["agent", "prompt", "wV:p5", "Register reviewer"]);
     expect(() => startHerdrAgent("wV:p5", "bad name", run)).toThrow("agent name");
   });
 

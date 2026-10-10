@@ -106,6 +106,18 @@ describe("spawn Herdr Pi and invite", () => {
     expect(vi.mocked(promptHerdrAgent).mock.calls[0][1]).toContain("reviewer host-inbox");
   });
 
+  it("waits for the outcome when the new agent registers and joins only after the prompt returns (slow Pi start-up)", async () => {
+    vi.mocked(promptHerdrAgent).mockImplementation((_pane, message) => {
+      setTimeout(() => {
+        if (message.includes("register")) { registered = true; writeFileSync(join(dir, ".j01n-agent-reviewer.json"), JSON.stringify(recipient)); }
+        else joined = true;
+      }, 1500);
+    });
+    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir);
+    expect(result).toMatchObject({ ok: true, invited: true, joined: true });
+    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("--capabilities");
+  }, 15_000);
+
   it("reports a submitted invitation when the join prompt fails without repeating it", async () => {
     vi.mocked(promptHerdrAgent).mockImplementation((_pane, message) => {
       if (message.includes("register")) writeFileSync(join(dir, ".j01n-agent-reviewer.json"), JSON.stringify(recipient));

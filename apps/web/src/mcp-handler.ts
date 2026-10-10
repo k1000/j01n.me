@@ -920,7 +920,7 @@ const tools: Record<string, ToolDef> = {
         inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
         timeoutSeconds: { type: "number", description: "1-50, default 50" },
         from: { type: "string", description: "Only wake on events caused by these participants (comma-separated ids)" },
-        board: { type: "string", description: "Only wake on board changes to keys starting with this prefix" },
+        board: { type: "string", description: "Only wake on board changes to keys starting with one of these comma-separated prefixes (messages are not included)" },
         system: { type: "boolean", description: "false: skip joins/leaves and system notices" },
       }, required: ["inviteJson", "participantId"],
     },

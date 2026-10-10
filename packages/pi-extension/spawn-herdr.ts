@@ -5,6 +5,16 @@ import { inviteAgent, parseInviteLink } from "@j01n/sdk";
 import type { AgentIdentity, RoomClient } from "@j01n/sdk";
 import { listHerdrPeers, promptHerdrAgent, splitHerdrPane, startHerdrAgent } from "./herdr";
 
+const OUTCOME_TIMEOUT_MS = 180_000;
+
+/** Poll until `check` holds (true) or the timeout passes (false). */
+async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = OUTCOME_TIMEOUT_MS): Promise<boolean> {
+  for (const end = Date.now() + timeoutMs; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 1000))) {
+    if (await check()) return true;
+  }
+  return check();
+}
+
 export function requirePrivateIdentityDir(identityDir: string): void {
   if (!isAbsolute(identityDir) || !existsSync(identityDir) || statSync(identityDir).mode & 0o077 || (process.platform === "darwin" && realpathSync(identityDir).startsWith("/Volumes/"))) {
     throw new Error("J01N_AGENT_DIR must be an existing private absolute directory on internal storage (mode 0700)");
@@ -48,7 +58,7 @@ export async function spawnAndInviteHerdr(
     startHerdrAgent(paneId, agentName);
     step = "registration";
     promptHerdrAgent(paneId, `Register yourself with j01n.me as ${agentName}, accepting invitations only from ${sender.name}. Use /j01n register ${agentName} ${sender.name}. Do not share your key or token. Reply when registered.`);
-    if (!existsSync(targetFile)) throw new Error("new agent did not register its identity");
+    if (!await waitFor(() => existsSync(targetFile))) throw new Error("new agent did not register its identity");
     const local = JSON.parse(readFileSync(targetFile, "utf8")) as AgentIdentity;
     if (local.name !== agentName || local.base !== sender.base || !local.publicJwk) throw new Error("new agent identity does not match the requested address");
     const remote = await fetch(addressUrl);
@@ -61,11 +71,10 @@ export async function spawnAndInviteHerdr(
     await inviteAgent(sender, agentName, link);
     invited = true;
     step = "join";
-    promptHerdrAgent(paneId, `A sealed invitation from ${sender.name} is waiting for ${agentName}. Run /j01n listen ${agentName} to join. Your role: ${role}. Do not paste room credentials into Herdr.`);
-    for (let attempt = 0; attempt < 15; attempt++) {
-      if ((await client.status()).participants.some((p) => p.id === agentName)) return { ok: true, pane_id: paneId, invited, joined: true };
-      if (attempt < 14) await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
+    // Let the registration turn finish first, so the join prompt is not typed into a working agent.
+    await waitFor(() => listHerdrPeers().find((peer) => peer.pane_id === paneId)?.agent_status !== "working", 60_000);
+    promptHerdrAgent(paneId, `A sealed invitation from ${sender.name} is waiting for ${agentName}. Run /j01n listen ${agentName} --capabilities code,shell,files to join. Your role: ${role}. Do not paste room credentials into Herdr.`);
+    if (await waitFor(async () => (await client.status()).participants.some((p) => p.id === agentName))) return { ok: true, pane_id: paneId, invited, joined: true };
     throw new Error("join not confirmed; check the spawned agent's pane and room status");
   } catch (error) {
     if (!paneId) throw error;

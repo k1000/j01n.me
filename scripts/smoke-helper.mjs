@@ -105,14 +105,18 @@ try {
 
   // Directory a now also holds the guest's room entry, so name the room and participant explicitly there.
   const asA = (...args) => [args[0], room.invite_link, "smoke-a", ...args.slice(1)];
+  // Reservations apply only between participants sharing a checkout (same machine + worktree). Directory a is shared
+  // by smoke-a and the guest that joined there via listen; b is alone in its own checkout.
+  const asGuest = (...args) => [args[0], room.invite_link, guest, ...args.slice(1)];
   run(a, asA("reserve", "src/auth", "--reason", "smoke", "refactor"));
-  check("reserving a path someone else holds fails, naming the holder", fails(b, ["reserve", "src/auth/login.ts"]).includes("already reserved by smoke-a (smoke refactor)"));
+  check("in a shared checkout, reserving a path someone else holds fails, naming the holder", fails(a, asGuest("reserve", "src/auth/login.ts")).includes("already reserved by smoke-a (smoke refactor)"));
   check("reservations are announced in the chat", run(b, ["read"]).some((m) => m.body?.text === "smoke-a reserved files (1)"));
-  run(b, ["reserve", "docs/"]);
   writeFileSync(join(b, "README.md"), "existing file\n");
-  check("an existing file can be reserved by its path (not mistaken for an invitation)", run(b, ["reserve", "README.md"]).reservations.some((r) => r.by === "smoke-b" && r.paths.includes("README.md")));
-  check("leaving while holding reservations is refused", fails(b, ["leave"]).includes("release them first"));
-  check("leave --release releases them and leaves", run(b, ["leave", "--release"]).left === true && run(a, asA("reservations")).reservations.every((r) => r.by === "smoke-a"));
+  const alone = run(b, ["reserve", "README.md"]);
+  check("alone in a checkout, reserve needs no reservation (an existing file is a path, not an invitation)", alone.ok === true && alone.reservations.length === 0 && /no reservation needed/.test(alone.message ?? ""));
+  run(a, asGuest("reserve", "docs/"));
+  check("leaving while holding reservations is refused", fails(a, asGuest("leave")).includes("release them first"));
+  check("leave --release releases them and leaves", run(a, asGuest("leave", "--release")).left === true && run(a, asA("reservations")).reservations.every((r) => r.by === "smoke-a"));
   run(a, asA("release"));
   check("release frees your reservations", run(a, asA("reservations")).reservations.length === 0);
 } catch (error) {

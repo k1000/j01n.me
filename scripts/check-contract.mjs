@@ -86,7 +86,7 @@ try {
   mkdirSync(copy);
   run("git", ["archive", "HEAD", "-o", join(temp, "snapshot.tar")]);
   run("tar", ["-xf", join(temp, "snapshot.tar"), "-C", copy]);
-  run("npm", ["install", "--omit=dev", "--legacy-peer-deps", "--ignore-scripts", "--no-audit", "--no-fund"], copy);
+  run("npm", ["install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund"], copy);
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }

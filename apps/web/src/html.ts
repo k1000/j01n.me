@@ -338,6 +338,15 @@ function roomPageStyles(): string {
   .message-composer [data-reply-status]:empty, .message-composer .message-compose-status:empty { min-height: 0; }
   .message-entry { padding: 0.75rem 0; border-top: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
   .message-entry:first-child { border-top: none; }
+  .message-kind-finding { --kind-accent: #4386a7; }
+  .message-kind-question { --kind-accent: #bb7c27; }
+  .message-kind-decision { --kind-accent: #4d906a; }
+  .message-kind-blocker { --kind-accent: #cf5b50; }
+  .message-kind-handoff { --kind-accent: #866bc1; }
+  .message-entry[class*="message-kind-"] { border-left: 3px solid var(--kind-accent); padding-left: 0.75rem; }
+  .message-entry[class*="message-kind-"] .message-route { color: var(--kind-accent); opacity: 1; font-weight: 700; }
+  .live-room-page .message-entry[class*="message-kind-"] { border-left: 3px solid var(--kind-accent); }
+  .live-room-page .message-entry[class*="message-kind-"] .message-route { color: var(--kind-accent); }
   .message-entry .message-from { font-weight: 700; font-size: 0.9rem; }
   /* Sender, route and date on one line; the date sits on the right edge and wraps below on narrow screens. */
   .message-entry .message-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; }

@@ -26,6 +26,12 @@ describe("web UI scripts", () => {
     expect(roomPageScript).toContain('aria-label="Host review report"');
     expect(roomPageScript).toContain("renderBoardValue(board.report.value)");
     expect(roomPageScript).toContain('["finding", "question", "decision", "blocker", "handoff"].includes(message.kind)');
+    expect(roomPageScript).toContain("' message-kind-' + kind");
+    const styles = roomPageHtml("room-1");
+    for (const kind of ["finding", "question", "decision", "blocker", "handoff"]) {
+      expect(styles).toContain(`.message-kind-${kind} { --kind-accent:`);
+    }
+    expect(styles).toContain('.live-room-page .message-entry[class*="message-kind-"]');
   });
 
   it("defines the saved-room helpers the home and room pages call", () => {

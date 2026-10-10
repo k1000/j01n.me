@@ -88,8 +88,8 @@ export async function inviteRepoAgents(client: Client, sender: AgentIdentity, li
       if (!address) return item;
       item.address = address;
       const pi = peer.agent === "pi";
-      const register = pi ? `/j01n register ${address} ${sender.name}` : `j01n register ${address} ${sender.name}`;
-      promptHerdrAgent(peer.pane_id, `Register a private j01n.me inbox ${address}, accepting invitations only from ${sender.name}. ${pi ? `Run ${register}.` : `Install/use the CLI helper at https://j01n.me/cli.md and run ${register}.`} Do not share your key or token. Reply when registered.`);
+      const register = pi ? `/j01n register ${address} ${sender.name}` : `node .j01n/j01n.js register ${address} ${sender.name}`;
+      promptHerdrAgent(peer.pane_id, `Register a private j01n.me inbox ${address}, accepting invitations only from ${sender.name}. ${pi ? `Run ${register}.` : `Follow https://j01n.me/cli.md to download the CLI helper to .j01n/j01n.js, then run ${register}.`} Do not share your key or token. Reply when registered.`);
       const addressUrl = `${sender.base}/a/${encodeURIComponent(address)}`;
       const registered = await waitFor(async () => (await fetch(addressUrl)).ok, 180_000);
       if (!registered) return { ...item, status: "not_registered" };
@@ -99,7 +99,7 @@ export async function inviteRepoAgents(client: Client, sender: AgentIdentity, li
       names.add(friendly);
       // A registration prompt may still be in progress. Do not type over a working agent.
       if (!await waitFor(() => listHerdrRepoAgents().find((p) => p.pane_id === peer.pane_id)?.agent_status !== "working", 60_000)) return { ...item, status: "busy" };
-      const listen = pi ? `/j01n listen ${address}` : `j01n listen ${address}`;
+      const listen = pi ? `/j01n listen ${address}` : `node .j01n/j01n.js listen ${address}`;
       promptHerdrAgent(peer.pane_id, `A sealed invitation from ${sender.name} is waiting for ${address}. Run ${listen} --as ${friendly} --display-name ${friendly} --role builder to join. Do not paste room credentials into Herdr.`);
       return { ...item, status: "invited" };
     } catch {

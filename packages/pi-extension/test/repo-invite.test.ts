@@ -66,6 +66,18 @@ describe("repo agent invitations", () => {
     expect(listHerdrRepoAgents).not.toHaveBeenCalled();
   });
 
+  it("uses the downloaded Node CLI helper for non-Pi agents, not an uninstalled j01n binary", async () => {
+    vi.mocked(listHerdrRepoAgents).mockReturnValue([{ ...peer("w2:p1", root, "claude-agent"), agent: "claude" }]);
+    let registered = false;
+    vi.mocked(promptHerdrAgent).mockImplementation(() => { registered = true; });
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({}, { status: registered ? 200 : 404 })));
+    expect(await inviteRepoAgents(client, sender, link, false, root)).toMatchObject({ results: [{ status: "invited" }] });
+    expect(vi.mocked(promptHerdrAgent).mock.calls[0][1]).toContain("node .j01n/j01n.js register claude-agent-12345678 host-123");
+    expect(vi.mocked(promptHerdrAgent).mock.calls[0][1]).toContain("https://j01n.me/cli.md");
+    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("node .j01n/j01n.js listen claude-agent-12345678 --as claude-agent");
+    expect(JSON.stringify(vi.mocked(promptHerdrAgent).mock.calls)).not.toContain("private-join-secret");
+  });
+
   it("does not ask a peer to claim an already registered address", async () => {
     vi.mocked(crypto.randomUUID).mockReturnValueOnce("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").mockReturnValueOnce("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
     let registered = false;

@@ -84,7 +84,7 @@ function hasExplicitInvite(ref: string): boolean {
 
 const ACTIVE_COMMANDS = new Set([
   "send", "wait", "read", "inbox", "doctor", "board", "board_set", "board_patch", "board_delete",
-  "status", "webhook", "participants", "room_status", "transition", "host", "leave", "close",
+  "status", "webhook", "participants", "room_status", "transition", "host", "profile", "leave", "close",
 ]);
 
 const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen"]);
@@ -107,7 +107,9 @@ function parseCommand(args: string[]): ParsedArgs {
 async function openSession(invite: Invite, me: string): Promise<RoomClient> {
   const cacheKey = `${invite.room_url}:${me}`;
   const cached = sessions.get(cacheKey);
-  if (cached) return cached;
+  // A session resumed without the room secret ("resume-only") is replaced once a call brings the real secret,
+  // which sealed content (kickoff, workspaces) needs.
+  if (cached && (invite.join_secret === "resume-only" || cached.invite.join_secret === invite.join_secret)) return cached;
 
   const file = keyFilePath(invite.room_url, me);
   const saved: SavedSession = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
@@ -421,6 +423,25 @@ async function handleTransition(parsed: ParsedArgs): Promise<string> {
   return JSON.stringify(result, null, 2);
 }
 
+/**
+ * Change what you announce during the session: --capabilities a,b ("" clears), --workspace (re-detect, e.g. after
+ * switching branch; needs the room link because it is sealed with the room key), --no-workspace (stop announcing).
+ */
+async function handleProfile(parsed: ParsedArgs): Promise<string> {
+  const client = await getClient(parsed);
+  const args = parsed.rest;
+  const profile: { capabilities?: string[]; workspace?: Workspace | null } = {};
+  const i = args.indexOf("--capabilities");
+  if (i >= 0) profile.capabilities = (args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : "").split(",").map((c) => c.trim()).filter(Boolean);
+  if (args.includes("--no-workspace")) profile.workspace = null;
+  else if (args.includes("--workspace")) {
+    if (client.invite.join_secret === "resume-only") throw new Error("re-announcing the workspace needs the room link (it is sealed with the room key): /j01n profile <room link> <me> --workspace");
+    profile.workspace = detectWorkspace();
+  }
+  if (Object.keys(profile).length > 0) await client.setProfile(profile);
+  return JSON.stringify({ ok: true, team: await client.team() }, null, 2);
+}
+
 /** Host only: hand the host role to another participant in the room. */
 async function handleHost(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
@@ -496,6 +517,7 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   room_status: handleStatusInfo,
   transition: handleTransition,
   host: handleHost,
+  profile: handleProfile,
 };
 
 export async function runj01n(args: string[]): Promise<string> {

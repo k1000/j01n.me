@@ -17,8 +17,9 @@
    Asks:     node .j01n/j01n.js send <to> Can you review? --expect-reply   /   send <from> done --reply-to <message id>
    Agents:   register <me> [allowed,agents]  |  invite <me> <to> <room link>  |  listen <me>   (invite agents by name)
    Profile:  join <link> <me> --capabilities code,shell,browser,screenshot,vision   (workspace: cwd + git remote/branch, sealed; --no-workspace skips)
+             later: profile --capabilities code,browser  |  profile <link> <me> --workspace (re-detect)  |  profile --no-workspace
    Host:     node .j01n/j01n.js host <participant>   (host only: hand the host role over; the host cannot leave others without one)
-   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, host, register, allow, invite, invites, listen
+   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, profile, host, register, allow, invite, invites, listen
 */
 const fs = await import('node:fs/promises');
 const { webcrypto, createHash } = await import('node:crypto');
@@ -513,6 +514,23 @@ const COMMANDS = {
     if (!r.ok) die(formatErrorBody(r.body));
     console.log(JSON.stringify({ ok: true, webhook: url === 'off' ? 'off (poll with read/watch)' : url }, null, 2));
   },
+  // Change what you announce during the session: --capabilities a,b ('' clears), --workspace (re-detect, e.g. after
+  // switching branch; needs the room link because it is sealed with the room key), --no-workspace (stop announcing).
+  async profile(state, { me, rest }) {
+    const body = {};
+    const i = rest.indexOf('--capabilities');
+    if (i >= 0) body.capabilities = (rest[i + 1] && !rest[i + 1].startsWith('--') ? rest[i + 1] : '').split(',').map((c) => c.trim()).filter(Boolean);
+    if (rest.includes('--no-workspace')) body.workspace = null;
+    else if (rest.includes('--workspace')) {
+      if (joinSecret === 'resume-only') die('re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace');
+      body.workspace = await sealJson(await detectWorkspace());
+    }
+    if (Object.keys(body).length) {
+      const r = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PATCH', headers: { ...tokenHeaders(state), 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) die(formatErrorBody(r.body));
+    }
+    console.log(JSON.stringify({ ok: true, team: await team(state) }, null, 2));
+  },
   // Host only: hand the host role to another participant in the room.
   async host(state, { roomUrl, rest }) {
     const [to] = rest;
@@ -524,7 +542,7 @@ const COMMANDS = {
 };
 
 const handler = COMMANDS[cmd];
-if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|inbox|watch|wait|doctor|webhook|kickoff|host');
+if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|inbox|watch|wait|doctor|webhook|kickoff|profile|host');
 
 const state = await loadState();
 if (resolved.participantToken) state.participantToken = resolved.participantToken;

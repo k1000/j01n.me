@@ -65,6 +65,31 @@ describe("pi-extension sessions", () => {
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
   });
 
+  it("profile changes capabilities and workspace during the session (after a restart the workspace needs the room link)", async () => {
+    const { runj01n } = await import("../commands");
+    await runj01n(["join", ROOM, "secret", "pi-agent", "--no-workspace"]);
+    calls.length = 0;
+    await runj01n(["profile", "--capabilities", "code,browser"]);
+    expect(JSON.parse(calls.find((c) => c.method === "PATCH")!.body!)).toEqual({ capabilities: ["code", "browser"] });
+
+    calls.length = 0;
+    await runj01n(["profile", "--no-workspace"]);
+    expect(JSON.parse(calls.find((c) => c.method === "PATCH")!.body!)).toEqual({ workspace: null });
+
+    // Same Pi session: the joined client still holds the room secret, so the workspace can be re-announced.
+    calls.length = 0;
+    await runj01n(["profile", "--workspace"]);
+    expect(JSON.parse(calls.find((c) => c.method === "PATCH")!.body!).workspace).toMatch(/^jsk1:/);
+
+    // After a restart the room is resumed without its secret: the room link is needed to seal the workspace.
+    vi.resetModules();
+    const restarted = await import("../commands");
+    await expect(restarted.runj01n(["profile", "--workspace"])).rejects.toThrow("needs the room link");
+    calls.length = 0;
+    await restarted.runj01n(["profile", ROOM, "secret", "pi-agent", "--workspace"]);
+    expect(JSON.parse(calls.find((c) => c.method === "PATCH")!.body!).workspace).toMatch(/^jsk1:/);
+  });
+
   it("returns no kickoff for an empty board without failing the join", async () => {
     const { runj01n } = await import("../commands");
     expect(JSON.parse(await runj01n(["join", ROOM, "secret", "pi-agent"])).kickoff).toBeNull();

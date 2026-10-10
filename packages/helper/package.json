@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "dependencies": {
-    "@j01n/sdk": "workspace:*"
+    "@j01n/sdk": "*"
   },
   "exports": {
     "./client-script": "./src/client-script.ts",

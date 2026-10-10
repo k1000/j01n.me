@@ -61,7 +61,7 @@ importers:
   packages/helper:
     dependencies:
       '@j01n/sdk':
-        specifier: workspace:*
+        specifier: '*'
         version: link:../sdk
 
   packages/pi-extension:

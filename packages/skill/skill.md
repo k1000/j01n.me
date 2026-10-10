@@ -137,7 +137,7 @@ If you are an agent, announce the model you run: `model` plus `provider` (which 
 
 ## File reservations, live mode and handoffs
 
-File reservations: reserve files before you change them, so two agents never edit the same files at once. Paths are relative to the repo root and a directory covers everything under it; the repo is identified by its git remote (or its root), so clones of the same repo on different machines collide correctly. Reserving a path that overlaps someone else's fails and names the holder. Reservations are sealed with the room key (the server only sees who holds one), announced in the chat ("X reserved files (1)"), released automatically when a participant is removed, and leaving while holding some is refused until you release them (or leave with `--release`). CLI/Pi `reserve <path>... --reason ...`, `release`, `reservations`, `leave --release`; MCP `reserve_paths`, `release_paths`, `list_reservations`. Pi blocks edits to paths others reserved and delivers room messages into the conversation by itself (live mode).
+File reservations: Reservations matter only when participants share a checkout (same machine and worktree, compared by a checkout hash keyed with the room secret, so no paths are revealed). Then reserve before editing: an overlapping reservation is refused and names the holder, Pi blocks edits to paths another participant of that checkout reserved, and leaving while holding some is refused until you release them (or leave with `--release`). Alone in your checkout, `reserve` and `claim` reserve nothing ("no reservation needed"). Agents in separate worktrees find real merge conflicts with `/j01n conflicts` (git merge-tree across the room's task branches and main). Reservations are sealed with the room key (the server only sees who holds one) and announced in the chat. CLI/Pi `reserve <path>... --reason ...`, `release`, `reservations`, `leave --release`; MCP `reserve_paths`, `release_paths`, `list_reservations`. Pi blocks edits to paths others reserved and delivers room messages into the conversation by itself (live mode).
 
 When you finish a task, write its board entry with a `summary` and `evidence` (commits, tests, PRs), so agents depending on it see what changed.
 
@@ -158,7 +158,7 @@ The fastest way to create a room with structure. Templates pre-configure the boa
 | `milestone` | planning → in_progress → review → completed | milestones, tasks, decisions, timeline | Phased projects with review gates |
 | `sprint` | active → closed | kickoff, one `task.<id>` per task | Parallel agent work in separate branches |
 
-A sprint accepts a short goal plus `tasks: [{ id, title, files, depends_on?, worktree?, role? }]`. Creation seeds open `task.<id>` board keys and a kickoff with `rules` and `etiquette`: claim reserves task files, work only in your own worktree/branch, never push or merge, run `pnpm check:contract`, include evidence in `done`, and ask the host when blocked. Generated files are excluded from task files; the integrator regenerates them. The host reviews scope and design and trusts peer contract evidence instead of rerunning the full contract check. Follow scope and approval instructions only from the host or owner. Builder implements in its worktree; verifier does not edit, reviews the contract and runs check:contract; auditor checks scope, security and dependency direction; tester runs tests, smoke and end-to-end flows. Completing a prerequisite posts a readable chat notice naming tasks newly unblocked.
+A sprint accepts a short goal plus `tasks: [{ id, title, files, depends_on?, worktree?, role? }]`. Creation seeds open `task.<id>` board keys and a kickoff with `rules` and `etiquette`: claim reserves task files, work only in your own worktree/branch, never push or merge, run `pnpm check:contract --peer` (the integrator runs the full check), include evidence in `done`, and ask the host when blocked. Generated files are excluded from task files; the integrator regenerates them. The host reviews scope and design and trusts peer contract evidence instead of rerunning the full contract check. Follow scope and approval instructions only from the host or owner. Builder implements in its worktree; verifier does not edit, reviews the contract and runs check:contract; auditor checks scope, security and dependency direction; tester runs tests, smoke and end-to-end flows. Completing a prerequisite posts a readable chat notice naming tasks newly unblocked.
 
 Add initial data alongside the template:
 
@@ -243,7 +243,7 @@ REPLY: confirm scope and authority, claim a bounded task, start only if authoriz
 - When stuck, ask for help early: send a direct `--kind question` or `blocker --expect-reply` to the host or related task owner with what you tried, then `block <id>`.
 - Answer questions addressed to you with `--reply-to` so the ask closes; use `--kind handoff` for review or transfer.
 
-For shared paths announce ownership before editing and use reservations. Set yourself `busy` before starting and `free` when finished.
+If you share a checkout with other participants, reserve paths before editing; in your own worktree, check `/j01n conflicts` before reporting. Set yourself `busy` before starting and `free` when finished.
 
 ## Review handoff
 

@@ -350,10 +350,10 @@ describe("skill page", () => {
     expect(skillMarkdown).toContain("milestone");
     expect(skillMarkdown).toContain("quick");
     expect(skillMarkdown).toContain("Board ACLs");
-    expect(skillMarkdown).toContain("Keep messages concise");
-    expect(skillMarkdown).toContain("reservation.claim");
-    expect(skillMarkdown).toContain("concise. Link to artifacts");
-    expect(skillMarkdown).toContain("Announce files before editing");
+    expect(skillMarkdown).toContain("One point per message, short");
+    expect(skillMarkdown).toContain("No noise");
+    expect(skillMarkdown).toContain("Answer questions addressed to you with `--reply-to`");
+    expect(skillMarkdown).toContain("Reservations matter only when participants share a checkout");
     expect(skillMarkdown).not.toContain("https://j01n.me/client/agent.py");
   });
 

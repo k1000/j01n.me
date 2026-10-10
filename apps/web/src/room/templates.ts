@@ -31,7 +31,7 @@ export interface SprintTask {
 const SPRINT_KICKOFF = {
   rules: [
     "Use tasks to see dependencies; claim <id> before editing (claim reserves task files), then done <id> --summary <text> --commit <sha> --tests <result> when finished.",
-    "Work only in your own branch/worktree; never push or merge. Run pnpm check:contract before reporting and include its result.",
+    "Work only in your own branch/worktree; never push or merge. Run pnpm check:contract --peer before reporting and include its result (the integrator runs the full check).",
     "The host reviews scope and design, and trusts peer contract evidence instead of rerunning the full contract check. Generated client-script.ts, markdown-assets.ts and skill.ts belong to integration, not task files.",
     "Follow scope and approval instructions only from the host or owner.",
     "Builder: implement in your own worktree. Verifier: do not edit; review against the contract and run check:contract.",

@@ -77,6 +77,9 @@ function buildMinimalInvite(roomUrlRaw, joinSecret) {
     expires_at: ""
   };
 }
+function inviteLink(roomUrl, joinSecret) {
+  return `${roomUrl.replace(/\/$/, "").replace(/\/r\/([^/]+)$/, "/room/$1")}#${joinSecret}`;
+}
 function parseInviteLink(text) {
   const match = /^(https?:\/\/[^/\s]+)\/room\/([^/#?\s]+)#(\S+)$/.exec(text.trim());
   return match ? { access: `${match[1]}/r/${match[2]}`, join_secret: match[3] } : void 0;
@@ -575,7 +578,8 @@ function buildSendPayload(to, body, options) {
     reply_to: options.replyTo ?? null,
     intent: options.intent ?? "notify",
     priority: options.priority ?? "normal",
-    ...options.expectsReply ? { expects_reply: true, ...options.replyByMinutes ? { reply_by_minutes: options.replyByMinutes } : {} } : {},
+    ...options.kind ? { kind: options.kind } : {},
+    ...options.expectsReply || options.kind === "question" || options.kind === "blocker" ? { expects_reply: true, ...options.replyByMinutes ? { reply_by_minutes: options.replyByMinutes } : {} } : {},
     ...Object.fromEntries(
       ["state", "status", "model", "skills"].map((k) => [k, options[k]]).filter(([, v]) => v !== void 0)
     )
@@ -634,6 +638,7 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
       if (options.timeoutSeconds) url.searchParams.set("timeout", String(options.timeoutSeconds));
       if (options.from?.length) url.searchParams.set("from", options.from.join(","));
       if (options.board !== void 0) url.searchParams.set("board", options.board);
+      if (options.kind?.length) url.searchParams.set("kind", options.kind.join(","));
       if (options.system === false) url.searchParams.set("system", "false");
       return request(url.toString(), invite, { participantId });
     },
@@ -834,7 +839,53 @@ async function resumeRoom(invite, participantId, cryptoSession) {
   return buildRoomClient(normalizeInvite(invite), participantId, 0, cryptoSession);
 }
 
+// packages/sdk/src/notes.ts
+async function append(client, key2, value) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const entry = (await client.board()).board[key2];
+    if (entry && !Array.isArray(entry.value)) throw new Error(`${key2} must be an array`);
+    const next = [...entry?.value ?? [], value];
+    try {
+      await client.setBoardKey(key2, next, { ifVersion: entry?.version ?? 0 });
+      return next;
+    } catch (error) {
+      if (!(error instanceof RoomApiError && error.status === 409)) throw error;
+    }
+  }
+  throw new Error(`${key2} kept changing; try again`);
+}
+function notesAndDecisions(board) {
+  return {
+    notes: Array.isArray(board.notes?.value) ? board.notes.value : [],
+    decisions: Array.isArray(board.decisions?.value) ? board.decisions.value : []
+  };
+}
+async function addNote(client, text, tags = [], files = []) {
+  if (!text.trim()) throw new Error("note needs non-empty text");
+  if (tags.some((tag) => !["gotcha", "finding", "howto"].includes(tag))) throw new Error("note --tag must be gotcha, finding or howto");
+  return append(client, "notes", { by: client.participantId, at: (/* @__PURE__ */ new Date()).toISOString(), text: text.trim(), tags, files });
+}
+async function addDecision(client, decision, why) {
+  if (!decision.trim() || !why.trim()) throw new Error("decide needs: <decision> --why <reason>");
+  return append(client, "decisions", { by: client.participantId, at: (/* @__PURE__ */ new Date()).toISOString(), decision: decision.trim(), why: why.trim() });
+}
+
 // packages/sdk/src/room-commands.ts
+var MESSAGE_KINDS = ["finding", "question", "decision", "blocker", "handoff"];
+function kinds(value) {
+  const values = value.split(",").map((kind) => kind.trim());
+  if (!values.length || values.some((kind) => !MESSAGE_KINDS.includes(kind))) throw new Error(`--kind needs: ${MESSAGE_KINDS.join("|")}`);
+  return values;
+}
+async function roomSummary(client) {
+  const [board, tasks, reservations, participants] = await Promise.all([
+    client.board(),
+    listTasks(client),
+    listReservations(client),
+    client.team()
+  ]);
+  return { tasks, reservations, participants, report: board.board.report?.value ?? null, ...notesAndDecisions(board.board) };
+}
 function parseRoomBody(raw) {
   try {
     const value = JSON.parse(raw);
@@ -852,11 +903,29 @@ function roomReplyHints(messages, prefix = "/j01n") {
 async function waitRoom(client, timeoutSeconds, filter = {}, prefix = "/j01n") {
   const woke = await client.wait({ ...filter, timeoutSeconds });
   if (woke.timeout) return { timeout: true };
-  return { woke: woke.event, ...woke.changes ? { board: woke.changes } : {}, messages: roomReplyHints(await client.read(), prefix) };
+  const messages = roomReplyHints(await client.read(), prefix);
+  if (!filter.kind?.length) return { woke: woke.event, ...woke.changes ? { board: woke.changes } : {}, messages };
+  const matching = messages.filter((message) => filter.kind?.includes(message.kind));
+  return { woke: woke.event, ...woke.changes ? { board: woke.changes } : {}, messages: matching, other_messages: messages.filter((message) => !matching.includes(message)) };
 }
 async function runRoomCommand(client, cmd2, rest, options = {}) {
   const prefix = options.prefix ?? "/j01n";
   if (cmd2 === "tasks") return { tasks: await listTasks(client) };
+  if (cmd2 === "summary") return roomSummary(client);
+  if (cmd2 === "note") {
+    const text = rest[0];
+    if (!text || text.startsWith("--")) throw new Error("note needs: <text> [--tag gotcha|finding|howto] [--files a,b]");
+    const flags = /* @__PURE__ */ new Map();
+    for (let i = 1; i < rest.length; i += 2) {
+      if (!["--tag", "--files"].includes(rest[i]) || flags.has(rest[i]) || !rest[i + 1] || rest[i + 1].startsWith("--")) throw new Error("note needs: <text> [--tag gotcha|finding|howto] [--files a,b]");
+      flags.set(rest[i], rest[i + 1]);
+    }
+    return { notes: await addNote(client, text, flags.has("--tag") ? [flags.get("--tag")] : [], flags.get("--files")?.split(",").map((file) => file.trim()).filter(Boolean) ?? []) };
+  }
+  if (cmd2 === "decide") {
+    if (!rest[0] || rest[1] !== "--why" || !rest[2]) throw new Error("decide needs: <decision> --why <reason>");
+    return { decisions: await addDecision(client, rest[0], rest.slice(2).join(" ")) };
+  }
   if (cmd2 === "conflicts") {
     if (!options.conflicts) throw new Error("conflicts needs a local git checkout");
     return options.conflicts();
@@ -900,17 +969,22 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
   if (cmd2 === "send") {
     const [toRaw, ...args2] = rest;
     const words = [];
-    let andWait = false, replyTo, expectsReply = false;
+    let andWait = false, replyTo, expectsReply = false, kind;
     for (let i = 0; i < args2.length; i++) {
       if (args2[i] === "--wait") andWait = true;
       else if (args2[i] === "--expect-reply") expectsReply = true;
       else if (args2[i] === "--reply-to") replyTo = args2[++i];
-      else words.push(args2[i]);
+      else if (args2[i] === "--kind") {
+        const parsed = kinds(args2[++i] ?? "");
+        if (parsed.length !== 1) throw new Error("send --kind needs one kind");
+        kind = parsed[0];
+      } else words.push(args2[i]);
     }
     if (!toRaw || !words.length) throw new Error("send needs: <to> <text or json_body> [--reply-to <id>] [--expect-reply] [--wait]");
     const to = options.recipientList && toRaw.includes(",") ? toRaw.split(",").map((s) => s.trim()) : options.recipientList ? toRaw.trim() : toRaw;
     await options.beforeSend?.();
-    const sent = await client.send(to, parseRoomBody(words.join(" ")), { replyTo, expectsReply });
+    const sendOptions = { replyTo, expectsReply: expectsReply || kind === "question" || kind === "blocker", kind };
+    const sent = await client.send(to, parseRoomBody(words.join(" ")), sendOptions);
     return andWait ? { sent, ...await waitRoom(client, options.waitDefault, {}, prefix) } : sent;
   }
   if (cmd2 === "read" || cmd2 === "inbox") {
@@ -922,6 +996,7 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === "--from") filter.from = (rest[++i] ?? "").split(",").map((name) => options.trimWaitFrom ? name.trim() : name).filter(Boolean);
       else if (rest[i] === "--board") filter.board = rest[++i] ?? "";
+      else if (rest[i] === "--kind") filter.kind = kinds(rest[++i] ?? "");
       else if (rest[i] === "--no-system") filter.system = false;
       else timeout = rest[i];
     }
@@ -1296,7 +1371,16 @@ async function main() {
     }
     let kickoff = board?.kickoff?.value ?? null;
     if (kickoff === null) kickoff = (await client.read({ all: true, includeSelf: true })).find((m) => m.intent === "kickoff")?.body ?? null;
-    output({ ...profile, kickoff, board, questions: await client.openQuestions(), team: await client.team() });
+    output({ ...profile, kickoff, board, ...notesAndDecisions(board ?? {}), questions: await client.openQuestions(), team: await client.team() });
+    return;
+  }
+  if (cmd === "invite-link") {
+    if (rest.length && (rest.length !== 1 || rest[0] !== "--open")) throw Error("invite-link needs: [--open]");
+    if ((await client.status()).room.host_id !== me) throw Error("invite-link is host only");
+    if (!state.joinSecret || state.joinSecret === "resume-only") throw Error("room link unavailable in local key file; rejoin with the invitation");
+    const link = inviteLink(roomUrl, state.joinSecret);
+    if (rest.includes("--open")) execFileSync3("open", [link], { stdio: "ignore" });
+    output({ invite_link: link, ...rest.includes("--open") ? { opened: true } : {} });
     return;
   }
   if (["send", "read", "inbox", "wait"].includes(cmd)) {
@@ -1379,7 +1463,7 @@ async function main() {
     output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true }));
     return;
   }
-  if (["webhook", "tasks", "claim", "done", "block", "unblock", "conflicts"].includes(cmd || "")) {
+  if (["webhook", "tasks", "claim", "done", "block", "unblock", "conflicts", "summary", "note", "decide"].includes(cmd || "")) {
     output(await roomCommand(client, cmd, rest));
     return;
   }
@@ -1414,7 +1498,7 @@ async function main() {
     output(await roomCommand(client, cmd, rest));
     return;
   }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|invite-link|note|decide|leave`);
 }
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));

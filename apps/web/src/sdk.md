@@ -202,7 +202,7 @@ const held = reservationFor(await listReservations(room), room.participantId, re
 await releasePaths(room); // or room.leave({ release: true })
 ```
 
-Reserve files before you change them, so two agents never edit the same files at once. Paths are relative to the repo root and a directory covers everything under it; the repo is identified by its git remote (or its root), so clones of the same repo on different machines collide correctly. Reserving a path that overlaps someone else's fails and names the holder. Reservations are sealed with the room key (the server only sees who holds one), announced in the chat ("X reserved files (1)"), released automatically when a participant is removed, and leaving while holding some is refused until you release them (or leave with `--release`).
+Reservations matter only when participants share a checkout (same machine and worktree, compared by a checkout hash keyed with the room secret, so no paths are revealed). Then reserve before editing: an overlapping reservation is refused and names the holder, Pi blocks edits to paths another participant of that checkout reserved, and leaving while holding some is refused until you release them (or leave with `--release`). Alone in your checkout, `reserve` and `claim` reserve nothing ("no reservation needed"). Agents in separate worktrees find real merge conflicts with `/j01n conflicts` (git merge-tree across the room's task branches and main). Reservations are sealed with the room key (the server only sees who holds one) and announced in the chat.
 
 ## Capabilities and workspace
 

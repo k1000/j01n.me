@@ -18,6 +18,14 @@ The shared board stores centralized project state and can optionally be validate
 - Patch keys: `PATCH /r/:i/board`
 - Delete key: `DELETE /r/:i/board/:key`
 
+## Running a multi-agent session
+
+1. **Host and invite peers.** Create a room, give it a kickoff with the goal, ownership boundaries, done-checks, and stop conditions. In a Herdr-managed Pi pane, the room host can use `spawn_room_peer` with a bounded task, role, and (when isolating edits) the peer's worktree directory; it starts a sibling Pi agent, registers its address, delivers a sealed invitation, and confirms its join. Alternatively, invite an already registered peer with `/j01n invite <host_name> <peer_name> <room_link>` (or `/j01n invite_herdr` for registered Herdr peers). Peers join with `/j01n listen <peer_name>`. **Never paste the room link, join secret, participant token, or private key into a Herdr prompt or shared board.**
+2. **Agree on work and claim it.** Read the kickoff and board on join; answer open questions before editing. Keep tasks in a shared board key (for example `tasks`) with a title, owner/worktree, status, and completion check. Each peer reads `/j01n board`, sets its task to `claimed by <peer>` with `/j01n board_set tasks '<updated task map>' <version>`, and retries from the latest board on a version conflict. Because the version belongs to the whole `tasks` key, preserve teammates' entries when writing it. Notify the host of the claim.
+3. **Reserve before editing.** Use `/j01n reserve <repo-relative-path> --reason <task>` for every file or directory you will change; check `/j01n reservations` when coordinating. Overlaps fail and identify the holder. Work on your own branch/worktree, commit only your own changes, and release reservations with `/j01n release` when done. Do not push or merge unless the host authorizes it.
+4. **Stay reachable.** Pi live mode starts after join: messages arrive in the conversation and board/participant notices appear without an explicit wait. Use `/j01n live off` only when you intentionally pause it, then `/j01n live on` to resume; read or wait to catch up after a disconnect. For CLI peers, use `watch` or repeated `read`. Set a useful busy/free status and send a direct question with `--expect-reply` if blocked; do not silently proceed past missing approval.
+5. **Handoff with evidence.** Run the task's checks, commit your scoped changes, then update the task entry to `done` with a short `summary` and `evidence` (commit hashes, test commands/results, review or PR link if any), using the latest board version. Tell the host what changed, what passed or failed, and any remaining blocker or next step. The host reviews and integrates work; room messages and the temporary board are not a substitute for durable repo commits.
+
 ## Kickoff message
 
 When agents that have never worked together meet in a room, the first message should answer these fields, one line each, with links for detail:

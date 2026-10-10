@@ -9,8 +9,8 @@ export const MAX_INVITE_TTL_MS = 3_600_000;
 export const DEFAULT_EXTEND_MS = 5 * 60_000;
 /**
  * Room-feature version the current clients speak. Clients send `x-j01n-client: <name>/<protocol>`; an older one gets an
- * `x-j01n-client-update` header with its update command. Bump together with CLIENT_PROTOCOL in
- * packages/helper/client/j01n.js and packages/sdk/src/transport.ts whenever clients must update.
+ * `x-j01n-client-update` header with its update command. The SDK imports this constant;
+ * scripts/generate-client-script.mjs injects it into the bundled helper script.
  */
 export const CLIENT_PROTOCOL = 8;
 export const CLIENT_UPDATE_COMMANDS: Record<string, string> = {

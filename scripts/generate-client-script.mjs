@@ -7,9 +7,15 @@ const checkOnly = process.argv.includes("--check");
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourcePath = resolve(root, "packages/helper/client/j01n.js");
 const targetPath = resolve(root, "packages/helper/src/client-script.ts");
+const constantsPath = resolve(root, "apps/web/src/constants.ts");
 
+const constants = await readFile(constantsPath, "utf8");
+const protocol = constants.match(/^export const CLIENT_PROTOCOL = (\d+);$/m);
+if (!protocol) throw new Error("Cannot read CLIENT_PROTOCOL from apps/web/src/constants.ts");
 const source = await readFile(sourcePath, "utf8");
-const output = renderClientScript(source);
+const declaration = /^const CLIENT_PROTOCOL = \d+;$/gm;
+if ([...source.matchAll(declaration)].length !== 1) throw new Error("Expected one CLIENT_PROTOCOL declaration in packages/helper/client/j01n.js");
+const output = renderClientScript(source.replace(declaration, `const CLIENT_PROTOCOL = ${protocol[1]};`));
 
 if (checkOnly) {
   const current = await readFile(targetPath, "utf8").catch(() => "");

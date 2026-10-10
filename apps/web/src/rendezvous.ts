@@ -3,7 +3,7 @@ import { inviteInstructionsMarkdown, inviteInstructionsPage } from "./html";
 import { CLIENT_PROTOCOL, CLIENT_UPDATE_COMMANDS, DEFAULT_EXTEND_MS, MAX_INVITE_TTL_MS, MIN_INVITE_TTL_MS } from "./constants";
 import { tokenAuthThen, participantTokenAuthThen, requireJoined } from "./room/auth-context";
 import { RoomBoardController } from "./room/board-controller";
-import { RoomEvents } from "./room/events";
+import { messageActor, RoomEvents } from "./room/events";
 import type { RoomEventBus } from "./room/events";
 import { roomExport, roomInfo, roomStatus, roomTransitionInfo } from "./room/info";
 import { RoomInitController } from "./room/init-controller";
@@ -262,7 +262,7 @@ export class RendezvousSession implements DurableObject {
       const params = new URL(request.url).searchParams;
       const after = Number(params.get("after") ?? invite.participants[auth.participantId]?.last_read_seq ?? 0);
       const timeoutSeconds = Math.min(Math.max(Number(params.get("timeout")) || 50, 1), 50);
-      const pending = invite.messages.some((m) => m.seq > after && m.intent !== "key.exchange" && m.from !== auth.participantId && visibleTo(m, auth.participantId));
+      const pending = invite.messages.some((m) => m.seq > after && m.intent !== "key.exchange" && messageActor(m) !== auth.participantId && visibleTo(m, auth.participantId));
       if (pending) return json({ event: "message", pending: true, cursor: invite.nextSeq });
       const event = await this.events.wait(auth.participantId, timeoutSeconds * 1000);
       if (!event) return json({ timeout: true, cursor: invite.nextSeq });

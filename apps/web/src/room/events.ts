@@ -36,6 +36,11 @@ export interface RoomEventBus {
   notifyParticipant(participantId: string, action: string, participant?: Participant): void;
 }
 
+/** Who caused a message: its sender, or for a board.changed announcement the participant who changed the board. */
+export function messageActor(message: RoomMessage): string {
+  return message.intent === "board.changed" ? ((message.body as { updated_by?: string }).updated_by ?? message.from) : message.from;
+}
+
 export class RoomEvents implements RoomEventBus {
   private readonly subscribers = new Map<string, EventSubscriber>();
   private readonly waiters = new Set<Waiter>();
@@ -97,7 +102,7 @@ export class RoomEvents implements RoomEventBus {
   notifyMessage(message: RoomMessage, lastSeq: number): void {
     // A key announcement gives a waiter nothing to read; the next read picks the key up anyway.
     if (message.intent !== "key.exchange") {
-      this.wakeWaiters({ event: "message", message, last_seq: lastSeq }, message.from, (id) => visibleTo(message, id));
+      this.wakeWaiters({ event: "message", message, last_seq: lastSeq }, messageActor(message), (id) => visibleTo(message, id));
     }
     this.maybeSweep();
     for (const [id, subscriber] of this.subscribers) {

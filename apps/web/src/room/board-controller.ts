@@ -10,12 +10,29 @@ import {
   setBoardKeyData,
 } from "./board";
 import type { RoomEventBus } from "./events";
+import type { BoardChange } from "@j01n/sdk/types";
+import { MAX_MESSAGES } from "../constants";
 import type { BoardEntry } from "../types";
+import { createRoomMessage } from "./messages";
 import { dispatchWebhooks } from "./hooks";
 import type { RoomStorage } from "./storage";
 
 export class RoomBoardController {
   constructor(private readonly storage: RoomStorage, private readonly events: RoomEventBus) {}
+
+  /**
+   * Save the board and tell everyone: waiters get the change directly, and one `board.changed` system message to all
+   * puts it in the room history, so readers, late joiners, SSE and the web page see board progress too.
+   */
+  private async announce(invite: InviteState, board: InviteState["board"], updatedBy: string, changes: Record<string, BoardChange>): Promise<void> {
+    const seq = invite.nextSeq + 1;
+    const message = createRoomMessage({ intent: "board.changed", body: { text: boardChangeText(updatedBy, changes), updated_by: updatedBy, changes } }, "system", "all", seq);
+    const messages = [...invite.messages, message].slice(-MAX_MESSAGES);
+    await this.storage.patchAndSave(invite, { board, nextSeq: seq, messages });
+    this.events.notifyBoard(Object.keys(changes), updatedBy, changes);
+    this.events.notifyMessage(message, seq);
+    // Webhooks already receive the structured "board" event, so the announcement is not sent to them again.
+  }
 
   get(request: Request, invite: InviteState): Promise<Response> {
     return tokenAuthThen(invite, request, async () => getBoard(invite));
@@ -31,8 +48,7 @@ export class RoomBoardController {
       if (ifVersion instanceof Response) return ifVersion;
       const result = setBoardKeyData(invite, keyFromPath, auth.body, auth.participantId, ifVersion);
       if (result instanceof Response) return result;
-      await this.storage.patchAndSave(invite, { board: result.board });
-      this.events.notifyBoard(result.key, auth.participantId, boardChanges({ [result.key]: result.entry }));
+      await this.announce(invite, result.board, auth.participantId, boardChanges({ [result.key]: result.entry }));
       dispatchWebhooks({ ...invite, board: result.board }, "board", { keys: [result.key], updated_by: auth.participantId });
       return json({ ok: true, key: result.key, entry: result.entry });
     });
@@ -44,8 +60,7 @@ export class RoomBoardController {
       if (ifVersions instanceof Response) return ifVersions;
       const result = patchBoardData(invite, auth.body, auth.participantId, ifVersions);
       if (result instanceof Response) return result;
-      await this.storage.patchAndSave(invite, { board: result.board });
-      this.events.notifyBoard(Object.keys(result.updated), auth.participantId, boardChanges(result.updated));
+      await this.announce(invite, result.board, auth.participantId, boardChanges(result.updated));
       dispatchWebhooks({ ...invite, board: result.board }, "board", { keys: Object.keys(result.updated), updated_by: auth.participantId });
       return json({ ok: true, updated: result.updated, board: result.board });
     });
@@ -57,8 +72,7 @@ export class RoomBoardController {
       if (ifVersion instanceof Response) return ifVersion;
       const result = deleteBoardKeyData(invite, keyFromPath, auth.participantId, ifVersion);
       if (result instanceof Response) return result;
-      await this.storage.patchAndSave(invite, { board: result.board });
-      this.events.notifyBoard(result.key, auth.participantId, { [result.key]: null });
+      await this.announce(invite, result.board, auth.participantId, { [result.key]: null });
       dispatchWebhooks({ ...invite, board: result.board }, "board", { keys: [result.key], updated_by: auth.participantId });
       return json({ ok: true, deleted: result.key });
     });
@@ -73,8 +87,7 @@ export class RoomBoardController {
       }
       const result = deleteBoardKeysData(invite, rawKeys, auth.participantId);
       if (result instanceof Response) return result;
-      await this.storage.patchAndSave(invite, { board: result.board });
-      this.events.notifyBoard(result.keys, auth.participantId, Object.fromEntries(result.keys.map((key) => [key, null])));
+      await this.announce(invite, result.board, auth.participantId, Object.fromEntries(result.keys.map((key) => [key, null])));
       dispatchWebhooks({ ...invite, board: result.board }, "board", { keys: result.keys, updated_by: auth.participantId });
       return json({ ok: true, deleted: result.keys });
     });
@@ -99,6 +112,15 @@ function parseIfVersions(request: Request): Record<string, number> | Response {
       Object.values(parsed).every((v) => Number.isInteger(v) && (v as number) >= 0)) return parsed as Record<string, number>;
   } catch { /* fall through */ }
   return json({ error: "if_versions must be a JSON object of key -> non-negative integer version" }, 400);
+}
+
+/** One line per write, e.g. `pi-agent set status_T3 (v2): {"state":"review"}`; values shortened. */
+function boardChangeText(updatedBy: string, changes: Record<string, BoardChange>): string {
+  return Object.entries(changes).map(([key, change]) => {
+    if (!change) return `${updatedBy} deleted ${key}`;
+    const value = JSON.stringify(change.value) ?? "null";
+    return `${updatedBy} set ${key} (v${change.version}): ${value.length > 300 ? `${value.slice(0, 300)}…` : value}`;
+  }).join("; ");
 }
 
 function boardChanges(entries: Record<string, BoardEntry>): Record<string, { value: unknown; version: number }> {

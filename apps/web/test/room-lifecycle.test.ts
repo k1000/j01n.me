@@ -229,6 +229,24 @@ describe("room lifecycle", () => {
     expect(await cursor()).toBe(before);
   });
 
+  it("announces every board change to everyone as a board.changed message, without waking the writer", async () => {
+    await joinParticipant(fix, "agent-a");
+    await joinParticipant(fix, "agent-b");
+    await getRoomJson(fix, "/?view=all", "agent-b");
+    await roomRequest(fix, "/board/status_T3", {
+      method: "PUT",
+      headers: { ...participantAuthHeaders(fix, "agent-b"), "content-type": "application/json" },
+      body: JSON.stringify({ state: "review" }),
+    });
+
+    const read = await getRoomJson<{ messages: RoomMessage[] }>(fix, "/", "agent-a");
+    const announced = read.messages.find((m) => m.intent === "board.changed");
+    expect(announced).toMatchObject({ from: "system", to: "all", body: { text: 'agent-b set status_T3 (v1): {"state":"review"}', updated_by: "agent-b" } });
+
+    const writer = await roomRequest(fix, "/wait?timeout=1", { headers: participantAuthHeaders(fix, "agent-b") }).then((r) => r.json());
+    expect(writer).toMatchObject({ timeout: true });
+  });
+
   describe("wait (block until the next visible event)", () => {
     const wait = (participantId: string, query: string) =>
       roomRequest(fix, `/wait?${query}`, { headers: participantAuthHeaders(fix, participantId) }).then((r) => r.json() as Promise<Record<string, unknown>>);

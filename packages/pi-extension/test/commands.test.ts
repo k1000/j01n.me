@@ -2,7 +2,8 @@ import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SDK_CLIENT_PROTOCOL } from "@j01n/sdk";
+import { SDK_CLIENT_PROTOCOL, type RoomClient } from "@j01n/sdk";
+import { runRoomCommand } from "@j01n/sdk/room-commands";
 
 const ROOM = "https://j01n.me/r/room-1";
 const calls: Array<{ method: string; url: string; auth: string | null; body?: string }> = [];
@@ -33,6 +34,15 @@ describe("pi-extension sessions", () => {
     vi.unstubAllGlobals();
     vi.resetModules();
     process.chdir(originalCwd);
+  });
+
+  it("keeps an empty Pi wait timeout unset while preserving numeric zero", async () => {
+    const wait = vi.fn().mockResolvedValue({ timeout: true });
+    const client = { wait } as unknown as RoomClient;
+    await runRoomCommand(client, "wait", [""]);
+    expect(wait).toHaveBeenLastCalledWith({ timeoutSeconds: undefined });
+    await runRoomCommand(client, "wait", ["0"]);
+    expect(wait).toHaveBeenLastCalledWith({ timeoutSeconds: 0 });
   });
 
   it("returns the kickoff value and the whole board on join (owner decision 2026-10-10)", async () => {

@@ -64,7 +64,7 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
       else if (rest[i] === "--no-system") filter.system = false;
       else timeout = rest[i];
     }
-    const seconds = timeout === undefined ? options.waitDefault : options.parseWaitFallback ? Number(timeout) || options.waitDefault : Number(timeout);
+    const seconds = timeout === undefined ? options.waitDefault : options.parseWaitFallback ? Number(timeout) || options.waitDefault : timeout ? Number(timeout) : undefined;
     return waitRoom(client, seconds, filter, prefix);
   }
   if (cmd === "board") return client.board();

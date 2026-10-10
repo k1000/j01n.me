@@ -743,7 +743,7 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
       else if (rest[i] === "--no-system") filter.system = false;
       else timeout = rest[i];
     }
-    const seconds = timeout === void 0 ? options.waitDefault : options.parseWaitFallback ? Number(timeout) || options.waitDefault : Number(timeout);
+    const seconds = timeout === void 0 ? options.waitDefault : options.parseWaitFallback ? Number(timeout) || options.waitDefault : timeout ? Number(timeout) : void 0;
     return waitRoom(client, seconds, filter, prefix);
   }
   if (cmd2 === "board") return client.board();

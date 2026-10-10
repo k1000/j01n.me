@@ -484,7 +484,7 @@ async function handleInviteHerdr(parsed: ParsedArgs): Promise<string> {
   return JSON.stringify({ ok: invited.every((item) => item.queued), invited }, null, 2);
 }
 
-const FRIENDLY_NAMES = ["Maya", "Ravi", "Lena", "Omar", "Ines", "Kenji", "Nora", "Amira", "Sofia", "Tariq", "Asha", "Leo", "Zara", "Yuki", "Nia", "Arjun"];
+export const FRIENDLY_NAMES = ["Maya", "Ravi", "Lena", "Omar", "Ines", "Kenji", "Nora", "Amira", "Sofia", "Tariq", "Asha", "Leo", "Zara", "Yuki", "Nia", "Arjun"];
 
 export async function prepareRoomPeerSpawn(options: { task: string; role?: string; name?: string; roomId?: string }) {
   const task = options.task.trim();

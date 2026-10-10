@@ -4,7 +4,7 @@ import { inviteAgent } from "@j01n/sdk";
 import type { AgentIdentity, RoomClient } from "@j01n/sdk";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { activeRoomClients, prepareRoomPeerSpawn } from "./commands";
+import { activeRoomClients, FRIENDLY_NAMES, prepareRoomPeerSpawn } from "./commands";
 import { listHerdrRepoAgents, promptHerdrAgent, type HerdrRepoAgent } from "./herdr";
 
 function gitCommonDir(cwd: string): string | undefined {
@@ -94,12 +94,14 @@ export async function inviteRepoAgents(client: Client, sender: AgentIdentity, li
       const registered = await waitFor(async () => (await fetch(addressUrl)).ok, 180_000);
       if (!registered) return { ...item, status: "not_registered" };
       await inviteAgent(sender, address, link);
-      let friendly = safeName(peer.name || peer.agent);
+      // Unnamed agents (Herdr reports only the kind, e.g. "claude") get a human name, like spawned peers.
+      const human = peer.name ? undefined : FRIENDLY_NAMES.find((name) => !names.has(name.toLowerCase()));
+      let friendly = human ? human.toLowerCase() : safeName(peer.name || peer.agent);
       if (names.has(friendly)) friendly = `${friendly.slice(0, 19)}${index + 1}`;
       names.add(friendly);
       // A registration prompt may still be in progress. Do not type over a working agent.
       if (!await waitFor(() => listHerdrRepoAgents().find((p) => p.pane_id === peer.pane_id)?.agent_status !== "working", 60_000)) return { ...item, status: "busy" };
-      const listen = `${pi ? "/j01n" : "node .j01n/j01n.js"} listen ${address} --as ${friendly} --display-name ${friendly} --role builder`;
+      const listen = `${pi ? "/j01n" : "node .j01n/j01n.js"} listen ${address} --as ${friendly} --display-name ${human ?? friendly} --role builder`;
       promptHerdrAgent(peer.pane_id, `A sealed invitation from ${sender.name} is waiting for ${address}. Run ${listen} to join. Do not paste room credentials into Herdr.`);
       return { ...item, status: "invited" };
     } catch {

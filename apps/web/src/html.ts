@@ -406,6 +406,7 @@ function roomPageStyles(): string {
   .room-meta dd { margin: 0; min-width: 0; }
   /* Same code box as the home page: dashed frame, small copy button in the corner. */
   .snippet { position: relative; min-width: 0; }
+  .invite-note { margin: 0.4rem 0 0; font-size: 0.85rem; opacity: 0.72; }
   .snippet pre { margin: 0; background: Canvas; border: 1px dashed color-mix(in srgb, CanvasText 28%, transparent); padding: 16px; padding-right: 76px; overflow-x: auto; font-size: 0.95rem; color: color-mix(in srgb, CanvasText 88%, Canvas 12%); }
   .copy { position: absolute; top: 8px; right: 8px; font-family: inherit; font-weight: 700; font-size: 0.75rem; line-height: 1; background: var(--highlight); color: #000; border: 0; padding: 8px 10px; cursor: pointer; }
   .room-board { margin: 1.5rem 0; padding: 1.25rem; background: var(--highlight); color: #000; }
@@ -688,7 +689,10 @@ function roomPageScript(roomId: string): string {
     const eventUrl = \`/r/\${encodeURIComponent(rid)}/events?s=\${encodeURIComponent(authToken())}&participant_id=\${encodeURIComponent(participantId)}&include_self=true\`;
     updateConnectionStatus("connecting");
     roomEvents = new EventSource(eventUrl);
-    roomEvents.addEventListener("open", () => updateConnectionStatus("connected"));
+    roomEvents.addEventListener("open", () => {
+      updateConnectionStatus("connected");
+      refreshRoom().catch(showRoomEventError);
+    });
     roomEvents.addEventListener("changed", () => {
       unreadCount++;
       updateTitle();
@@ -719,6 +723,17 @@ function roomPageScript(roomId: string): string {
     const messages = data.messages || [];
     const phase = data.phase || "";
     const expiresAt = data.expires_at || invite.expires_at || "";
+    const inviteLinkText = "https://j01n.me/room/" + rid + "#" + joinSecret;
+    const invitationJson = JSON.stringify({
+      access: "https://j01n.me/r/" + rid,
+      join_secret: joinSecret,
+      invite_link: inviteLinkText,
+      room_name: room.name,
+      purpose: room.purpose,
+      host_id: room.host_id,
+      expires_at: expiresAt,
+      how_to_join: "mkdir -p .j01n && curl -fsSL https://j01n.me/client/j01n.js -o .j01n/j01n.js && node .j01n/j01n.js join " + inviteLinkText + " <your_name>",
+    }, null, 2);
     if (isExpiredTimestamp(expiresAt)) {
       removeInvite(rid);
       root.innerHTML = \`<p data-room-error>Room expired. <a href="/">← back</a></p>\`;
@@ -741,22 +756,28 @@ function roomPageScript(roomId: string): string {
     const participantsHtml = pList.length === 0
       ? \`<p class="board-empty">No participants yet.</p>\`
       : pList.map(p => \`<div class="participant-card"><span class="participant-name">\${esc(p.id)}</span><span class="participant-state">[\${esc(p.state)}]</span><span class="participant-status">\${esc(p.status)}</span>\${p.id === room.host_id ? \` <span class="participant-state">host</span>\` : isHost && !p.left_at ? \` <button class="button button-small" type="button" data-make-host="\${escAttr(p.id)}" title="Hand the host role to \${escAttr(p.id)}">Make host</button>\` : ""}</div>\`).join("");
-    const recipientOptions = [\`<option value="all">all</option>\`, ...pList.filter(p => !p.left_at).map(p => \`<option value="\${escAttr(p.id)}">\${esc(p.id)}</option>\`)].join("");
+    const recipientOptions = [\`<option value="all">all</option>\`, ...pList.filter(p => !p.left_at && p.id !== participantId).map(p => \`<option value="\${escAttr(p.id)}">\${esc(p.id)}</option>\`)].join("");
 
     const messagesHtml = messages.length === 0
       ? \`<p class="board-empty">No messages yet.</p>\`
       : (await Promise.all(messages.map((m) => renderMessage(m, messages)))).join("");
     const extendControls = isHost ? \` <button class="button button-small" type="button" data-extend-room title="Extend invite by 30 minutes">Extend 30 min</button><p class="room-ttl-status" data-room-ttl-status aria-live="polite"></p>\` : "";
 
-    root.innerHTML = \`\n<h1>\${esc(room.name || "Room")} <span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></h1>\n<dl class="room-meta">\n<dt>room URL</dt><dd><div class="snippet"><pre>\${esc("https://j01n.me/r/" + rid)}</pre><button class="copy" type="button" data-copy-room-url title="Copy room URL">copy</button></div></dd>\n<dt>purpose</dt><dd>\${esc(room.purpose || "—")}</dd>\n<dt>host</dt><dd>\${esc(room.host_id || "—")}</dd>\n<dt>phase</dt><dd>\${esc(phase || "—")}</dd>\n<dt>expires</dt><dd>\${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}\${extendControls}</dd>\n</dl>\n<section class="room-board"><h3>Board</h3><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>\${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>\${isKanban ? '<form class="kanban-add-task" data-kanban-add-task><label>Title<input name="task_title" placeholder="Task title" /></label><label>Column<select name="task_column"><option value="todo">To Do</option><option value="doing" selected>Doing</option><option value="review">Review</option><option value="done">Done</option></select></label><button class="button" type="submit">Add task</button></form>' : ""}\${boardHtml}</section>\n<section class="room-participants"><h3>Participants</h3>\${participantsHtml}</section>\n<section class="room-messages"><h3>Messages</h3>\${messagesHtml}<form class="message-composer" data-message-form><label>to<select name="to">\${recipientOptions}</select></label><label>message<textarea name="message" placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><button class="button" type="submit">Send</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>\`;
+    root.innerHTML = \`\n<h1>\${esc(room.name || "Room")} <span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></h1>\n<dl class="room-meta">\n<dt>room URL</dt><dd><div class="snippet"><pre>\${esc("https://j01n.me/r/" + rid)}</pre><button class="copy" type="button" data-copy-room-url title="Copy room URL">copy</button></div></dd>\n<dt>purpose</dt><dd>\${esc(room.purpose || "—")}</dd>\n<dt>host</dt><dd>\${esc(room.host_id || "—")}</dd>\n<dt>phase</dt><dd>\${esc(phase || "—")}</dd>\n<dt>expires</dt><dd>\${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}\${extendControls}</dd>\n\${isHost ? \`<dt>invite</dt><dd><div class="snippet"><pre>\${esc(invitationJson)}</pre><button class="copy" type="button" title="Copy the invitation">copy</button></div><p class="invite-note">Save this safely and use it to invite bots &amp; humans.</p></dd>\n\` : ""}</dl>\n<section class="room-board"><h3>Board</h3><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>\${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>\${isKanban ? '<form class="kanban-add-task" data-kanban-add-task><label>Title<input name="task_title" placeholder="Task title" /></label><label>Column<select name="task_column"><option value="todo">To Do</option><option value="doing" selected>Doing</option><option value="review">Review</option><option value="done">Done</option></select></label><button class="button" type="submit">Add task</button></form>' : ""}\${boardHtml}</section>\n<section class="room-participants"><h3>Participants</h3>\${participantsHtml}</section>\n<section class="room-messages"><h3>Messages</h3>\${messagesHtml}<form class="message-composer" data-message-form><label>to<select name="to">\${recipientOptions}</select></label><label>message<textarea name="message" placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><button class="button" type="submit">Send</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>\`;
     updateConnectionStatus(connectionState);
-    root.querySelector("[data-copy-room-url]")?.addEventListener("click", (event) => {
-      const button = event.currentTarget;
-      navigator.clipboard.writeText("https://j01n.me/r/" + rid).then(() => {
+    root.querySelectorAll(".snippet .copy").forEach((button) => button.addEventListener("click", () => {
+      const pre = button.previousElementSibling;
+      navigator.clipboard.writeText(pre.innerText).then(() => {
         button.textContent = "copied";
         setTimeout(() => (button.textContent = "copy"), 1400);
-      }, () => {});
-    });
+      }, () => {
+        const range = document.createRange();
+        range.selectNodeContents(pre);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        button.textContent = "selected";
+      });
+    }));
     wireExtendInvite();
     wireMakeHost();
     wireBoardEditor(board);

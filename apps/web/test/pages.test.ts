@@ -9,7 +9,19 @@ import { securityPage } from "../src/security";
 import { skillExampleMarkdown, skillMarkdown } from "@j01n/skill";
 import { skillExamplePage, skillPage } from "../src/skill-pages";
 
+const roomPageScript = await (await app.request("/client/room-page.js")).text();
+
 describe("web UI scripts", () => {
+  it("loads the room script from the Worker with the room id in a data attribute", async () => {
+    const html = roomPageHtml("room-1");
+    const response = await app.request("/client/room-page.js");
+    expect(html).toContain('<script src="/client/room-page.js" data-room-id="room-1"></script>');
+    expect(html).not.toContain("  async function renderMessage(");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/javascript");
+    expect(roomPageScript).toContain("const rid = document.currentScript.dataset.roomId;");
+  });
+
   it("defines the saved-room helpers the home and room pages call", () => {
     for (const html of [homePage(), roomPageHtml("room-1")]) {
       for (const fn of ["persistInvite", "loadInvite", "removeInvite", "renderSavedRooms"]) {
@@ -20,7 +32,7 @@ describe("web UI scripts", () => {
 
   it("registers WebMCP tools only when the browser supports them", () => {
     const home = homePage();
-    const room = roomPageHtml("room-1");
+    const room = roomPageScript;
     expect(home).toContain('typeof mc.registerTool === "function"');
     expect(room).toContain('typeof mc.registerTool !== "function"');
     for (const name of ["create_room", "join_room"]) expect(home).toContain(`name: "${name}"`);
@@ -36,9 +48,9 @@ describe("web UI scripts", () => {
     expect(room).toContain('data-arcade-open aria-controls="room-arcade" aria-expanded="false" hidden');
     expect(room).toContain("data-arcade-close");
     expect(room).toContain("window.j01nArcade = {");
-    expect(room).toContain("window.j01nArcade?.update(latest, participantId, extractValue);");
-    expect(room).toContain("window.j01nArcade?.setLive(state);");
-    expect(room.indexOf("window.j01nArcade = {")).toBeLessThan(room.indexOf("window.j01nArcade?.update("));
+    expect(roomPageScript).toContain("window.j01nArcade?.update(latest, participantId, extractValue);");
+    expect(roomPageScript).toContain("window.j01nArcade?.setLive(state);");
+    expect(room.indexOf("window.j01nArcade = {")).toBeLessThan(room.indexOf('<script src="/client/room-page.js"'));
   });
 
   it("carries the WebMCP origin trial token on the home and room pages", () => {
@@ -155,7 +167,7 @@ async function roomPageDecryptors(joinSecret: string, latest: unknown = null) {
     privateKey: await crypto.subtle.importKey("jwk", privateJwk, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]),
     publicKey: await crypto.subtle.importKey("jwk", publicJwk, { name: "ECDH", namedCurve: "P-256" }, true, []),
   };
-  const html = roomPageHtml("room-1");
+  const html = roomPageScript;
   const start = html.indexOf("  async function renderMessage(");
   const end = html.indexOf("  function isExpiredTimestamp(", start);
   expect(start).toBeGreaterThan(0);
@@ -201,7 +213,7 @@ describe("room page", () => {
   });
 
   it("shows room details, the private invitation input, and host controls", () => {
-    const html = roomPageHtml("room-1");
+    const html = roomPageScript;
 
     expect(html).toContain('data-connection-status');
     expect(html).toContain('id="room-invitation" readonly');
@@ -221,7 +233,7 @@ describe("room page", () => {
   });
 
   it("opens file reservations for the room page and refreshes them on board changes", async () => {
-    const html = roomPageHtml("room-1");
+    const html = roomPageScript;
     const start = html.indexOf("  async function renderReservations(");
     const end = html.indexOf("  async function renderRoom(", start);
     expect(start).toBeGreaterThan(0);
@@ -247,13 +259,13 @@ describe("room page", () => {
   });
 
   it("renders each participant's announced model as provider/model", () => {
-    const html = roomPageHtml("room-1");
+    const html = roomPageScript;
     expect(html).toContain('const running = [p.provider, p.model].filter(Boolean).join("/")');
     expect(html).toContain('<span class="participant-model">');
   });
 
   it("keeps the recipient list current and excludes the sender", () => {
-    const html = roomPageHtml("room-1");
+    const html = roomPageScript;
 
     expect(html).toContain('roomEvents.addEventListener("participant", (event) => {\n      recordRoomActivity(event, "participant");\n      refreshRoom().catch(showRoomEventError);');
     expect(html).toContain('roomEvents.addEventListener("open", () => {');
@@ -262,7 +274,7 @@ describe("room page", () => {
   });
 
   it("joins/read rooms without using host-only export", () => {
-    const html = roomPageHtml("room-1");
+    const html = roomPageScript;
 
     expect(html).toContain("/status");
     expect(html).toContain("/board");

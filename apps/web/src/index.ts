@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import { clientPage } from "./client-assets";
 import { claudeCodeMarkdown, cliMarkdown, mcpMarkdown, orchestrationMarkdown, piMarkdown, sdkMarkdown, securityMarkdown } from "./markdown-assets";
 import { clientScript } from "@j01n/helper/client-script";
+import roomPageJs from "./room-page.js?raw";
 import { localCryptoPy, localCryptoSh, localCryptoTs } from "@j01n/helper/local-crypto-assets";
 import { detectFormat, respondNegotiated } from "./format";
 import { homeMarkdown, homePage, roomPageHtml, renderRoomAsMarkdown, roomPageMarkdownNoToken } from "./html";
@@ -117,6 +118,7 @@ app.get("/client/mcp.json", (c) =>
 
 const clientFiles = [
   { path: "/client/j01n.js", body: clientScript, type: "application/javascript; charset=utf-8", filename: "j01n.js" },
+  { path: "/client/room-page.js", body: roomPageJs, type: "application/javascript; charset=utf-8", filename: "room-page.js" },
   { path: "/client/crypto.ts", body: localCryptoTs, type: "text/plain; charset=utf-8", filename: "j01n-crypto.ts" },
   { path: "/client/crypto.py", body: localCryptoPy, type: "text/x-python; charset=utf-8", filename: "j01n_crypto.py" },
   { path: "/client/crypto.sh", body: localCryptoSh, type: "text/x-shellscript; charset=utf-8", filename: "j01n-crypto.sh" },

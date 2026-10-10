@@ -4,6 +4,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-05-23",
   "compatibility_flags": ["nodejs_compat"],
+  "rules": [{ "type": "Text", "globs": ["**/room-page.js?raw"], "fallthrough": true }],
   "workers_dev": true,
   "routes": [
     {

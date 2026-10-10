@@ -918,16 +918,49 @@ async function main() {
     let seq = Number(rest[0] || 0);
     if (!Number.isFinite(seq)) seq = 0;
     const print = async (event) => {
-      const messages = (await read()).filter((m) => Number(m.seq || 0) > seq);
+      const messages = (await client.read({ all: true, includeSelf: true })).filter((m) => Number(m.seq || 0) > seq);
       seq = Math.max(seq, ...messages.map((m) => Number(m.seq || 0)));
       if (messages.length) output({ event, messages });
     };
     await print("initial");
+    const participantToken = state.participantToken;
+    if (!participantToken) throw Error("participant token missing; run join first");
+    const eventsUrl = `${roomUrl.replace(/\/$/, "")}/events?s=${encodeURIComponent(participantToken)}&include_self=true`;
+    const response = await fetch(eventsUrl, { headers: { accept: "text/event-stream" } });
+    if (!response.ok || !response.body) throw Error(`watch failed: ${response.status} ${await response.text()}`);
     console.error(`watching ${roomUrl} as ${me}...`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
     for (; ; ) {
-      const event = await client.wait({ timeoutSeconds: 50 });
-      if (!event.timeout) await print("message");
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let end;
+      while ((end = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, end);
+        buffer = buffer.slice(end + 2);
+        let event = "message";
+        const data = [];
+        for (const line of frame.split(/\r?\n/)) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+        }
+        if (event === "ping" || event === "ready") continue;
+        if (event === "message") await print("message");
+        else if (event === "changed") await print("message");
+        else {
+          const text = data.join("\n");
+          let parsed = text || void 0;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+          }
+          output({ event, data: parsed });
+        }
+      }
     }
+    return;
   }
   if (cmd === "doctor") {
     const participants = await client.participants().catch(() => ({ participants: [] }));

@@ -26,7 +26,7 @@ export class RoomBoardController {
    */
   private async announce(invite: InviteState, board: InviteState["board"], updatedBy: string, changes: Record<string, BoardChange>): Promise<void> {
     await announceSystemMessage(this.storage, this.events, invite, "board.changed",
-      { text: boardChangeText(updatedBy, changes, invite.board), updated_by: updatedBy, changes },
+      { text: boardChangeText(updatedBy, changes, invite.board, board), updated_by: updatedBy, changes },
       { board }, { changes, updatedBy });
   }
 
@@ -107,13 +107,40 @@ function parseIfVersions(request: Request): Record<string, number> | Response {
 }
 
 /** One line per write, e.g. `pi-agent set status_T3 (v2): {"state":"review"}`; values shortened. */
-function boardChangeText(updatedBy: string, changes: Record<string, BoardChange>, before: InviteState["board"]): string {
-  return Object.entries(changes).map(([key, change]) => {
+function taskValue(entry: BoardEntry | undefined): Record<string, unknown> | undefined {
+  const value = entry?.value;
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function boardChangeText(updatedBy: string, changes: Record<string, BoardChange>, before: InviteState["board"], after: InviteState["board"]): string {
+  const lines = Object.entries(changes).map(([key, change]) => {
     if (!change) return `${updatedBy} deleted ${key}`;
     if (key === RESERVATIONS_KEY) return reservationChangeText(updatedBy, before[key], change.value);
+    const task = key.startsWith("task.") ? taskValue(after[key]) : undefined;
+    const prior = taskValue(before[key]);
+    if (task && task.status !== prior?.status) {
+      const id = key.slice(5);
+      if (task.status === "claimed") return `${String(task.owner ?? updatedBy)} claimed ${id}`;
+      if (task.status === "done") return `${id} done: ${String(task.summary ?? "completed").slice(0, 300)}`;
+      if (task.status === "blocked") return `${id} blocked: ${String(task.blocked_reason ?? "no reason given").slice(0, 300)}`;
+      if (task.status === "open") return `${id} is open`;
+    }
     const value = JSON.stringify(change.value) ?? "null";
     return `${updatedBy} set ${key} (v${change.version}): ${value.length > 300 ? `${value.slice(0, 300)}…` : value}`;
-  }).join("; ");
+  });
+  const done = Object.keys(changes).filter((key) => key.startsWith("task.") && taskValue(before[key])?.status !== "done" && taskValue(after[key])?.status === "done").map((key) => key.slice(5));
+  if (done.length) {
+    for (const [key, entry] of Object.entries(after)) {
+      if (!key.startsWith("task.")) continue;
+      const task = taskValue(entry);
+      const deps = task?.depends_on;
+      if (task?.status === "done" || !Array.isArray(deps) || !deps.some((id) => done.includes(id)) ||
+        !deps.every((id) => typeof id === "string" && taskValue(after[`task.${id}`])?.status === "done") ||
+        deps.every((id) => typeof id === "string" && taskValue(before[`task.${id}`])?.status === "done")) continue;
+      lines.push(`${key.slice(5)} is now unblocked`);
+    }
+  }
+  return lines.join("; ");
 }
 
 function boardChanges(entries: Record<string, BoardEntry>): Record<string, { value: unknown; version: number }> {

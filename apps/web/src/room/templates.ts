@@ -19,6 +19,34 @@ function wrapTemplateBoard(board: Record<string, unknown>): Record<string, unkno
   return wrapped;
 }
 
+export interface SprintTask {
+  id: string;
+  title: string;
+  files: string[];
+  depends_on?: string[];
+  worktree?: string;
+}
+
+const SPRINT_KICKOFF = "Sprint rules: use tasks to see dependencies; claim <id> before editing (claim reserves task files), then done <id> --summary <text> --commit <sha> --tests <result> when finished. Work only in your own branch/worktree; never push or merge. Run pnpm check:contract before reporting and include its result. Ask the host when blocked. Generated client-script.ts, markdown-assets.ts and skill.ts belong to integration, not task files.";
+
+function sprintBoard(tasks: SprintTask[]): Record<string, unknown> {
+  if (!Array.isArray(tasks)) throw new Error("sprint tasks must be an array");
+  const ids = new Set<string>();
+  for (const task of tasks) {
+    if (!task || typeof task.id !== "string" || !/^[A-Za-z0-9_-]+$/.test(task.id) || task.id.length > 75 || ids.has(task.id) ||
+      typeof task.title !== "string" || !task.title.trim() || !Array.isArray(task.files) || !task.files.every((file) => typeof file === "string" && file.length > 0) ||
+      (task.depends_on !== undefined && (!Array.isArray(task.depends_on) || !task.depends_on.every((id) => typeof id === "string"))) ||
+      (task.worktree !== undefined && typeof task.worktree !== "string")) throw new Error("invalid sprint task");
+    if (task.files.some((file) => /(?:^|\/)(?:client-script\.ts|markdown-assets\.ts|skill\.ts)$/.test(file))) throw new Error("generated files cannot be sprint task files");
+    ids.add(task.id);
+  }
+  if (tasks.some((task) => task.depends_on?.some((id) => !ids.has(id) || id === task.id))) throw new Error("sprint task has unknown or self dependency");
+  return Object.fromEntries(tasks.map((task) => [`task.${task.id}`, {
+    title: task.title, files: task.files, depends_on: task.depends_on ?? [],
+    ...(task.worktree ? { worktree: task.worktree } : {}), status: "open",
+  }]));
+}
+
 export interface RoomTemplate {
   room_name: string;
   board: Record<string, unknown>;
@@ -97,6 +125,13 @@ export const ROOM_TEMPLATES: Record<string, RoomTemplate> = {
     },
   },
 
+  sprint: {
+    room_name: "Agent sprint",
+    board: { kickoff: SPRINT_KICKOFF },
+    board_acls: { kickoff: "host_only" },
+    states: { active: { transitions: { close: "closed" } } },
+  },
+
   /**
    * Minimal room — one active state. No board, no ACLs.
    * Default when no template is specified.
@@ -127,6 +162,7 @@ export function applyTemplate(
   templateName: string | undefined,
   body: {
     room_name?: string;
+    tasks?: SprintTask[];
     board?: Record<string, unknown>;
     board_acls?: Record<string, unknown>;
     states?: Record<string, unknown>;
@@ -145,7 +181,7 @@ export function applyTemplate(
 
   const merged = {
     room_name: body.room_name ?? template.room_name,
-    board: { ...wrapTemplateBoard(template.board), ...(body.board ?? {}) },
+    board: { ...wrapTemplateBoard(template.board), ...(templateName === "sprint" ? wrapTemplateBoard(sprintBoard(body.tasks ?? [])) : {}), ...(body.board ?? {}) },
     board_acls: { ...template.board_acls, ...(body.board_acls ?? {}) } as BoardAcls,
     states: { ...template.states, ...(body.states ?? {}) } as Record<string, RoomStateConfig>,
   };

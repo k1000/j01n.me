@@ -31,7 +31,7 @@ describe("pi-extension sessions", () => {
     process.chdir(originalCwd);
   });
 
-  it("returns the kickoff value on join without exposing other board keys", async () => {
+  it("returns the kickoff value and the whole board on join (owner decision 2026-10-10)", async () => {
     boardResponse = Response.json({ board: {
       kickoff: { value: { task: "Review proposals" }, updated_by: "host", updated_at: "2026-01-01" },
       private_notes: { value: "not part of kickoff", updated_by: "host", updated_at: "2026-01-01" },
@@ -39,7 +39,8 @@ describe("pi-extension sessions", () => {
     const { runj01n } = await import("../commands");
     const result = JSON.parse(await runj01n(["join", ROOM, "secret", "pi-agent"]));
     expect(result.kickoff).toEqual({ task: "Review proposals" });
-    expect(JSON.stringify(result)).not.toContain("private_notes");
+    // A newly invited agent receives all board content, not only the kickoff.
+    expect(result.board.private_notes.value).toBe("not part of kickoff");
     expect(calls).toContainEqual(expect.objectContaining({ method: "GET", url: `${ROOM}/board`, auth: "Bearer tok-1" }));
   });
 

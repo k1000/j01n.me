@@ -795,9 +795,12 @@ const tools: Record<string, ToolDef> = {
       await rememberSessionRoom(env, ctx.sessionId, roomUrl, participantId);
 
       // Start oriented: include the board's kickoff (if the board read fails, the join still succeeded).
-      const kickoff = await doFetch(env, roomUrl, "/board", secret, { participantId })
-        .then((b) => ({ kickoff: (b as { board?: Record<string, { value?: unknown }> }).board?.kickoff?.value ?? null }))
-        .catch(() => ({ kickoff: null, kickoff_error: "could not load the board kickoff; call read_board to retry" }));
+      const board = await doFetch(env, roomUrl, "/board", secret, { participantId })
+        .then((b) => (b as { board?: Record<string, { value?: unknown }> }).board ?? {})
+        .catch(() => null);
+      const kickoff = board
+        ? { kickoff: board.kickoff?.value ?? null }
+        : { kickoff: null, kickoff_error: "could not load the board; call read_board to retry" };
       if (kickoff.kickoff === null) {
         // Otherwise the sealed kickoff message (readable with the join secret this call was given).
         const history = await doFetch(env, roomUrl, "/?view=all", secret, { participantId }).catch(() => ({ messages: [] })) as { messages?: RoomMessage[] };
@@ -814,6 +817,8 @@ const tools: Record<string, ToolDef> = {
 
       return {
         ...kickoff,
+        // The whole board: every key with value, version, updated_by and updated_at.
+        board,
         questions,
         ok: true,
         room_id: roomUrl.split("/").pop()!,

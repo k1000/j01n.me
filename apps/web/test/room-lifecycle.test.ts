@@ -181,8 +181,8 @@ describe("room lifecycle", () => {
 
     expect((await status("helper/0")).headers.get("x-j01n-client-update")).toContain("curl -fsSL https://j01n.me/client/j01n.js");
     expect((await status("sdk/0")).headers.get("x-j01n-client-update")).toContain("pi install https://gitlab.com/k1000/j01n.me");
-    expect((await status("helper/3")).headers.get("x-j01n-client-update")).toBeNull();
-    expect((await status("helper/2")).headers.get("x-j01n-client-update")).toContain("older than 3");
+    expect((await status("helper/4")).headers.get("x-j01n-client-update")).toBeNull();
+    expect((await status("helper/3")).headers.get("x-j01n-client-update")).toContain("older than 4");
     expect((await status()).headers.get("x-j01n-client-update")).toBeNull();
   });
 
@@ -245,6 +245,17 @@ describe("room lifecycle", () => {
 
     const writer = await roomRequest(fix, "/wait?timeout=1", { headers: participantAuthHeaders(fix, "agent-b") }).then((r) => r.json());
     expect(writer).toMatchObject({ timeout: true });
+  });
+
+  it("gives a newly joined participant the whole board in the join response", async () => {
+    await joinParticipant(fix, "agent-a");
+    await roomRequest(fix, "/board/plan", {
+      method: "PUT",
+      headers: { ...participantAuthHeaders(fix, "agent-a"), "content-type": "application/json" },
+      body: JSON.stringify({ steps: ["review", "merge"] }),
+    });
+    const joined = await joinParticipant(fix, "agent-b").then((r) => r.json() as Promise<{ board: Record<string, { value: unknown; version: number; updated_by: string }> }>);
+    expect(joined.board.plan).toMatchObject({ value: { steps: ["review", "merge"] }, version: 1, updated_by: "agent-a" });
   });
 
   describe("wait (block until the next visible event)", () => {

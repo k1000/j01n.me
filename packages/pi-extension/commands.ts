@@ -185,8 +185,10 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
   rememberRoom(invite, parsed.me);
   let kickoff: unknown = null;
   let kickoffError: string | undefined;
+  let board: Record<string, unknown> | null = null;
   try {
-    kickoff = (await client.board()).board.kickoff?.value ?? null;
+    board = (await client.board()).board;
+    kickoff = (board.kickoff as { value?: unknown } | undefined)?.value ?? null;
   } catch {
     kickoffError = "Could not load kickoff; use /j01n board to retry";
   }
@@ -203,6 +205,8 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
     cursor: client.cursor,
     kickoff,
     ...(kickoffError ? { kickoff_error: kickoffError } : {}),
+    // The whole board: every key with value, version, updated_by and updated_at.
+    board,
     // Questions waiting for your reply: answer with /j01n send <from> <text> --reply-to <id>
     questions: await client.openQuestions().catch(() => []),
     ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}),

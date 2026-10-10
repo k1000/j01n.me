@@ -556,6 +556,7 @@ describe("hosted MCP handler", () => {
 
     expect(result.ok).toBe(true);
     expect(result.kickoff).toEqual({ goal: "ship it" });
+    expect((result as unknown as { board: Record<string, { value: unknown }> }).board.kickoff.value).toEqual({ goal: "ship it" });
     expect(result.questions).toEqual([{ id: "q1", seq: 4, from: "a", body: { text: "ready?" }, due_at: "2026-10-10T00:30:00.000Z", overdue: false }]);
     expect(announcedWith).toEqual(["Bearer tok-b"]);
   });

@@ -129,7 +129,7 @@ async function saveState(state) { await fs.writeFile(keyFile, JSON.stringify({ p
 function tokenHeaders(state) { return state.participantToken ? { authorization: 'Bearer ' + state.participantToken } : headers; }
 function requireParticipantToken(state) { if (!state.participantToken) die('participant token missing; run join first'); return state.participantToken; }
 // Room-feature version this helper speaks; bump with CLIENT_PROTOCOL in apps/web/src/constants.ts.
-const CLIENT_PROTOCOL = 3;
+const CLIENT_PROTOCOL = 4;
 let updateNoticeShown = false;
 async function requestJson(url, init = {}) {
   const r = await fetch(url, { ...init, headers: { ...(init.headers || {}), 'x-j01n-client': 'helper/' + CLIENT_PROTOCOL } });
@@ -361,7 +361,8 @@ const COMMANDS = {
     if (pending.length) await learnPeersFromParticipants(state);
     const opened = await decryptedMessages(state, pending.map((a) => a.message));
     const questions = pending.map((a, i) => ({ id: a.ask_id, seq: a.seq, from: a.from, body: opened[i].body, due_at: a.due_at, overdue: a.overdue, ...(opened[i].decrypt_error ? { decrypt_error: opened[i].decrypt_error } : {}) }));
-    console.log(JSON.stringify({ ...profile, ...kickoff, questions }, null, 2));
+    // The whole board: every key with value, version, updated_by and updated_at.
+    console.log(JSON.stringify({ ...profile, ...kickoff, board: board.ok ? board.body.board ?? {} : null, questions }, null, 2));
   },
   async send(state, { roomUrl, joinSecret, me, rest, headers, keyFile }) {
     const [to, ...args] = rest;

@@ -68,7 +68,8 @@ export class RoomParticipantController {
     this.events.notifyMessage(systemMessage, seq);
     dispatchWebhooks({ ...updated, messages }, "participant", { participant_id: participantId, action: "joined", participant: participants[participantId] });
     dispatchWebhooks({ ...updated, messages }, "message", { type: "message", message: systemMessage, last_seq: seq });
-    return json({ ...joinResponse(updated, participantId, invite.nextSeq, collectPeerKeys(participants)), participant_token: token });
+    // A new participant starts with the whole board (same shape as GET /board).
+    return json({ ...joinResponse(updated, participantId, invite.nextSeq, collectPeerKeys(participants)), participant_token: token, board: updated.board });
   }
 
   async update(request: Request, invite: InviteState, participantIdFromPath: string): Promise<Response> {

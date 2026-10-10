@@ -431,6 +431,12 @@ function roomPageStyles(): string {
   .room-board .button { background: var(--highlight); border-color: var(--highlight); color: #000; }
   .room-board .board-empty { opacity: 0.72; }
   .board-empty { opacity: 0.72; font-size: 0.95rem; }
+  .room-reservations { margin: 1.5rem 0; padding: 1.25rem; border: 1px dashed color-mix(in srgb, currentColor 35%, transparent); }
+  .room-reservations h3 { margin-top: 0; }
+  .reservation-list { list-style: none; padding: 0; margin: 0; }
+  .reservation-list li { padding: 0.6rem 0; border-top: 1px dashed color-mix(in srgb, currentColor 28%, transparent); overflow-wrap: anywhere; }
+  .reservation-paths { display: block; margin: 0.3rem 0; }
+  .reservation-meta { font-size: 0.85rem; opacity: 0.72; }
   .board-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 0.75rem 0 1.25rem; }
   .board-toolbar .button, .board-entry .button, .board-edit-form .button { margin: 0; padding: 0.55rem 0.85rem; }
   .board-edit-form { display: none; gap: 0.75rem; margin: 0 0 1rem; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 35%, transparent); }
@@ -740,6 +746,18 @@ function roomPageScript(roomId: string): string {
     if (root) root.insertAdjacentHTML("afterbegin", \`<p data-room-error>\${esc(error instanceof Error ? error.message : String(error))}</p>\`);
   }
 
+  async function renderReservations(board) {
+    const entries = Object.values(board["reservations"]?.value || {});
+    const rows = await Promise.all(entries.map(async (reservation) => {
+      if (!reservation || typeof reservation.sealed !== "string") return "";
+      const opened = await openSealedKickoff(reservation.sealed).catch(() => null);
+      if (!opened || !Array.isArray(opened.paths)) return "";
+      const paths = opened.paths.map((path) => \`<code>\${esc(path)}</code>\`).join(", ");
+      return \`<li><strong>\${esc(reservation.by)}</strong><span class="reservation-paths">\${paths}</span><span class="reservation-meta">\${opened.repo ? esc(opened.repo) + " · " : ""}\${opened.reason ? esc(opened.reason) + " · " : ""}since \${esc(reservation.since)}</span></li>\`;
+    }));
+    return rows.some(Boolean) ? \`<ul class="reservation-list">\${rows.join("")}</ul>\` : '<p class="board-empty">No file reservations yet.</p>';
+  }
+
   async function renderRoom(data, invite) {
     if (!root) return;
     const room = data.room || {};
@@ -767,14 +785,15 @@ function roomPageScript(roomId: string): string {
       return;
     }
 
-    const boardKeys = Object.keys(board);
+    const boardKeys = Object.keys(board).filter((key) => key !== "reservations");
+    const reservationsHtml = await renderReservations(board);
     const columnsVal = extractValue(board["columns"]?.value);
     const isKanban = columnsVal && typeof columnsVal === "object" && !Array.isArray(columnsVal) && ["todo", "doing", "review", "done"].some((c) => c in columnsVal);
     const boardHtml = boardKeys.length === 0
       ? \`<p class="board-empty">No board data yet.</p>\`
       : isKanban
         ? renderKanbanBoard(board, columnsVal)
-        : Object.entries(board).map(([k, entry]) => {
+        : Object.entries(board).filter(([k]) => k !== "reservations").map(([k, entry]) => {
             const val = boardValueText(entry.value);
             return \`<div class="board-entry"><span class="board-key">\${esc(k)}</span><span class="board-meta">updated by \${esc(entry.updated_by)} at \${esc(entry.updated_at)}</span><button class="button" type="button" data-edit-board-key="\${escAttr(k)}">Edit</button><pre>\${esc(val)}</pre></div>\`;
           }).join("");
@@ -805,7 +824,7 @@ function roomPageScript(roomId: string): string {
     const extendControls = isHost ? \` <button class="button button-small" type="button" data-extend-room title="Extend invite by 30 minutes">Extend 30 min</button><p class="room-ttl-status" data-room-ttl-status aria-live="polite"></p>\` : "";
 
     const inviteWasOpen = root.querySelector(".room-invite")?.open;
-    root.innerHTML = \`\n<section class="room-overview" aria-label="Room overview">\n<div class="room-overview-head"><h1>\${esc(room.name || "Room")}</h1><span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></div>\n<p class="room-purpose">\${esc(room.purpose || "—")}</p>\n<dl class="room-meta">\n<div><dt>host</dt><dd>\${esc(room.host_id || "—")}</dd></div>\n<div><dt>phase</dt><dd>\${esc(phase || "—")}</dd></div>\n<div><dt>expires</dt><dd class="room-expiry"><span>\${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}</span>\${extendControls}</dd></div>\n</dl>\n<div class="room-share"><h2>Room URL</h2><div class="snippet"><pre>\${esc("https://j01n.me/r/" + rid)}</pre><button class="copy" type="button" data-copy-room-url title="Copy room URL">copy</button></div>\n\${isHost ? \`<details class="room-invite"\${inviteWasOpen ? " open" : ""}><summary>Invitation JSON — keep secret</summary><p class="invite-note">Save this safely and use it to invite bots &amp; humans.</p><div class="snippet"><pre>\${esc(invitationJson)}</pre><button class="copy" type="button" title="Copy the invitation">copy</button></div></details>\` : ""}</div>\n</section>\n<section class="room-board"><h3>Board</h3><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>\${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>\${isKanban ? '<form class="kanban-add-task" data-kanban-add-task><label>Title<input name="task_title" placeholder="Task title" /></label><label>Column<select name="task_column"><option value="todo">To Do</option><option value="doing" selected>Doing</option><option value="review">Review</option><option value="done">Done</option></select></label><button class="button" type="submit">Add task</button></form>' : ""}\${boardHtml}</section>\n<section class="room-participants"><h3>Participants</h3>\${participantsHtml}</section>\n<section class="room-messages"><h3>Messages</h3>\${messagesHtml}<form class="message-composer" data-message-form><label>to<select name="to">\${recipientOptions}</select></label><label>message<textarea name="message" placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><button class="button" type="submit">Send</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>\`;
+    root.innerHTML = \`\n<section class="room-overview" aria-label="Room overview">\n<div class="room-overview-head"><h1>\${esc(room.name || "Room")}</h1><span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></div>\n<p class="room-purpose">\${esc(room.purpose || "—")}</p>\n<dl class="room-meta">\n<div><dt>host</dt><dd>\${esc(room.host_id || "—")}</dd></div>\n<div><dt>phase</dt><dd>\${esc(phase || "—")}</dd></div>\n<div><dt>expires</dt><dd class="room-expiry"><span>\${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}</span>\${extendControls}</dd></div>\n</dl>\n<div class="room-share"><h2>Room URL</h2><div class="snippet"><pre>\${esc("https://j01n.me/r/" + rid)}</pre><button class="copy" type="button" data-copy-room-url title="Copy room URL">copy</button></div>\n\${isHost ? \`<details class="room-invite"\${inviteWasOpen ? " open" : ""}><summary>Invitation JSON — keep secret</summary><p class="invite-note">Save this safely and use it to invite bots &amp; humans.</p><div class="snippet"><pre>\${esc(invitationJson)}</pre><button class="copy" type="button" title="Copy the invitation">copy</button></div></details>\` : ""}</div>\n</section>\n<section class="room-board"><h3>Board</h3><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>\${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>\${isKanban ? '<form class="kanban-add-task" data-kanban-add-task><label>Title<input name="task_title" placeholder="Task title" /></label><label>Column<select name="task_column"><option value="todo">To Do</option><option value="doing" selected>Doing</option><option value="review">Review</option><option value="done">Done</option></select></label><button class="button" type="submit">Add task</button></form>' : ""}\${boardHtml}</section>\n<section class="room-reservations" aria-label="File reservations"><h3>File reservations</h3>\${reservationsHtml}</section>\n<section class="room-participants"><h3>Participants</h3>\${participantsHtml}</section>\n<section class="room-messages"><h3>Messages</h3>\${messagesHtml}<form class="message-composer" data-message-form><label>to<select name="to">\${recipientOptions}</select></label><label>message<textarea name="message" placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><button class="button" type="submit">Send</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>\`;
     updateConnectionStatus(connectionState);
     root.querySelectorAll(".snippet .copy").forEach((button) => button.addEventListener("click", () => {
       const pre = button.previousElementSibling;

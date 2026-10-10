@@ -219,6 +219,32 @@ describe("room page", () => {
     expect(html).toContain('@media (max-width: 720px) { .kanban-board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }');
   });
 
+  it("opens file reservations for the room page and refreshes them on board changes", async () => {
+    const html = roomPageHtml("room-1");
+    const start = html.indexOf("  async function renderReservations(");
+    const end = html.indexOf("  async function renderRoom(", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    expect(html).toContain('roomEvents.addEventListener("board", () => refreshRoom().catch(showRoomEventError))');
+    expect(html).toContain('<section class="room-reservations" aria-label="File reservations">');
+    expect(html).toContain('await renderReservations(board)');
+
+    const render = new Function("openSealedKickoff", "esc", html.slice(start, end) + "return renderReservations;")(
+      async (sealed: string) => (await import("@j01n/sdk/crypto")).openKickoff({ encrypted_payload: sealed }, "secret", "room-1"),
+      (value: unknown) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+    ) as (board: unknown) => Promise<string>;
+    const { encrypted_payload: sealed } = await sealKickoff({ repo: "repo", paths: ["src/<api>.ts", "test/api.test.ts"], reason: "fix <bug>" }, "secret", "room-1");
+    const board = { reservations: { value: { one: { by: "alice", since: "2026-10-10T09:00:00Z", sealed } } } };
+    const output = await render(board);
+    for (const text of ["alice", "repo", "src/&lt;api&gt;.ts", "test/api.test.ts", "fix &lt;bug&gt;", "2026-10-10T09:00:00Z"]) expect(output).toContain(text);
+    expect(output).not.toContain(sealed);
+    const changed = { reservations: { value: { two: { by: "bob", since: "later", sealed } } } };
+    expect(await render(changed)).toContain("bob");
+    expect(await render(changed)).not.toContain("alice");
+    expect(await render({})).toContain("No file reservations yet.");
+    expect(await render({ reservations: { value: { one: { by: "alice", since: "now", sealed: "broken" } } } })).not.toContain("alice");
+  });
+
   it("keeps the recipient list current and excludes the sender", () => {
     const html = roomPageHtml("room-1");
 

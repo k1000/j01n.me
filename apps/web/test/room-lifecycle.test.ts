@@ -292,7 +292,8 @@ describe("room lifecycle", () => {
       await joinParticipant(fix, "agent-b");
       const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-a");
       const waiting = wait("agent-a", `after=${cursor}&timeout=5`);
-      // Let the wait register before the change: wait only catches up on missed messages, not missed board changes.
+      // Let the wait register first, so this test sees the live board wake (a missed change would come back as the
+      // pending board.changed announcement instead; see "catches up on a board change ...").
       await new Promise((r) => setTimeout(r, 50));
       await roomRequest(fix, "/board/tasks", {
         method: "PUT",
@@ -300,6 +301,20 @@ describe("room lifecycle", () => {
         body: JSON.stringify({ t1: "claimed by b" }),
       });
       expect(await waiting).toMatchObject({ event: "board", updated_by: "agent-b", changes: { tasks: { value: { t1: "claimed by b" }, version: 1 } } });
+    });
+
+    it("catches up on a board change made while the participant was not waiting", async () => {
+      await joinParticipant(fix, "agent-a");
+      await joinParticipant(fix, "agent-b");
+      await getRoomJson(fix, "/?view=all", "agent-a"); // agent-a is caught up, then stops listening
+      await roomRequest(fix, "/board/status", {
+        method: "PUT",
+        headers: { ...participantAuthHeaders(fix, "agent-b"), "content-type": "application/json" },
+        body: JSON.stringify({ state: "done" }),
+      });
+      const started = Date.now();
+      expect(await wait("agent-a", "timeout=5")).toMatchObject({ event: "message", pending: true });
+      expect(Date.now() - started).toBeLessThan(1000);
     });
 
     it("does not wake on a key announcement", async () => {

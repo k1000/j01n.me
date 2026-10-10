@@ -1080,7 +1080,8 @@ function roomPageScript(roomId: string): string {
       const msg = messages[i];
       if (msg.from === sender && msg.intent === "key.exchange" && typeof msg.body?.public_key === "string") return msg.body.public_key;
     }
-    return "";
+    // The key.exchange message may have left the 200-message history; the participant list still has the key.
+    return latest?.participants?.[sender]?.public_key || "";
   }
 
   async function deriveSharedKey(privateKey, peerPublicKey) {

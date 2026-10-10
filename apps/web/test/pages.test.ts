@@ -125,7 +125,7 @@ describe("homePage", () => {
   });
 });
 
-async function roomPageDecryptors(joinSecret: string) {
+async function roomPageDecryptors(joinSecret: string, latest: unknown = null) {
   const session = await createSdkCryptoSession("viewer");
   const ownPublic = (await session.announceKeyBody()).public_key;
   const { privateJwk, publicJwk } = await session.exportKeyPair();
@@ -138,14 +138,14 @@ async function roomPageDecryptors(joinSecret: string) {
   const end = html.indexOf("  function isExpiredTimestamp(", start);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
-  const api = new Function("hostKeyPair", "hostPublicKey", "participantId", "joinSecret", "rid", "crypto",
+  const api = new Function("hostKeyPair", "hostPublicKey", "participantId", "joinSecret", "rid", "crypto", "latest",
     html.slice(start, end) + "return { cleanMessageBody, decryptMessageBody };") as (
-    keyPair: CryptoKeyPair, ownPublic: string, participantId: string, joinSecret: string, roomId: string, crypto: Crypto,
+    keyPair: CryptoKeyPair, ownPublic: string, participantId: string, joinSecret: string, roomId: string, crypto: Crypto, latest: unknown,
   ) => {
     cleanMessageBody(message: unknown, messages: unknown[]): Promise<string>;
     decryptMessageBody(message: unknown, messages: unknown[]): Promise<{ ok: boolean; value?: unknown }>;
   };
-  return { session, ...api(keyPair, ownPublic, "viewer", joinSecret, "room-1", crypto) };
+  return { session, ...api(keyPair, ownPublic, "viewer", joinSecret, "room-1", crypto, latest) };
 }
 
 describe("room page", () => {
@@ -156,6 +156,15 @@ describe("room page", () => {
     const invalid = await roomPageDecryptors("wrong-secret");
     expect(await valid.cleanMessageBody(message, [])).toBe("Review the tasks");
     expect(await invalid.cleanMessageBody(message, [])).toBe("Encrypted message.");
+  });
+
+  it("finds the recipient key in the participant list when its key.exchange message is gone", async () => {
+    const recipient = await createSdkCryptoSession("peer");
+    const peerPublic = (await recipient.announceKeyBody()).public_key;
+    const viewer = await roomPageDecryptors("secret", { participants: { peer: { id: "peer", public_key: peerPublic } } });
+    await viewer.session.processPeerKeys([{ id: "peer", public_key: peerPublic }]);
+    const body = await viewer.session.encryptForSend({ text: "older DM" }, "peer");
+    expect(await viewer.decryptMessageBody({ from: "viewer", to: "peer", body }, [])).toEqual({ ok: true, value: { text: "older DM" } });
   });
 
   it("decrypts an outgoing direct message with the recipient's public key", async () => {

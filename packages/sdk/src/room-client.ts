@@ -154,6 +154,8 @@ export interface RoomClient {
   kick(targetId: string): Promise<{ ok: true; kicked: string }>;
   close(): Promise<{ ok: true; closed: boolean }>;
   transition(event: string): Promise<{ ok: true; from: string; event: string; to: string }>;
+  /** Host only: hand the host role to another participant in the room (everyone gets a host.changed message). */
+  transferHost(to: string): Promise<{ ok: true; host_id: string }>;
   extend(options?: { extendMs?: number }): Promise<{ ok: true; extended_ms: number; expires_at: string }>;
   export(): Promise<RoomExportResponse>;
 }
@@ -340,6 +342,9 @@ export async function buildRoomClient(
         invite,
         { method: "POST", participantId, body: { event } },
       );
+    },
+    async transferHost(to: string) {
+      return request<{ ok: true; host_id: string }>(`${invite.room_url}/host`, invite, { method: "POST", participantId, body: { to } });
     },
     async extend(options = {}) {
       return request<{ ok: true; extended_ms: number; expires_at: string }>(

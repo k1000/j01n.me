@@ -181,8 +181,8 @@ describe("room lifecycle", () => {
 
     expect((await status("helper/0")).headers.get("x-j01n-client-update")).toContain("curl -fsSL https://j01n.me/client/j01n.js");
     expect((await status("sdk/0")).headers.get("x-j01n-client-update")).toContain("pi install https://gitlab.com/k1000/j01n.me");
-    expect((await status("helper/5")).headers.get("x-j01n-client-update")).toBeNull();
-    expect((await status("helper/4")).headers.get("x-j01n-client-update")).toContain("older than 5");
+    expect((await status("helper/6")).headers.get("x-j01n-client-update")).toBeNull();
+    expect((await status("helper/5")).headers.get("x-j01n-client-update")).toContain("older than 6");
     expect((await status()).headers.get("x-j01n-client-update")).toBeNull();
   });
 
@@ -535,6 +535,52 @@ describe("room lifecycle", () => {
     await joinParticipant(fix, "agent-b");
     const res = await deleteParticipant(fix, "agent-a", "agent-b");
     expect(res.status).toBe(403);
+  });
+
+  describe("host role (one host; the host can hand it over)", () => {
+    const transferHost = (actor: string, to: string) => roomRequest(fix, "/host", {
+      method: "POST",
+      headers: { ...participantAuthHeaders(fix, actor), "content-type": "application/json" },
+      body: JSON.stringify({ to }),
+    });
+
+    it("the host hands the role to a participant: powers move with it and everyone is told", async () => {
+      await joinParticipant(fix, "host");
+      await joinParticipant(fix, "agent-a");
+      await joinParticipant(fix, "agent-b");
+      const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-b");
+      const waiting = roomRequest(fix, `/wait?after=${cursor}&timeout=5`, { headers: participantAuthHeaders(fix, "agent-b") }).then((r) => r.json() as Promise<{ message?: RoomMessage }>);
+      await new Promise((r) => setTimeout(r, 50));
+
+      const res = await transferHost("host", "agent-a");
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ok: true, host_id: "agent-a" });
+      expect((await waiting).message).toMatchObject({ from: "system", intent: "host.changed", body: { text: "host made agent-a the host", host_id: "agent-a" } });
+      expect(await getRoomJson(fix, "/status", "agent-b")).toMatchObject({ room: { host_id: "agent-a" } });
+
+      expect((await deleteParticipant(fix, "agent-b", "host")).status).toBe(403);
+      expect((await deleteParticipant(fix, "agent-b", "agent-a")).status).toBe(200);
+      expect((await transferHost("host", "agent-a")).status).toBe(403);
+    });
+
+    it("only the host can transfer, and only to someone in the room", async () => {
+      await joinParticipant(fix, "host");
+      await joinParticipant(fix, "agent-a");
+      expect((await transferHost("agent-a", "agent-a")).status).toBe(403);
+      expect((await transferHost("host", "nobody")).status).toBe(404);
+      expect((await transferHost("host", "host")).status).toBe(400);
+    });
+
+    it("the host cannot leave others behind without a host, but can leave after handing over or when alone", async () => {
+      await joinParticipant(fix, "host");
+      await joinParticipant(fix, "agent-a");
+      const blocked = await deleteParticipant(fix, "host");
+      expect(blocked.status).toBe(409);
+      expect(((await blocked.json()) as { error: string }).error).toContain("transfer the host role first");
+      await transferHost("host", "agent-a");
+      expect((await deleteParticipant(fix, "host")).status).toBe(200);
+      expect((await deleteParticipant(fix, "agent-a")).status).toBe(200);
+    });
   });
 
   it("host can close the room", async () => {

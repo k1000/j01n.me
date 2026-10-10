@@ -1074,6 +1074,20 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
+  transfer_host: {
+    description: "Host only: hand the host role to another participant in the room. Everyone gets a host.changed message. The host cannot leave while others remain, so transfer first.",
+    inputSchema: {
+      type: "object", properties: {
+        inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" },
+        to: { type: "string", description: "The participant to make host" },
+      }, required: ["inviteJson", "participantId", "to"],
+    },
+    handler: async (env, params) => {
+      const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
+      return doFetch(env, roomUrl, "/host", secret, { method: "POST", participantId: params.participantId as string, body: { to: params.to } });
+    },
+  },
+
   close_room: {
     description: "Close and delete the room (host only).",
     inputSchema: { type: "object", properties: { inviteJson: INVITE_JSON_PARAM, participantId: { type: "string" } }, required: ["inviteJson", "participantId"] },

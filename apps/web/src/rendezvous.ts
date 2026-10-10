@@ -143,6 +143,7 @@ export class RendezvousSession implements DurableObject {
       asks: () => this.handleAsks(request, invite),
       extend: () => this.handleExtendTtl(request, invite),
       transition: () => this.handleTransition(request, invite),
+      transferHost: () => this.participants.transferHost(request, invite),
       hooks: () => this.handleListHooks(request, invite),
       createHook: () => this.handleCreateHook(request, invite),
       deleteHook: (hookId) => this.handleDeleteHookById(request, invite, hookId),

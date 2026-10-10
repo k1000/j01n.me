@@ -45,6 +45,13 @@ describe("pi-extension sessions", () => {
     expect(calls).toContainEqual(expect.objectContaining({ method: "GET", url: `${ROOM}/board`, auth: "Bearer tok-1" }));
   });
 
+  it("host hands the host role to another participant of the current room", async () => {
+    const { runj01n } = await import("../commands");
+    await runj01n(["join", ROOM, "secret", "pi-agent"]);
+    await runj01n(["host", "claude-code"]);
+    expect(calls).toContainEqual(expect.objectContaining({ method: "POST", url: `${ROOM}/host`, auth: "Bearer tok-1" }));
+  });
+
   it("returns no kickoff for an empty board without failing the join", async () => {
     const { runj01n } = await import("../commands");
     expect(JSON.parse(await runj01n(["join", ROOM, "secret", "pi-agent"])).kickoff).toBeNull();

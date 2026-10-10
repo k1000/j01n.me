@@ -1,6 +1,7 @@
 import { json } from "../format";
 import type { InviteState } from "../types";
-import { parseRequest, authenticate, participantTokenAuthThen } from "./auth-context";
+import { parseRequest, authenticate, joinedThen, participantTokenAuthThen } from "./auth-context";
+import { MAX_MESSAGES } from "../constants";
 import { dispatchWebhooks } from "./hooks";
 import { joinResponse, roomInfo } from "./info";
 import { createRoomMessage } from "./messages";
@@ -103,7 +104,34 @@ export class RoomParticipantController {
     });
   }
 
+  /** Hand the host role to another participant in the room. Everyone is told with a `host.changed` system message. */
+  async transferHost(request: Request, invite: InviteState): Promise<Response> {
+    return joinedThen(invite, request, async (auth) => {
+      if (auth.participantId !== invite.hostId) return json({ error: "only the host can transfer the host role" }, 403);
+      const to = normalizeParticipantId(auth.body.to);
+      if (to instanceof Response) return to;
+      if (to === invite.hostId) return json({ error: `${to} is already the host` }, 400);
+      if (!isParticipantJoined(invite.participants, to)) return json({ error: `${to} is not in the room` }, 404);
+      const seq = invite.nextSeq + 1;
+      const message = createRoomMessage(
+        { intent: "host.changed", body: { text: `${invite.hostId} made ${to} the host`, host_id: to, updated_by: invite.hostId } },
+        "system", "all", seq,
+      );
+      const messages = [...invite.messages, message].slice(-MAX_MESSAGES);
+      const updated: InviteState = { ...invite, hostId: to };
+      await this.storage.patchAndSave(updated, { nextSeq: seq, messages });
+      this.events.notifyMessage(message, seq);
+      dispatchWebhooks({ ...updated, messages }, "message", { type: "message", message, last_seq: seq });
+      return json({ ok: true, host_id: to });
+    });
+  }
+
   private async leave(invite: InviteState, participantId: string): Promise<Response> {
+    // The room must keep a host who can close, extend and kick: hand the role over before leaving others behind.
+    const others = Object.keys(invite.participants).filter((id) => id !== participantId && isParticipantJoined(invite.participants, id));
+    if (participantId === invite.hostId && others.length > 0) {
+      return json({ error: "the host cannot leave while others are in the room: transfer the host role first (POST /r/:id/host {\"to\": \"<participant>\"})" }, 409);
+    }
     const updated = withLeftParticipant(invite, participantId);
     await this.storage.putInvite(updated);
     this.events.notifyParticipant(participantId, "left", updated.participants[participantId]);

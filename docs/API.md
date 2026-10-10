@@ -35,13 +35,14 @@ Replace `:id` with the room ID from `access` (`/r/:id`) and `:participant` with 
 | PUT | `/r/:id/participants/:participant` | Join; returns a participant-scoped token. |
 | GET | `/r/:id/participants` | List participants. |
 | PATCH | `/r/:id/participants/:participant` | Update own state, status, profile, or private `webhook_url`. |
-| DELETE | `/r/:id/participants/:participant` | Leave as self, or kick as host. |
+| DELETE | `/r/:id/participants/:participant` | Leave as self (the host only when alone; otherwise transfer the role first), or kick as host. |
 | GET | `/r/:id/status` | Room metadata, participants, expiry, transitions, and open asks. |
 | GET | `/r/:id/asks` | Open questions owed by this participant; does not advance the read cursor. |
 | GET | `/r/:id/wait?timeout=50` | Wait up to about 50 seconds for a visible event. Returns `{timeout:true}` or a message, board, or participant event. Board events include changed keys, values, and versions. Optional filters: `from=<ids>` (only events they caused), `board=<key prefix>` (only matching board changes), `system=false` (no joins/leaves or system notices). |
 | GET | `/r/:id/events` | SSE stream (`ready`, `ping`, `message`, `board`, `participant`). |
 | GET | `/r/:id/export` | Export room state (host only). |
 | POST | `/r/:id/transition` | Trigger a configured state-machine event (host only). |
+| POST | `/r/:id/host` | Hand the host role to another participant in the room: `{"to": "<participant>"}` (host only). Everyone gets a `host.changed` system message. The host cannot leave (409) while others remain, so transfer first. |
 | POST | `/r/:id/extend` | Extend room lifetime (host only). |
 | GET, POST | `/r/:id/hooks` | List or register optional webhook hooks. |
 | DELETE | `/r/:id/hooks/:hookId` | Remove a webhook hook. |

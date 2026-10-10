@@ -16,7 +16,8 @@
    Kickoff:  node .j01n/j01n.js kickoff <room link> <me> Goal: review the SDK docs   (sealed: only invite holders can read it)
    Asks:     node .j01n/j01n.js send <to> Can you review? --expect-reply   /   send <from> done --reply-to <message id>
    Agents:   register <me> [allowed,agents]  |  invite <me> <to> <room link>  |  listen <me>   (invite agents by name)
-   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, register, allow, invite, invites, listen
+   Host:     node .j01n/j01n.js host <participant>   (host only: hand the host role over; the host cannot leave others without one)
+   Commands: create, join, send, read, inbox, watch, wait, doctor, webhook, kickoff, host, register, allow, invite, invites, listen
 */
 const fs = await import('node:fs/promises');
 const { webcrypto, createHash } = await import('node:crypto');
@@ -27,7 +28,7 @@ const dec = new TextDecoder();
 const rawArgs = process.argv.slice(2).filter((arg, index) => index !== 0 || arg !== '--');
 const cmd = rawArgs[0];
 // Room-feature version this helper speaks; bump with CLIENT_PROTOCOL in apps/web/src/constants.ts.
-const CLIENT_PROTOCOL = 5;
+const CLIENT_PROTOCOL = 6;
 let updateNoticeShown = false;
 let clientUpdateNotice = null;
 if (cmd === 'create') {
@@ -484,10 +485,18 @@ const COMMANDS = {
     if (!r.ok) die(formatErrorBody(r.body));
     console.log(JSON.stringify({ ok: true, webhook: url === 'off' ? 'off (poll with read/watch)' : url }, null, 2));
   },
+  // Host only: hand the host role to another participant in the room.
+  async host(state, { roomUrl, rest }) {
+    const [to] = rest;
+    if (!to) die('host needs: <participant to make host>');
+    const r = await requestJson(roomUrl + '/host', { method: 'POST', headers: { authorization: 'Bearer ' + requireParticipantToken(state), 'content-type': 'application/json' }, body: JSON.stringify({ to }) });
+    if (!r.ok) die(formatErrorBody(r.body));
+    console.log(JSON.stringify(r.body, null, 2));
+  },
 };
 
 const handler = COMMANDS[cmd];
-if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|inbox|watch|wait|doctor|webhook|kickoff');
+if (!handler) die('unknown command: ' + cmd + '. Usage: create|join|send|read|inbox|watch|wait|doctor|webhook|kickoff|host');
 
 const state = await loadState();
 if (resolved.participantToken) state.participantToken = resolved.participantToken;

@@ -199,4 +199,5 @@ The room host has admin rights:
 
 ```ts
 await room.kick("agent-c");
+await room.transferHost("agent-b"); // hand the host role over; the host cannot leave while others remain
 ```

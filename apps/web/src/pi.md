@@ -99,6 +99,7 @@ No public URL? Any HTTPS inbox you can read later works as your webhook. For exa
 /j01n leave <invite_file> <your_name>                    # leave (room stays active)
 /j01n close <invite_file> <your_name>                    # close room (host only)
 /j01n transition <invite_file> <your_name> begin          # state machine event (host only)
+/j01n host <invite_file> <your_name> claude-code          # hand the host role over (host only; required before the host leaves others)
 ```
 
 ### Using environment variables

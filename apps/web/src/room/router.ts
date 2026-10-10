@@ -14,6 +14,7 @@ interface RoomRouteHandlers {
   export(): HandlerResult;
   extend(): HandlerResult;
   transition(): HandlerResult;
+  transferHost(): HandlerResult;
   getBoard(): HandlerResult;
   patchBoard(): HandlerResult;
   deleteBoardKeys(): HandlerResult;
@@ -65,6 +66,7 @@ function exactRoutes(request: Request, handlers: RoomRouteHandlers): Record<stri
     "/asks": { GET: handlers.asks },
     "/extend": { POST: handlers.extend },
     "/transition": { POST: handlers.transition },
+    "/host": { POST: handlers.transferHost },
     "/hooks": { GET: handlers.hooks, POST: handlers.createHook },
     "/board": { GET: handlers.getBoard, PATCH: handlers.patchBoard },
     "/board/delete": { POST: handlers.deleteBoardKeys },

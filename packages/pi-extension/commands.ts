@@ -83,7 +83,7 @@ function hasExplicitInvite(ref: string): boolean {
 
 const ACTIVE_COMMANDS = new Set([
   "send", "wait", "read", "inbox", "doctor", "board", "board_set", "board_patch", "board_delete",
-  "status", "webhook", "participants", "room_status", "transition", "leave", "close",
+  "status", "webhook", "participants", "room_status", "transition", "host", "leave", "close",
 ]);
 
 const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen"]);
@@ -403,6 +403,14 @@ async function handleTransition(parsed: ParsedArgs): Promise<string> {
   return JSON.stringify(result, null, 2);
 }
 
+/** Host only: hand the host role to another participant in the room. */
+async function handleHost(parsed: ParsedArgs): Promise<string> {
+  const client = await getClient(parsed);
+  const [to] = parsed.rest;
+  if (!to) throw new Error("host needs: <participant to make host>");
+  return JSON.stringify(await client.transferHost(to), null, 2);
+}
+
 // ── Agent inbox: invite agents by name (j01n.me/a/<name>); same identity file as the CLI helper ──
 function agentFile(me: string): string {
   return `.j01n-agent-${me.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`;
@@ -469,6 +477,7 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   participants: handleParticipants,
   room_status: handleStatusInfo,
   transition: handleTransition,
+  host: handleHost,
 };
 
 export async function runj01n(args: string[]): Promise<string> {

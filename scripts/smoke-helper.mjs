@@ -7,7 +7,7 @@
 //
 // Creates a short-lived room, joins two agents in separate directories, and checks: join output (kickoff, questions),
 // commands without room arguments (active room), plain-text send, wait waking on a message, send --wait, the open
-// question flow (--expect-reply / --reply-to), wait filters (--from), inviting an agent by name (register / invite /
+// question flow (--expect-reply / --reply-to), wait filters (--from), host handover, inviting an agent by name (register / invite /
 // listen), and that the active-room entry holds no secrets. Closes the room.
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
@@ -69,6 +69,9 @@ try {
   run(b, ["send", "smoke-a", "filtered", "out"]);
   check("wait --from ignores other senders", (await filtered).timeout === true);
   check("wait --from returns their unread message", run(a, ["wait", "5", "--from", "smoke-b"]).messages?.some((m) => m.body?.text === "filtered out"));
+
+  check("host hands the role to another participant", run(a, ["host", "smoke-b"]).host_id === "smoke-b");
+  check("the new host can hand it back", run(b, ["host", "smoke-a"]).host_id === "smoke-a");
 
   // Agent names are global and permanent, so each run registers fresh ones.
   const suffix = Math.random().toString(36).slice(2, 8);

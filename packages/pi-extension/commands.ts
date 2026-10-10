@@ -2,11 +2,11 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, w
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { buildMinimalInvite, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, inviteLink, joinRoom, listReservations, normalizeInvite, parseInviteLink, registerAgent, releasePaths, reservePaths, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, setAcceptFrom, waitForInvites } from "@j01n/sdk";
+import { buildMinimalInvite, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, inviteLink, joinRoom, normalizeInvite, parseInviteLink, registerAgent, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, setAcceptFrom, waitForInvites } from "@j01n/sdk";
 import type { AgentIdentity, Workspace } from "@j01n/sdk";
 import { execFileSync } from "node:child_process";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
-import { roomReplyHint, roomReplyHints, runRoomCommand } from "@j01n/sdk/room-commands";
+import { roomReplyHint, roomReplyHints, runProfileCommand, runReservationCommand, runRoomCommand } from "@j01n/sdk/room-commands";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
 import { listHerdrPeers, notifyHerdrPeer } from "./herdr";
@@ -226,28 +226,12 @@ export function repoPath(root: string, path: string): string {
   return relative(root, resolve(path)) || ".";
 }
 
-// ── File reservations: reserve <path>... [--reason text], release [path...], reservations ──
-function pathsAndReason(args: string[]): { paths: string[]; reason?: string } {
-  const at = args.indexOf("--reason");
-  const reason = at >= 0 ? args.slice(at + 1).join(" ") || undefined : undefined;
-  return { paths: at >= 0 ? args.slice(0, at) : args, reason };
-}
-
-async function handleReserve(parsed: ParsedArgs): Promise<string> {
+async function handleReservation(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
   const { root, repo } = currentRepo();
-  const { paths, reason } = pathsAndReason(parsed.rest);
-  return JSON.stringify({ ok: true, reservations: await reservePaths(client, repo, paths.map((p) => repoPath(root, p)), reason) }, null, 2);
-}
-
-async function handleRelease(parsed: ParsedArgs): Promise<string> {
-  const client = await getClient(parsed);
-  const { root, repo } = currentRepo();
-  return JSON.stringify({ ok: true, reservations: await releasePaths(client, repo, parsed.rest.map((p) => repoPath(root, p))) }, null, 2);
-}
-
-async function handleReservations(parsed: ParsedArgs): Promise<string> {
-  return JSON.stringify({ reservations: await listReservations(await getClient(parsed)) }, null, 2);
+  return JSON.stringify(await runReservationCommand(client, parsed.cmd as "reserve" | "release" | "reservations", parsed.rest, {
+    repo, path: (path) => repoPath(root, path),
+  }), null, 2);
 }
 
 async function handleJoin(parsed: ParsedArgs): Promise<string> {
@@ -392,30 +376,15 @@ async function handleClose(parsed: ParsedArgs): Promise<string> {
   return JSON.stringify(result, null, 2);
 }
 
-/**
- * Change what you announce during the session: --capabilities a,b ("" clears), --model X --provider Y (agents announce
- * what they run), --workspace (re-detect, e.g. after switching branch; needs the room link because it is sealed with
- * the room key), --no-workspace (stop announcing).
- */
 async function handleProfile(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
-  const args = parsed.rest;
-  const profile: { capabilities?: string[]; workspace?: Workspace | null; model?: string; provider?: string } = {};
-  const i = args.indexOf("--capabilities");
-  if (i >= 0) profile.capabilities = (args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : "").split(",").map((c) => c.trim()).filter(Boolean);
-  for (const field of ["model", "provider"] as const) {
-    const fi = args.indexOf(`--${field}`);
-    const v = fi >= 0 && args[fi + 1] && !args[fi + 1].startsWith("--") ? args[fi + 1]
-      : field === "model" ? (process.env.J01N_MODEL || process.env.PI_MODEL) : process.env.J01N_PROVIDER;
-    if (v) profile[field] = v;
-  }
-  if (args.includes("--no-workspace")) profile.workspace = null;
-  else if (args.includes("--workspace")) {
-    if (client.invite.join_secret === "resume-only") throw new Error("re-announcing the workspace needs the room link (it is sealed with the room key): /j01n profile <room link> <me> --workspace");
-    profile.workspace = detectWorkspace();
-  }
-  if (Object.keys(profile).length > 0) await client.setProfile(profile);
-  return JSON.stringify({ ok: true, team: await client.team() }, null, 2);
+  return JSON.stringify(await runProfileCommand(client, parsed.rest, {
+    modelFallback: process.env.J01N_MODEL || process.env.PI_MODEL,
+    providerFallback: process.env.J01N_PROVIDER,
+    workspace: detectWorkspace,
+    secret: client.invite.join_secret,
+    workspaceError: "re-announcing the workspace needs the room link (it is sealed with the room key): /j01n profile <room link> <me> --workspace",
+  }), null, 2);
 }
 
 // ── Agent inbox: invite agents by name (j01n.me/a/<name>); same identity file as the CLI helper ──
@@ -547,9 +516,9 @@ async function handleListen(parsed: ParsedArgs): Promise<string> {
 }
 
 const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
-  reserve: handleReserve,
-  release: handleRelease,
-  reservations: handleReservations,
+  reserve: handleReservation,
+  release: handleReservation,
+  reservations: handleReservation,
   register: handleRegister,
   allow: handleAllow,
   invite: handleInviteAgent,

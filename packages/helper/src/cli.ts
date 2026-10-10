@@ -7,13 +7,13 @@ import { relative, resolve } from "node:path";
 import {
   buildMinimalInvite, getClientUpdateNotice, joinRoom, resumeRoom, parseInviteLink,
   registerAgent, setAcceptFrom, inviteAgent, waitForInvites, deleteInvite,
-  sealForRoom, listReservations, reservePaths, releasePaths, SDK_CLIENT_PROTOCOL,
+  sealForRoom, SDK_CLIENT_PROTOCOL,
   type AgentIdentity, type RoomAccess,
 } from "@j01n/sdk";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { RoomApiError } from "@j01n/sdk/errors";
 import { request } from "@j01n/sdk/transport";
-import { parseRoomBody, runRoomCommand } from "@j01n/sdk/room-commands";
+import { parseRoomBody, runProfileCommand, runReservationCommand, runRoomCommand } from "@j01n/sdk/room-commands";
 import type { RoomClient } from "@j01n/sdk";
 
 if (!(globalThis as typeof globalThis & { crypto?: Crypto }).crypto) (globalThis as typeof globalThis & { crypto?: Crypto }).crypto = webcrypto as unknown as Crypto;
@@ -218,19 +218,20 @@ async function main() {
   if (cmd === "kickoff") { if (!rest.length) throw Error("kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)"); output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true })); return; }
   if (cmd === "webhook") { output(await roomCommand(client, cmd, rest)); return; }
   if (cmd === "profile") {
-    const body: { capabilities?: string[]; model?: string; provider?: string; workspace?: ReturnType<typeof workspace> | null } = { ...modelProfile(rest) };
-    const i = rest.indexOf("--capabilities"); if (i >= 0) body.capabilities = names(rest[i + 1]?.startsWith("--") ? "" : rest[i + 1]);
-    if (rest.includes("--no-workspace")) body.workspace = null;
-    else if (rest.includes("--workspace")) { if (roomSecret === "resume-only") throw Error("re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace"); body.workspace = workspace(); }
-    if (Object.keys(body).length) await client.setProfile(body);
-    output({ ok: true, team: await client.team() }); return;
+    output(await runProfileCommand(client, rest, {
+      modelFallback: process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL,
+      providerFallback: process.env.J01N_PROVIDER,
+      workspace,
+      secret: roomSecret,
+      workspaceError: "re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace",
+    })); return;
   }
-  if (cmd === "reserve" || cmd === "release") {
-    const { root, id } = repo(); const i = rest.indexOf("--reason"); const paths = (i >= 0 ? rest.slice(0, i) : rest).map((p) => relative(root, resolve(p)) || ".");
-    if (cmd === "reserve" && !paths.length) throw Error("reserve needs: <path>... [--reason text]");
-    output({ ok: true, reservations: cmd === "reserve" ? await reservePaths(client, id, paths, i >= 0 ? rest.slice(i + 1).join(" ") || undefined : undefined) : await releasePaths(client, id, paths) }); return;
+  if (["reserve", "release", "reservations"].includes(cmd)) {
+    const { root, id } = repo();
+    output(await runReservationCommand(client, cmd as "reserve" | "release" | "reservations", rest, {
+      repo: id, path: (path) => relative(root, resolve(path)) || ".", requirePaths: true,
+    })); return;
   }
-  if (cmd === "reservations") { output({ reservations: await listReservations(client) }); return; }
   if (cmd === "leave") { await client.leave({ release: rest.includes("--release") }); await fs.rm(activePath(roomUrl, me), { force: true }); output({ ok: true, left: true }); return; }
   if (cmd === "host") { output(await roomCommand(client, cmd, rest)); return; }
   throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|leave`);

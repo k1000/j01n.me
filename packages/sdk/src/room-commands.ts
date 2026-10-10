@@ -1,4 +1,6 @@
 import type { RoomClient } from "./room-client";
+import type { Workspace } from "./crypto";
+import { listReservations, releasePaths, reservePaths } from "./reservations";
 
 export function parseRoomBody(raw: string): unknown {
   try {
@@ -103,4 +105,41 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
     return client.transferHost(rest[0]);
   }
   throw new Error(`unknown room command: ${cmd}`);
+}
+
+export async function runReservationCommand(client: RoomClient, cmd: "reserve" | "release" | "reservations", rest: string[], options: { repo: string; path: (value: string) => string; requirePaths?: boolean }): Promise<unknown> {
+  if (cmd === "reservations") return { reservations: await listReservations(client) };
+  if (cmd === "release") return { ok: true, reservations: await releasePaths(client, options.repo, rest.map(options.path)) };
+  const at = rest.indexOf("--reason");
+  const paths = (at >= 0 ? rest.slice(0, at) : rest).map(options.path);
+  if (options.requirePaths && !paths.length) throw new Error("reserve needs: <path>... [--reason text]");
+  const reason = at >= 0 ? rest.slice(at + 1).join(" ") || undefined : undefined;
+  return { ok: true, reservations: await reservePaths(client, options.repo, paths, reason) };
+}
+
+export async function runProfileCommand(client: RoomClient, rest: string[], options: {
+  modelFallback?: string;
+  providerFallback?: string;
+  workspace: () => Workspace;
+  secret: string;
+  workspaceError: string;
+}): Promise<unknown> {
+  const flag = (name: string) => {
+    const at = rest.indexOf(name);
+    return at >= 0 && rest[at + 1] && !rest[at + 1].startsWith("--") ? rest[at + 1] : undefined;
+  };
+  const profile: { capabilities?: string[]; workspace?: Workspace | null; model?: string; provider?: string } = {};
+  const at = rest.indexOf("--capabilities");
+  if (at >= 0) profile.capabilities = (flag("--capabilities") || "").split(",").map((name) => name.trim()).filter(Boolean);
+  const model = flag("--model") || options.modelFallback;
+  const provider = flag("--provider") || options.providerFallback;
+  if (model) profile.model = model;
+  if (provider) profile.provider = provider;
+  if (rest.includes("--no-workspace")) profile.workspace = null;
+  else if (rest.includes("--workspace")) {
+    if (options.secret === "resume-only") throw new Error(options.workspaceError);
+    profile.workspace = options.workspace();
+  }
+  if (Object.keys(profile).length) await client.setProfile(profile);
+  return { ok: true, team: await client.team() };
 }

@@ -785,6 +785,35 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
   }
   throw new Error(`unknown room command: ${cmd2}`);
 }
+async function runReservationCommand(client, cmd2, rest, options) {
+  if (cmd2 === "reservations") return { reservations: await listReservations(client) };
+  if (cmd2 === "release") return { ok: true, reservations: await releasePaths(client, options.repo, rest.map(options.path)) };
+  const at = rest.indexOf("--reason");
+  const paths = (at >= 0 ? rest.slice(0, at) : rest).map(options.path);
+  if (options.requirePaths && !paths.length) throw new Error("reserve needs: <path>... [--reason text]");
+  const reason = at >= 0 ? rest.slice(at + 1).join(" ") || void 0 : void 0;
+  return { ok: true, reservations: await reservePaths(client, options.repo, paths, reason) };
+}
+async function runProfileCommand(client, rest, options) {
+  const flag = (name) => {
+    const at2 = rest.indexOf(name);
+    return at2 >= 0 && rest[at2 + 1] && !rest[at2 + 1].startsWith("--") ? rest[at2 + 1] : void 0;
+  };
+  const profile = {};
+  const at = rest.indexOf("--capabilities");
+  if (at >= 0) profile.capabilities = (flag("--capabilities") || "").split(",").map((name) => name.trim()).filter(Boolean);
+  const model = flag("--model") || options.modelFallback;
+  const provider = flag("--provider") || options.providerFallback;
+  if (model) profile.model = model;
+  if (provider) profile.provider = provider;
+  if (rest.includes("--no-workspace")) profile.workspace = null;
+  else if (rest.includes("--workspace")) {
+    if (options.secret === "resume-only") throw new Error(options.workspaceError);
+    profile.workspace = options.workspace();
+  }
+  if (Object.keys(profile).length) await client.setProfile(profile);
+  return { ok: true, team: await client.team() };
+}
 
 // packages/helper/src/cli.ts
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
@@ -1064,28 +1093,22 @@ async function main() {
     return;
   }
   if (cmd === "profile") {
-    const body = { ...modelProfile(rest) };
-    const i = rest.indexOf("--capabilities");
-    if (i >= 0) body.capabilities = names(rest[i + 1]?.startsWith("--") ? "" : rest[i + 1]);
-    if (rest.includes("--no-workspace")) body.workspace = null;
-    else if (rest.includes("--workspace")) {
-      if (roomSecret === "resume-only") throw Error("re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace");
-      body.workspace = workspace();
-    }
-    if (Object.keys(body).length) await client.setProfile(body);
-    output({ ok: true, team: await client.team() });
+    output(await runProfileCommand(client, rest, {
+      modelFallback: process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL,
+      providerFallback: process.env.J01N_PROVIDER,
+      workspace,
+      secret: roomSecret,
+      workspaceError: "re-announcing the workspace needs the room link (it is sealed with the room key): profile <room link> <me> --workspace"
+    }));
     return;
   }
-  if (cmd === "reserve" || cmd === "release") {
+  if (["reserve", "release", "reservations"].includes(cmd)) {
     const { root, id } = repo();
-    const i = rest.indexOf("--reason");
-    const paths = (i >= 0 ? rest.slice(0, i) : rest).map((p) => relative(root, resolve(p)) || ".");
-    if (cmd === "reserve" && !paths.length) throw Error("reserve needs: <path>... [--reason text]");
-    output({ ok: true, reservations: cmd === "reserve" ? await reservePaths(client, id, paths, i >= 0 ? rest.slice(i + 1).join(" ") || void 0 : void 0) : await releasePaths(client, id, paths) });
-    return;
-  }
-  if (cmd === "reservations") {
-    output({ reservations: await listReservations(client) });
+    output(await runReservationCommand(client, cmd, rest, {
+      repo: id,
+      path: (path) => relative(root, resolve(path)) || ".",
+      requirePaths: true
+    }));
     return;
   }
   if (cmd === "leave") {

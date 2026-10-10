@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { roomPageHtml } from "../src/html";
+import app from "../src/index";
 import { LIVE_ROOM_STYLES } from "../src/live-room-view";
 
+const roomPageScript = await (await app.request("/client/room-page.js")).text();
+
 function browserFunctions(start: string, end: string, context: Record<string, unknown>, returned: string) {
-  const html = roomPageHtml("room-1");
+  const html = roomPageScript;
   const from = html.indexOf(start);
   const to = html.indexOf(end, from);
   expect(from).toBeGreaterThan(0);
@@ -26,12 +29,12 @@ describe("optional live room view", () => {
   it("offers a query-selected live view without replacing the standard page or exposing all private traffic", () => {
     const html = roomPageHtml("room-1");
     expect(html).toContain('data-room-view-link');
-    expect(html).toContain('new URLSearchParams(window.location.search).get("view") === "live"');
-    expect(html).toContain('window.location.pathname + window.location.search');
+    expect(roomPageScript).toContain('new URLSearchParams(window.location.search).get("view") === "live"');
+    expect(roomPageScript).toContain('window.location.pathname + window.location.search');
     expect(html).toContain('prefers-reduced-motion: reduce');
-    expect(html).toContain('function renderLiveRoom(');
-    expect(html).not.toContain('include_all=true');
-    expect(html).not.toContain('/export');
+    expect(roomPageScript).toContain('function renderLiveRoom(');
+    expect(roomPageScript).not.toContain('include_all=true');
+    expect(roomPageScript).not.toContain('/export');
   });
 
   it("renders board versions, all board keys beside kanban, participant state and a decrypted timeline safely", async () => {

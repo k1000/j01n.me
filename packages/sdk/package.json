@@ -14,6 +14,7 @@
     "./errors": "./src/errors.ts",
     "./agents": "./src/agents.ts",
     "./reservations": "./src/reservations.ts",
+    "./room-commands": "./src/room-commands.ts",
     "./transport": "./src/transport.ts"
   }
 }

@@ -13,6 +13,7 @@ import {
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { RoomApiError } from "@j01n/sdk/errors";
 import { request } from "@j01n/sdk/transport";
+import { parseRoomBody, runRoomCommand } from "@j01n/sdk/room-commands";
 import type { RoomClient } from "@j01n/sdk";
 
 if (!(globalThis as typeof globalThis & { crypto?: Crypto }).crypto) (globalThis as typeof globalThis & { crypto?: Crypto }).crypto = webcrypto as unknown as Crypto;
@@ -32,8 +33,7 @@ const modelProfile = (rest: string[]) => {
   const flag = (name: string) => { const i = rest.indexOf(name); return i >= 0 && rest[i + 1] && !rest[i + 1].startsWith("--") ? rest[i + 1] : undefined; };
   return { ...(flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL ? { model: flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL } : {}), ...(flag("--provider") || process.env.J01N_PROVIDER ? { provider: flag("--provider") || process.env.J01N_PROVIDER } : {}) };
 };
-const parseBody = (text: string): unknown => { try { const parsed: unknown = JSON.parse(text); if (parsed && typeof parsed === "object") return parsed; } catch { /* plain text */ } return { text }; };
-const withReplies = (messages: any[]) => messages.map((m) => m.from === "system" || m.intent === "key.exchange" ? m : { ...m, reply: `node .j01n/j01n.js send ${m.from} <text> --reply-to ${m.id}` });
+const roomCommand = (client: RoomClient, command: string, rest: string[], beforeSend?: () => Promise<void>) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend });
 
 async function isRoomRef(ref?: string) {
   if (!ref) return false;
@@ -143,13 +143,6 @@ async function main() {
     await save();
   } else client = await resumeRoom(invite, me, session);
   const announce = async () => { const key = (await session.announceKeyBody()).public_key; if (state.announcedKey !== key) { await client.announceKey(); state.announcedKey = key; await save(); } };
-  const read = async () => withReplies(await client.read({ all: true, includeSelf: true }));
-  const wait = async (timeout: number, from?: string[], board?: string, system?: false) => {
-    const event = await client.wait({ timeoutSeconds: timeout, from, board, system });
-    if (event.timeout) return { timeout: true };
-    const messages = withReplies(await client.read());
-    return { woke: event.event, ...(event.changes ? { board: event.changes } : {}), messages };
-  };
   if (cmd === "join") {
     const announced: { capabilities?: string[]; model?: string; provider?: string; workspace?: ReturnType<typeof workspace> } = {};
     const i = rest.indexOf("--capabilities"); if (i >= 0) announced.capabilities = names(rest[i + 1]);
@@ -168,20 +161,10 @@ async function main() {
     output({ ...profile, kickoff, board, questions: await client.openQuestions(), team: await client.team() });
     return;
   }
-  if (cmd === "send") {
-    const [to, ...words] = rest; let andWait = false, expectsReply = false, replyTo: string | undefined; const body: string[] = [];
-    for (let i = 0; i < words.length; i++) { if (words[i] === "--wait") andWait = true; else if (words[i] === "--expect-reply") expectsReply = true; else if (words[i] === "--reply-to") replyTo = words[++i]; else body.push(words[i]); }
-    if (!to || !body.length) throw Error("send needs: <to> <text or json_body> [--reply-to <id>] [--expect-reply] [--wait]");
-    await announce(); const sent = await client.send(to, parseBody(body.join(" ")), { replyTo, expectsReply });
-    output(andWait ? { sent, ...await wait(50) } : sent); return;
+  if (["send", "read", "inbox", "wait"].includes(cmd)) {
+    output(await roomCommand(client, cmd, rest, cmd === "send" ? announce : undefined)); return;
   }
-  if (cmd === "read" || cmd === "inbox") { output(await read()); return; }
   if (cmd === "team") { output({ ok: true, team: await client.team() }); return; }
-  if (cmd === "wait") {
-    let timeout = 50, from: string[] | undefined, board: string | undefined, system: false | undefined;
-    for (let i = 0; i < rest.length; i++) { if (rest[i] === "--from") from = names(rest[++i]); else if (rest[i] === "--board") board = rest[++i] || ""; else if (rest[i] === "--no-system") system = false; else timeout = Number(rest[i]) || 50; }
-    output(await wait(timeout, from, board, system)); return;
-  }
   if (cmd === "watch") {
     await announce(); let seq = Number(rest[0] || 0); if (!Number.isFinite(seq)) seq = 0;
     const print = async (event: string) => {
@@ -232,8 +215,8 @@ async function main() {
     if (joined) try { openQuestions = (await client.openQuestions()).length; } catch (err) { openQuestionsError = String(err); }
     output({ ok: joined, client_protocol: SDK_CLIENT_PROTOCOL, ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}), open_questions: openQuestions, ...(openQuestionsError ? { open_questions_error: openQuestionsError } : {}), participant_id: me, joined, key_file: keyFile, local_key_created: created, key_announced: messages.some((m) => m.from === me && m.intent === "key.exchange"), known_peers: participants.participants.filter((p) => p.id !== me && p.public_key).map((p) => p.id), encrypted_messages_seen: encrypted.length, encrypted_messages_decryptable: decryptable, key_note: `Reuse this key file from the same directory to retain your ECDH keypair across sessions: ${keyFile}` }); return;
   }
-  if (cmd === "kickoff") { if (!rest.length) throw Error("kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)"); output(await client.send("all", { encrypted_payload: await sealForRoom(parseBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true })); return; }
-  if (cmd === "webhook") { if (!rest[0]) throw Error("webhook needs: <https_url|off>"); await client.setWebhook(rest[0] === "off" ? null : rest[0]); output({ ok: true, webhook: rest[0] === "off" ? "off (poll with read/watch)" : rest[0] }); return; }
+  if (cmd === "kickoff") { if (!rest.length) throw Error("kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)"); output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true })); return; }
+  if (cmd === "webhook") { output(await roomCommand(client, cmd, rest)); return; }
   if (cmd === "profile") {
     const body: { capabilities?: string[]; model?: string; provider?: string; workspace?: ReturnType<typeof workspace> | null } = { ...modelProfile(rest) };
     const i = rest.indexOf("--capabilities"); if (i >= 0) body.capabilities = names(rest[i + 1]?.startsWith("--") ? "" : rest[i + 1]);
@@ -249,7 +232,7 @@ async function main() {
   }
   if (cmd === "reservations") { output({ reservations: await listReservations(client) }); return; }
   if (cmd === "leave") { await client.leave({ release: rest.includes("--release") }); await fs.rm(activePath(roomUrl, me), { force: true }); output({ ok: true, left: true }); return; }
-  if (cmd === "host") { if (!rest[0]) throw Error("host needs: <participant to make host>"); output(await client.transferHost(rest[0])); return; }
+  if (cmd === "host") { output(await roomCommand(client, cmd, rest)); return; }
   throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|leave`);
 }
 main().catch((error: unknown) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

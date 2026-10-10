@@ -6,6 +6,7 @@ import { buildMinimalInvite, createRoom, deleteInvite, getClientUpdateNotice, in
 import type { AgentIdentity, Workspace } from "@j01n/sdk";
 import { execFileSync } from "node:child_process";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
+import { roomReplyHint, roomReplyHints, runRoomCommand } from "@j01n/sdk/room-commands";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
 import { listHerdrPeers, notifyHerdrPeer } from "./herdr";
@@ -307,41 +308,19 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
   }, null, 2);
 }
 
-async function handleSend(parsed: ParsedArgs): Promise<string> {
-  if (!parsed.me) throw new Error("send needs: participant_id <to> <json_body>");
-  const invite = resolveInvite(parsed);
-  const client = await openSession(invite, parsed.me);
-
-  const [toRaw, ...args] = parsed.rest;
-  // Flags: --wait (then wait for the next event), --reply-to <message id>, --expect-reply (ask for an answer).
-  const words: string[] = [];
-  let andWait = false, replyTo: string | undefined, expectsReply = false;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--wait") andWait = true;
-    else if (args[i] === "--expect-reply") expectsReply = true;
-    else if (args[i] === "--reply-to") replyTo = args[++i];
-    else words.push(args[i]);
-  }
-  if (!toRaw || words.length === 0) throw new Error("send needs: <to> <text or json_body> [--reply-to <id>] [--expect-reply] [--wait]");
-  const sent = await client.send(parseRecipient(toRaw), parseMessageBody(words.join(" ")), { replyTo, expectsReply });
-  return JSON.stringify(andWait ? { sent, ...await waitAndRead(client) } : sent, null, 2);
-}
-
-/** Block until the next event you can see (or the timeout), then return the new messages, decrypted. */
-async function waitAndRead(client: RoomClient, timeoutSeconds?: number, filter: Parameters<RoomClient["wait"]>[0] = {}): Promise<Record<string, unknown>> {
-  const woke = await client.wait({ ...filter, timeoutSeconds });
-  if (woke.timeout) return { timeout: true };
-  return { woke: woke.event, ...(woke.changes ? { board: woke.changes } : {}), messages: withReplyHints(await client.read()) };
+async function sharedCommand(parsed: ParsedArgs): Promise<string> {
+  if (parsed.cmd === "send" && !parsed.me) throw new Error("send needs: participant_id <to> <json_body>");
+  if ((parsed.cmd === "read" || parsed.cmd === "inbox") && !parsed.me) throw new Error("read needs: participant_id");
+  return JSON.stringify(await runRoomCommand(await getClient(parsed), parsed.cmd, parsed.rest, { recipientList: true }), null, 2);
 }
 
 /** A ready command to answer a message in its thread (closes it if it asked for a reply). */
 export function replyHint(message: { id: string; from: string }): string {
-  return `/j01n send ${message.from} <text> --reply-to ${message.id}`;
+  return roomReplyHint(message);
 }
 
-/** Participants' messages get a `reply` command; system notices and key announcements do not. */
 export function withReplyHints<T extends { id: string; from: string; intent?: string }>(messages: T[]): Array<T & { reply?: string }> {
-  return messages.map((m) => (m.from === "system" || m.intent === "key.exchange" ? m : { ...m, reply: replyHint(m) }));
+  return roomReplyHints(messages);
 }
 
 /** Clients for every room joined from this directory (live delivery, presence and reservation checks use them). */
@@ -353,30 +332,6 @@ export async function activeRoomClients(): Promise<RoomClient[]> {
     } catch { /* a room that cannot be resumed (left, expired) is skipped */ }
   }
   return clients;
-}
-
-/** A JSON object is sent as is; anything else is sent as { text }. */
-function parseMessageBody(raw: string): unknown {
-  try {
-    const value = JSON.parse(raw) as unknown;
-    if (value && typeof value === "object") return value;
-  } catch { /* plain text */ }
-  return { text: raw };
-}
-
-async function handleWait(parsed: ParsedArgs): Promise<string> {
-  const client = await getClient(parsed);
-  // Flags: --from <ids,...> (only events they caused), --board <prefix,...> (only board changes to matching keys; no messages), --no-system.
-  const args = parsed.rest;
-  let timeout: string | undefined;
-  const filter: Parameters<RoomClient["wait"]>[0] = {};
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--from") filter.from = (args[++i] ?? "").split(",").filter(Boolean);
-    else if (args[i] === "--board") filter.board = args[++i] ?? "";
-    else if (args[i] === "--no-system") filter.system = false;
-    else timeout = args[i];
-  }
-  return JSON.stringify(await waitAndRead(client, timeout ? Number(timeout) : undefined, filter), null, 2);
 }
 
 async function handleDoctor(parsed: ParsedArgs): Promise<string> {
@@ -411,11 +366,6 @@ async function handleDoctor(parsed: ParsedArgs): Promise<string> {
   }, null, 2);
 }
 
-function parseRecipient(raw: string): "all" | string | string[] {
-  if (raw === "all") return "all";
-  return raw.includes(",") ? raw.split(",").map((s) => s.trim()) : raw.trim();
-}
-
 function knownPeers(messages: Awaited<ReturnType<RoomClient["read"]>>, me: string): string[] {
   return messages.filter((m) => m.intent === "key.exchange" && m.from !== me).map((m) => m.from);
 }
@@ -423,60 +373,6 @@ function knownPeers(messages: Awaited<ReturnType<RoomClient["read"]>>, me: strin
 function isUndecrypted(message: Awaited<ReturnType<RoomClient["read"]>>[number]): boolean {
   const body = message.body as Record<string, unknown> | null;
   return body !== null && typeof body === "object" && body.encrypted === true;
-}
-
-async function handleRead(parsed: ParsedArgs, all: boolean): Promise<string> {
-  if (!parsed.me) throw new Error("read needs: participant_id");
-  const invite = resolveInvite(parsed);
-  const client = await openSession(invite, parsed.me);
-  const messages = await client.read({ all, includeSelf: true });
-  return JSON.stringify(withReplyHints(messages), null, 2);
-}
-
-async function handleBoard(parsed: ParsedArgs): Promise<string> {
-  const client = await getClient(parsed);
-  const result = await client.board();
-  return JSON.stringify(result, null, 2);
-}
-
-async function handleBoardSet(parsed: ParsedArgs): Promise<string> {
-  const client = await getClient(parsed);
-  const [key, valueJson, ifVersion] = parsed.rest;
-  if (!key || !valueJson) throw new Error("board_set needs: <key> <json_value> [if_version]");
-  const result = await client.setBoardKey(key, JSON.parse(valueJson), { ifVersion: ifVersion === undefined ? undefined : Number(ifVersion) });
-  return JSON.stringify(result, null, 2);
-}
-
-async function handleBoardPatch(parsed: ParsedArgs): Promise<string> {
-  const client = await getClient(parsed);
-  const [valueJson, ifVersionsJson] = parsed.rest;
-  if (!valueJson) throw new Error("board_patch needs: <json_values> [if_versions_json]");
-  const result = await client.patchBoard(JSON.parse(valueJson), { ifVersions: ifVersionsJson ? JSON.parse(ifVersionsJson) : undefined });
-  return JSON.stringify(result, null, 2);
-}
-
-async function handleBoardDelete(parsed: ParsedArgs): Promise<string> {
-  const client = await getClient(parsed);
-  const [key, ifVersion] = parsed.rest;
-  if (!key) throw new Error("board_delete needs: <key> [if_version]");
-  const result = await client.deleteBoardKey(key, { ifVersion: ifVersion === undefined ? undefined : Number(ifVersion) });
-  return JSON.stringify(result, null, 2);
-}
-
-async function handleStatus(parsed: ParsedArgs): Promise<string> {
-  const client = await getClient(parsed);
-  const [state, status] = parsed.rest;
-  if (!state || !status) throw new Error("status needs: <free|busy> <status_text>");
-  const result = await client.updateStatus(state as "free" | "busy", status);
-  return JSON.stringify(result, null, 2);
-}
-
-async function handleWebhook(parsed: ParsedArgs): Promise<string> {
-  const client = await getClient(parsed);
-  const [url] = parsed.rest;
-  if (!url) throw new Error("webhook needs: <https_url|off>");
-  const result = await client.setWebhook(url === "off" ? null : url);
-  return JSON.stringify(result, null, 2);
 }
 
 async function handleLeave(parsed: ParsedArgs): Promise<string> {
@@ -493,26 +389,6 @@ async function handleClose(parsed: ParsedArgs): Promise<string> {
   const result = await client.close();
   sessions.delete(`${client.invite.room_url}:${client.participantId}`);
   forgetRoom(client.invite, client.participantId);
-  return JSON.stringify(result, null, 2);
-}
-
-async function handleParticipants(parsed: ParsedArgs): Promise<string> {
-  const client = await getClient(parsed);
-  const result = await client.participants();
-  return JSON.stringify(result, null, 2);
-}
-
-async function handleStatusInfo(parsed: ParsedArgs): Promise<string> {
-  const client = await getClient(parsed);
-  const result = await client.status();
-  return JSON.stringify(result, null, 2);
-}
-
-async function handleTransition(parsed: ParsedArgs): Promise<string> {
-  const client = await getClient(parsed);
-  const [event] = parsed.rest;
-  if (!event) throw new Error("transition needs: <event>");
-  const result = await client.transition(event);
   return JSON.stringify(result, null, 2);
 }
 
@@ -540,14 +416,6 @@ async function handleProfile(parsed: ParsedArgs): Promise<string> {
   }
   if (Object.keys(profile).length > 0) await client.setProfile(profile);
   return JSON.stringify({ ok: true, team: await client.team() }, null, 2);
-}
-
-/** Host only: hand the host role to another participant in the room. */
-async function handleHost(parsed: ParsedArgs): Promise<string> {
-  const client = await getClient(parsed);
-  const [to] = parsed.rest;
-  if (!to) throw new Error("host needs: <participant to make host>");
-  return JSON.stringify(await client.transferHost(to), null, 2);
 }
 
 // ── Agent inbox: invite agents by name (j01n.me/a/<name>); same identity file as the CLI helper ──
@@ -690,23 +558,23 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   invite_herdr: handleInviteHerdr,
   create: handleCreate,
   join: handleJoin,
-  send: handleSend,
-  read: (parsed) => handleRead(parsed, false),
-  inbox: (parsed) => handleRead(parsed, true),
+  send: sharedCommand,
+  read: sharedCommand,
+  inbox: sharedCommand,
   doctor: handleDoctor,
-  board: handleBoard,
-  board_set: handleBoardSet,
-  board_patch: handleBoardPatch,
-  board_delete: handleBoardDelete,
-  status: handleStatus,
-  webhook: handleWebhook,
-  wait: handleWait,
+  board: sharedCommand,
+  board_set: sharedCommand,
+  board_patch: sharedCommand,
+  board_delete: sharedCommand,
+  status: sharedCommand,
+  webhook: sharedCommand,
+  wait: sharedCommand,
   leave: handleLeave,
   close: handleClose,
-  participants: handleParticipants,
-  room_status: handleStatusInfo,
-  transition: handleTransition,
-  host: handleHost,
+  participants: sharedCommand,
+  room_status: sharedCommand,
+  transition: sharedCommand,
+  host: sharedCommand,
   profile: handleProfile,
 };
 

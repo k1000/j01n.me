@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detectWorkspace } from "@j01n/sdk/node";
+import { detectWorkspace, localStateDir } from "@j01n/sdk/node";
 import { checkConflicts } from "@j01n/sdk/conflicts-node";
 import type { RoomClient } from "@j01n/sdk";
 
@@ -56,5 +56,23 @@ describe("checkout identity and real merge conflicts", () => {
     expect(report.conflicts).toEqual([{ branches: ["feature/a", "feature/b"], files: ["shared.txt"] }]);
     expect(report.comparisons).toHaveLength(3);
     expect((await checkConflicts(client, repo, "feature/a")).conflicts).toEqual(report.conflicts);
+  });
+
+  it("keeps key files in the directory, except on /Volumes where a private internal folder is used", () => {
+    const dir = mkdtempSync(join(tmpdir(), "j01n-state-")); dirs.push(dir);
+    expect(localStateDir(dir)).toBe(".");
+    process.env.J01N_KEY_DIR = join(dir, "keys");
+    try { expect(localStateDir("/")).toBe(join(dir, "keys")); expect(statSync(join(dir, "keys")).mode & 0o777).toBe(0o700); }
+    finally { delete process.env.J01N_KEY_DIR; }
+    if (!existsSync("/Volumes")) return;
+    const home = mkdtempSync(join(tmpdir(), "j01n-home-")); dirs.push(home);
+    const previous = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const state = localStateDir("/Volumes");
+      expect(state.startsWith(join(home, ".config", "j01n", "rooms") + "/")).toBe(true);
+      expect(statSync(state).mode & 0o777).toBe(0o700);
+      expect(localStateDir("/Volumes")).toBe(state);
+    } finally { process.env.HOME = previous; }
   });
 });

@@ -3,7 +3,7 @@
 import * as fs from "node:fs/promises";
 import { createHash, webcrypto } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { relative, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import {
   buildMinimalInvite, getClientUpdateNotice, inviteLink, joinRoom, resumeRoom, parseInviteLink,
   registerAgent, setAcceptFrom, inviteAgent, waitForInvites, deleteInvite,
@@ -15,7 +15,7 @@ import { RoomApiError } from "@j01n/sdk/errors";
 import { request } from "@j01n/sdk/transport";
 import { parseRoomBody, runProfileCommand, runReservationCommand, runRoomCommand } from "@j01n/sdk/room-commands";
 import { notesAndDecisions } from "@j01n/sdk/notes";
-import { detectWorkspace } from "@j01n/sdk/node";
+import { detectWorkspace, localStateDir } from "@j01n/sdk/node";
 import { checkConflicts } from "@j01n/sdk/conflicts-node";
 import type { RoomClient } from "@j01n/sdk";
 
@@ -26,7 +26,9 @@ const output = (value: unknown) => console.log(JSON.stringify(value, null, 2));
 const names = (value?: string) => String(value || "").split(",").map((v) => v.trim()).filter(Boolean);
 const base = (process.env.BASE_URL || "https://j01n.me").replace(/\/$/, "");
 const safe = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "_");
-const activeDir = ".j01n-rooms";
+// Key files and identities: this directory, or a private folder on the internal disk when it is on /Volumes.
+const stateDir = localStateDir();
+const activeDir = join(stateDir, ".j01n-rooms");
 const activePath = (url: string, me: string) => `${activeDir}/${createHash("sha256").update(url + "\0" + me).digest("hex")}.json`;
 const isUrl = (value?: string) => !!value && /^https?:/.test(value);
 const git = (...argv: string[]) => { try { return execFileSync("git", argv, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined; } catch { return undefined; } };
@@ -85,7 +87,7 @@ async function resolveRoom(): Promise<Resolved> {
 async function agents() {
   const me = args[1]; const rest = args.slice(2);
   if (!me) throw Error("usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]");
-  const file = `.j01n-agent-${safe(me)}.json`;
+  const file = join(stateDir, `.j01n-agent-${safe(me)}.json`);
   if (cmd === "register") {
     const identity = await registerAgent(base, me, names(rest[0]));
     await fs.writeFile(file, JSON.stringify(identity, null, 2), { mode: 0o600 });
@@ -105,11 +107,16 @@ async function agents() {
     output((result.invites || []).map(({ id, from, created_at }) => ({ id, from, created_at })));
   }
   if (cmd === "listen") {
-    const pending = await waitForInvites(identity, Number(rest[0]) || 50);
+    // listen <me> [timeout] [--as <participant id>] [join flags, e.g. --display-name Maya --role builder]
+    const as = rest.indexOf("--as");
+    const participant = as >= 0 ? rest[as + 1] : me;
+    if (!participant || !/^[a-z][a-z0-9_-]{0,31}$/.test(participant)) throw Error("--as needs a valid room participant id");
+    const flags = rest.filter((arg, i) => !/^\d+$/.test(arg) && (as < 0 || (i !== as && i !== as + 1)));
+    const pending = await waitForInvites(identity, Number(rest.find((arg) => /^\d+$/.test(arg))) || 50);
     if (!pending.length) { output({ timeout: true }); return; }
     const invite = pending[0];
     await deleteInvite(identity, invite.id);
-    const joined = JSON.parse(execFileSync(process.execPath, [process.argv[1], "join", invite.room_link, me], { encoding: "utf8", env: process.env }));
+    const joined = JSON.parse(execFileSync(process.execPath, [process.argv[1], "join", invite.room_link, participant, ...flags], { encoding: "utf8", env: process.env }));
     output({ invited_by: invite.from, ...joined });
   }
 }
@@ -125,7 +132,7 @@ async function main() {
   if (["register", "allow", "invite", "invites", "listen"].includes(cmd || "")) { await agents(); return; }
   const { roomUrl, secret, me, rest, token } = await resolveRoom();
   if (!cmd || !roomUrl || !secret || !me) throw Error("usage: j01n <create|join|send|read|team|watch|doctor> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.");
-  const keyFile = `.j01n-${safe(new URL(roomUrl).pathname)}-${safe(me)}.json`;
+  const keyFile = join(stateDir, `.j01n-${safe(new URL(roomUrl).pathname)}-${safe(me)}.json`);
   let state: any;
   try { state = JSON.parse(await fs.readFile(keyFile, "utf8")); } catch { state = { ...await createSdkCryptoSession(me).then((s) => s.exportKeyPair()), peers: {}, created: true }; }
   const created = !!state.created;
@@ -146,8 +153,10 @@ async function main() {
   } else client = await resumeRoom(invite, me, session);
   const announce = async () => { const key = (await session.announceKeyBody()).public_key; if (state.announcedKey !== key) { await client.announceKey(); state.announcedKey = key; await save(); } };
   if (cmd === "join") {
-    const announced: { capabilities?: string[]; model?: string; provider?: string; workspace?: ReturnType<typeof detectWorkspace>["workspace"]; checkout?: string } = {};
+    const announced: { capabilities?: string[]; model?: string; provider?: string; workspace?: ReturnType<typeof detectWorkspace>["workspace"]; checkout?: string; display_name?: string; role?: string } = {};
     const i = rest.indexOf("--capabilities"); if (i >= 0) announced.capabilities = names(rest[i + 1]);
+    const d = rest.indexOf("--display-name"); if (d >= 0 && rest[d + 1]) announced.display_name = rest[d + 1];
+    const r = rest.indexOf("--role"); if (r >= 0 && rest[r + 1]) announced.role = rest[r + 1];
     const mine = (await client.team()).find((p) => p.id === me);
     const model = modelProfile(rest);
     if (model.model && model.model !== mine?.model) announced.model = model.model;

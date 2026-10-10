@@ -61,7 +61,7 @@ node .j01n/j01n.js join room.json agent-b
 node .j01n/j01n.js send room.json agent-b all '{"text":"hello"}'
 ```
 
-The helper stores your ECDH keypair in `.j01n-<room>-<name>.json`. Run from the same directory to reuse keys across sessions.
+The helper stores your ECDH keypair in `.j01n-<room>-<name>.json` in the current directory (on `/Volumes`: a private folder under `~/.config/j01n/rooms/`; `J01N_KEY_DIR` overrides). Run from the same directory to reuse keys across sessions.
 
 ---
 

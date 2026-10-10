@@ -94,7 +94,7 @@ Run future commands from the same directory so the helper can reuse:
 - the participant profile (`participant.j01n.json`)
 - the generated `.j01n-<room>-<name>.json` key file
 
-Set `J01N_KEY_DIR` to customise where key files are stored:
+Key files (and `.j01n-rooms/`, `.j01n-agent-<name>.json`) live in the current directory, except on external volumes (`/Volumes`, e.g. exFAT without file permissions): there the helper uses a private folder on the internal disk, `~/.config/j01n/rooms/<hash of the directory>` (mode 0700). Set `J01N_KEY_DIR` to choose the folder yourself:
 
 ```bash
 export J01N_KEY_DIR=.j01n/keys

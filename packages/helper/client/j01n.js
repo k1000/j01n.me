@@ -27,9 +27,9 @@
 
 // packages/helper/src/cli.ts
 import * as fs from "node:fs/promises";
-import { createHash, webcrypto } from "node:crypto";
+import { createHash as createHash2, webcrypto } from "node:crypto";
 import { execFileSync as execFileSync3 } from "node:child_process";
-import { relative, resolve as resolve2 } from "node:path";
+import { join as join2, relative, resolve as resolve2 } from "node:path";
 
 // packages/sdk/src/errors.ts
 var RoomApiError = class extends Error {
@@ -814,7 +814,7 @@ async function joinRoom(inviteInput, participantId, opts = {}, existingSession) 
   const { workspace, ...profile } = opts;
   const cryptoSession = existingSession ?? await createSdkCryptoSession(participantId);
   const publicKeyBody = await cryptoSession.announceKeyBody();
-  const join = await request(
+  const join3 = await request(
     `${invite.room_url}/participants/${encodeURIComponent(participantId)}`,
     invite,
     {
@@ -827,11 +827,11 @@ async function joinRoom(inviteInput, participantId, opts = {}, existingSession) 
       }
     }
   );
-  if (join.peers && join.peers.length > 0) {
-    await cryptoSession.processPeerKeys(join.peers);
+  if (join3.peers && join3.peers.length > 0) {
+    await cryptoSession.processPeerKeys(join3.peers);
   }
-  const roomInvite = { ...invite, participant_token: join.participant_token };
-  const room = await buildRoomClient(roomInvite, participantId, join.cursor, cryptoSession);
+  const roomInvite = { ...invite, participant_token: join3.participant_token };
+  const room = await buildRoomClient(roomInvite, participantId, join3.cursor, cryptoSession);
   await room.announceKey();
   return room;
 }
@@ -1087,10 +1087,10 @@ async function runProfileCommand(client, rest, options) {
 
 // packages/sdk/src/node.ts
 import { execFileSync } from "node:child_process";
-import { createHmac, hkdfSync } from "node:crypto";
-import { realpathSync } from "node:fs";
-import { hostname } from "node:os";
-import { resolve } from "node:path";
+import { createHash, createHmac, hkdfSync } from "node:crypto";
+import { mkdirSync, realpathSync } from "node:fs";
+import { homedir, hostname } from "node:os";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 function git(cwd, ...args2) {
   try {
@@ -1098,6 +1098,17 @@ function git(cwd, ...args2) {
   } catch {
     return void 0;
   }
+}
+function localStateDir(cwd = process.cwd()) {
+  if (process.env.J01N_KEY_DIR) {
+    mkdirSync(process.env.J01N_KEY_DIR, { recursive: true, mode: 448 });
+    return process.env.J01N_KEY_DIR;
+  }
+  const path = realpathSync(cwd);
+  if (path !== "/Volumes" && !path.startsWith("/Volumes/")) return ".";
+  const dir = join(homedir(), ".config", "j01n", "rooms", createHash("sha256").update(path).digest("hex").slice(0, 16));
+  mkdirSync(dir, { recursive: true, mode: 448 });
+  return dir;
 }
 function detectWorkspace(joinSecret, roomId, cwd = process.cwd(), host = hostname()) {
   const root = realpathSync(git(cwd, "rev-parse", "--show-toplevel") || resolve(cwd));
@@ -1186,8 +1197,9 @@ var output = (value) => console.log(JSON.stringify(value, null, 2));
 var names = (value) => String(value || "").split(",").map((v) => v.trim()).filter(Boolean);
 var base = (process.env.BASE_URL || "https://j01n.me").replace(/\/$/, "");
 var safe = (value) => value.replace(/[^a-zA-Z0-9_-]/g, "_");
-var activeDir = ".j01n-rooms";
-var activePath = (url, me) => `${activeDir}/${createHash("sha256").update(url + "\0" + me).digest("hex")}.json`;
+var stateDir = localStateDir();
+var activeDir = join2(stateDir, ".j01n-rooms");
+var activePath = (url, me) => `${activeDir}/${createHash2("sha256").update(url + "\0" + me).digest("hex")}.json`;
 var isUrl = (value) => !!value && /^https?:/.test(value);
 var git3 = (...argv) => {
   try {
@@ -1260,7 +1272,7 @@ async function agents() {
   const me = args[1];
   const rest = args.slice(2);
   if (!me) throw Error("usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]");
-  const file = `.j01n-agent-${safe(me)}.json`;
+  const file = join2(stateDir, `.j01n-agent-${safe(me)}.json`);
   if (cmd === "register") {
     const identity2 = await registerAgent(base, me, names(rest[0]));
     await fs.writeFile(file, JSON.stringify(identity2, null, 2), { mode: 384 });
@@ -1282,14 +1294,18 @@ async function agents() {
     output((result.invites || []).map(({ id, from, created_at }) => ({ id, from, created_at })));
   }
   if (cmd === "listen") {
-    const pending = await waitForInvites(identity, Number(rest[0]) || 50);
+    const as = rest.indexOf("--as");
+    const participant = as >= 0 ? rest[as + 1] : me;
+    if (!participant || !/^[a-z][a-z0-9_-]{0,31}$/.test(participant)) throw Error("--as needs a valid room participant id");
+    const flags = rest.filter((arg, i) => !/^\d+$/.test(arg) && (as < 0 || i !== as && i !== as + 1));
+    const pending = await waitForInvites(identity, Number(rest.find((arg) => /^\d+$/.test(arg))) || 50);
     if (!pending.length) {
       output({ timeout: true });
       return;
     }
     const invite = pending[0];
     await deleteInvite(identity, invite.id);
-    const joined = JSON.parse(execFileSync3(process.execPath, [process.argv[1], "join", invite.room_link, me], { encoding: "utf8", env: process.env }));
+    const joined = JSON.parse(execFileSync3(process.execPath, [process.argv[1], "join", invite.room_link, participant, ...flags], { encoding: "utf8", env: process.env }));
     output({ invited_by: invite.from, ...joined });
   }
 }
@@ -1309,7 +1325,7 @@ async function main() {
   }
   const { roomUrl, secret, me, rest, token } = await resolveRoom();
   if (!cmd || !roomUrl || !secret || !me) throw Error("usage: j01n <create|join|send|read|team|watch|doctor> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.");
-  const keyFile = `.j01n-${safe(new URL(roomUrl).pathname)}-${safe(me)}.json`;
+  const keyFile = join2(stateDir, `.j01n-${safe(new URL(roomUrl).pathname)}-${safe(me)}.json`);
   let state;
   try {
     state = JSON.parse(await fs.readFile(keyFile, "utf8"));
@@ -1352,6 +1368,10 @@ async function main() {
     const announced = {};
     const i = rest.indexOf("--capabilities");
     if (i >= 0) announced.capabilities = names(rest[i + 1]);
+    const d = rest.indexOf("--display-name");
+    if (d >= 0 && rest[d + 1]) announced.display_name = rest[d + 1];
+    const r = rest.indexOf("--role");
+    if (r >= 0 && rest[r + 1]) announced.role = rest[r + 1];
     const mine = (await client.team()).find((p) => p.id === me);
     const model = modelProfile(rest);
     if (model.model && model.model !== mine?.model) announced.model = model.model;

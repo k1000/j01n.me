@@ -15,11 +15,6 @@ function gitCommonDir(cwd: string): string | undefined {
   } catch { return undefined; }
 }
 
-export function isExternalStorage(cwd: string): boolean {
-  const physical = realpathSync(cwd);
-  return physical === "/Volumes" || physical.startsWith("/Volumes/");
-}
-
 function safeName(value: string): string {
   const name = value.toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/^[^a-z]+/, "").slice(0, 20);
   return name || "agent";
@@ -38,7 +33,7 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeout: number)
 
 type Client = Pick<RoomClient, "status" | "team" | "participantId">;
 type Candidate = HerdrRepoAgent;
-type Result = { pane: string; agent: string; cwd: string; address?: string; status: "invited" | "busy" | "not_registered" | "failed"; reason?: string };
+type Result = { pane: string; agent: string; cwd: string; address?: string; status: "invited" | "busy" | "not_registered" | "failed" };
 
 /** Compare git's physical common directory, not worktree roots or remote URLs. */
 export async function repoInviteCandidates(client: Client, cwd = process.cwd()): Promise<Candidate[]> {
@@ -74,10 +69,6 @@ export async function inviteRepoAgents(client: Client, sender: AgentIdentity, li
     const item: Result = { pane: peer.pane_id, agent: peer.name || peer.agent, cwd: peer.cwd, status: "failed" };
     if (index >= seats) return item;
     try {
-      // The standalone helper writes inbox and room secrets into cwd; unlike Pi it has no private identity directory.
-      if (peer.agent !== "pi" && isExternalStorage(peer.cwd)) {
-        return { ...item, reason: "non-Pi CLI stores private identity files in cwd on external storage" };
-      }
       const free = await waitFor(() => {
         const current = listHerdrRepoAgents().find((p) => p.pane_id === peer.pane_id);
         return !current || current.agent_status !== "working";
@@ -86,9 +77,6 @@ export async function inviteRepoAgents(client: Client, sender: AgentIdentity, li
       // Recheck the pane just before touching it, not only at discovery time.
       const current = listHerdrRepoAgents().find((p) => p.pane_id === peer.pane_id);
       if (!current || current.agent_status === "working" || gitCommonDir(current.cwd) !== gitCommonDir(cwd)) return item;
-      if (peer.agent !== "pi" && isExternalStorage(current.cwd)) {
-        return { ...item, reason: "non-Pi CLI stores private identity files in cwd on external storage" };
-      }
       const base = safeName(peer.name || peer.agent);
       let address = "";
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -111,7 +99,7 @@ export async function inviteRepoAgents(client: Client, sender: AgentIdentity, li
       names.add(friendly);
       // A registration prompt may still be in progress. Do not type over a working agent.
       if (!await waitFor(() => listHerdrRepoAgents().find((p) => p.pane_id === peer.pane_id)?.agent_status !== "working", 60_000)) return { ...item, status: "busy" };
-      const listen = pi ? `/j01n listen ${address} --as ${friendly} --display-name ${friendly} --role builder` : `node .j01n/j01n.js listen ${address}`;
+      const listen = `${pi ? "/j01n" : "node .j01n/j01n.js"} listen ${address} --as ${friendly} --display-name ${friendly} --role builder`;
       promptHerdrAgent(peer.pane_id, `A sealed invitation from ${sender.name} is waiting for ${address}. Run ${listen} to join. Do not paste room credentials into Herdr.`);
       return { ...item, status: "invited" };
     } catch {

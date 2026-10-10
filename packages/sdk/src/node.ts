@@ -1,14 +1,30 @@
 import { execFileSync } from "node:child_process";
-import { createHmac, hkdfSync } from "node:crypto";
-import { realpathSync } from "node:fs";
-import { hostname } from "node:os";
-import { resolve } from "node:path";
+import { createHash, createHmac, hkdfSync } from "node:crypto";
+import { mkdirSync, realpathSync } from "node:fs";
+import { homedir, hostname } from "node:os";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Workspace } from "./crypto";
 
 function git(cwd: string, ...args: string[]): string | undefined {
   try { return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined; }
   catch { return undefined; }
+}
+
+/**
+ * Where room key files and agent identities are saved: J01N_KEY_DIR when set, else the current directory ("."),
+ * except on external volumes (/Volumes, e.g. exFAT without permissions): a private per-directory internal folder.
+ */
+export function localStateDir(cwd = process.cwd()): string {
+  if (process.env.J01N_KEY_DIR) {
+    mkdirSync(process.env.J01N_KEY_DIR, { recursive: true, mode: 0o700 });
+    return process.env.J01N_KEY_DIR;
+  }
+  const path = realpathSync(cwd);
+  if (path !== "/Volumes" && !path.startsWith("/Volumes/")) return ".";
+  const dir = join(homedir(), ".config", "j01n", "rooms", createHash("sha256").update(path).digest("hex").slice(0, 16));
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
 }
 
 /** Node-only workspace discovery; the location URL never leaves this process. */

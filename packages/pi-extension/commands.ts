@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { roomReplyHint, roomReplyHints, runProfileCommand, runReservationCommand, runRoomCommand } from "@j01n/sdk/room-commands";
 import { notesAndDecisions } from "@j01n/sdk/notes";
-import { detectWorkspace } from "@j01n/sdk/node";
+import { detectWorkspace, localStateDir } from "@j01n/sdk/node";
 import { checkConflicts } from "@j01n/sdk/conflicts-node";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
@@ -17,7 +17,8 @@ import { removeMergedPeerWorktrees, requirePrivateIdentityDir } from "./spawn-he
 import { getExtensionDiagnostics } from "./version";
 
 const sessions = new Map<string, RoomClient>();
-const ACTIVE_ROOMS_DIR = ".j01n-rooms";
+/** Key files and identities: this directory, or a private folder on the internal disk when it is on /Volumes. */
+const activeRoomsDir = () => join(localStateDir(), ".j01n-rooms");
 
 async function getClient(parsed: ParsedArgs): Promise<RoomClient> {
   if (!parsed.me) throw new Error("needs: participant_id. Use join first to create a session.");
@@ -26,7 +27,7 @@ async function getClient(parsed: ParsedArgs): Promise<RoomClient> {
 
 /** Same key file name and format as the tiny CLI helper, so both share one identity per room. */
 function keyFilePath(roomUrl: string, me: string): string {
-  return ".j01n-" + new URL(roomUrl).pathname.replace(/[^a-zA-Z0-9_-]/g, "_") + "-" + me.replace(/[^a-zA-Z0-9_-]/g, "_") + ".json";
+  return join(localStateDir(), ".j01n-" + new URL(roomUrl).pathname.replace(/[^a-zA-Z0-9_-]/g, "_") + "-" + me.replace(/[^a-zA-Z0-9_-]/g, "_") + ".json");
 }
 
 interface SavedSession {
@@ -46,17 +47,18 @@ interface ActiveRoom {
 
 function roomStatePath(roomUrl: string, participantId: string): string {
   const id = createHash("sha256").update(`${roomUrl}\0${participantId}`).digest("hex");
-  return join(ACTIVE_ROOMS_DIR, `${id}.json`);
+  return join(activeRoomsDir(), `${id}.json`);
 }
 
 function activeRooms(): ActiveRoom[] {
-  if (!existsSync(ACTIVE_ROOMS_DIR)) return [];
-  return readdirSync(ACTIVE_ROOMS_DIR)
+  const dir = activeRoomsDir();
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
     .filter((name) => /^[0-9a-f]{64}\.json$/.test(name))
     .map((name) => {
-      const room: ActiveRoom = JSON.parse(readFileSync(join(ACTIVE_ROOMS_DIR, name), "utf8"));
+      const room: ActiveRoom = JSON.parse(readFileSync(join(dir, name), "utf8"));
       if (!room || typeof room.room_url !== "string" || typeof room.participant_id !== "string" ||
-        roomStatePath(room.room_url, room.participant_id) !== join(ACTIVE_ROOMS_DIR, name)) {
+        roomStatePath(room.room_url, room.participant_id) !== join(dir, name)) {
         throw new Error("Invalid active-room file; use an explicit invitation to rejoin");
       }
       return room;
@@ -64,7 +66,7 @@ function activeRooms(): ActiveRoom[] {
 }
 
 function rememberRoom(invite: Invite, participantId: string): void {
-  mkdirSync(ACTIVE_ROOMS_DIR, { recursive: true, mode: 0o700 });
+  mkdirSync(activeRoomsDir(), { recursive: true, mode: 0o700 });
   const target = roomStatePath(invite.room_url, participantId);
   const temporary = `${target}.${process.pid}.tmp`;
   writeFileSync(temporary, JSON.stringify({ room_url: invite.room_url, participant_id: participantId }), { mode: 0o600 });
@@ -410,7 +412,7 @@ async function handleProfile(parsed: ParsedArgs): Promise<string> {
 
 // ── Agent inbox: invite agents by name (j01n.me/a/<name>); same identity file as the CLI helper ──
 function agentFile(me: string): string {
-  return join(process.env.J01N_AGENT_DIR || ".", `.j01n-agent-${me.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+  return join(process.env.J01N_AGENT_DIR || localStateDir(), `.j01n-agent-${me.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
 }
 
 function loadAgent(me: string | undefined): AgentIdentity {

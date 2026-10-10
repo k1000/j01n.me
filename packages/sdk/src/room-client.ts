@@ -212,6 +212,11 @@ export async function buildRoomClient(
           const kickoff = await openKickoff(msg.body, invite.join_secret, invite.room_id).catch(() => undefined);
           return kickoff === undefined ? { ...msg, decrypt_error: "sealed kickoff: open it with the room link or invitation (join secret)" } : { ...msg, body: kickoff };
         }
+        // A profile.changed announcement carries the new workspace sealed with the room key.
+        const announced = msg.body as { workspace?: unknown } | null;
+        if (msg.intent === "profile.changed" && typeof announced?.workspace === "string") {
+          return { ...msg, body: { ...announced, workspace: await openWorkspace(announced.workspace, invite.join_secret, invite.room_id).catch(() => null) } };
+        }
         // Not decryptable with this key (e.g. sent to an older key): keep it encrypted and say so.
         const body = await session.decryptMessageBody(msg).catch(() => msg.body);
         return isEncryptedBody(body)

@@ -90,6 +90,18 @@ describe("pi-extension sessions", () => {
     expect(JSON.parse(calls.find((c) => c.method === "PATCH")!.body!).workspace).toMatch(/^jsk1:/);
   });
 
+  it("re-joining from the same place does not announce the workspace again (no chat noise, no wake-ups)", async () => {
+    const { sealWorkspace } = await import("@j01n/sdk");
+    const sealed = await sealWorkspace({ path: process.cwd() }, "secret", "room-1");
+    const base = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url).endsWith("/participants")
+      ? Promise.resolve(Response.json({ participants: [{ id: "pi-agent", workspace: sealed }] }))
+      : base(url, init));
+    const { runj01n } = await import("../commands");
+    await runj01n(["join", ROOM, "secret", "pi-agent"]);
+    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+  });
+
   it("returns no kickoff for an empty board without failing the join", async () => {
     const { runj01n } = await import("../commands");
     expect(JSON.parse(await runj01n(["join", ROOM, "secret", "pi-agent"])).kickoff).toBeNull();

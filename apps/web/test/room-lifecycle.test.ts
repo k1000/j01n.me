@@ -871,6 +871,33 @@ describe("capabilities and workspace", () => {
     expect((await agentA(fix))?.workspace).toBeUndefined();
   });
 
+  it("announces capability and workspace changes in the chat for everyone (not status-only updates)", async () => {
+    const fix = await bootstrapRoom();
+    await joinParticipant(fix, "agent-a");
+    await joinParticipant(fix, "agent-b");
+    const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-b");
+    const wait = (id: string, timeout: number) => roomRequest(fix, `/wait?after=${cursor}&timeout=${timeout}`, { headers: participantAuthHeaders(fix, id) })
+      .then((r) => r.json() as Promise<{ timeout?: true; message?: RoomMessage }>);
+    const bWaits = wait("agent-b", 5);
+    const aWaits = wait("agent-a", 1);
+    await new Promise((r) => setTimeout(r, 50));
+    const sealed = (await sealKickoff({ path: "/work/web", branch: "feature/x" }, fix.joinSecret, fix.roomId)).encrypted_payload;
+    await patch(fix, { capabilities: ["code", "browser"], workspace: sealed });
+
+    const woke = (await bWaits).message!;
+    expect(woke).toMatchObject({ from: "system", to: "all", intent: "profile.changed", body: { text: "agent-a can now: code, browser; agent-a changed workspace", participant_id: "agent-a", capabilities: ["code", "browser"] } });
+    expect(await openKickoff({ encrypted_payload: (woke.body as { workspace: string }).workspace }, fix.joinSecret, fix.roomId)).toEqual({ path: "/work/web", branch: "feature/x" });
+    expect(await aWaits).toMatchObject({ timeout: true });
+
+    const announcements = async () => (await getRoomJson<{ messages: RoomMessage[] }>(fix, "/?view=all", "agent-b")).messages.filter((m) => m.intent === "profile.changed").length;
+    expect(await announcements()).toBe(1);
+    await patch(fix, { status: "working", capabilities: ["code", "browser"] });
+    expect(await announcements()).toBe(1);
+    await patch(fix, { workspace: null });
+    const all = (await getRoomJson<{ messages: RoomMessage[] }>(fix, "/?view=all", "agent-b")).messages.filter((m) => m.intent === "profile.changed");
+    expect((all[1].body as { text: string }).text).toBe("agent-a stopped announcing its workspace");
+  });
+
   it("rejects a plaintext workspace so the server never stores paths", async () => {
     const fix = await bootstrapRoom();
     await joinParticipant(fix, "agent-a");

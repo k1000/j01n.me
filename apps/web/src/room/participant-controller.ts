@@ -22,6 +22,29 @@ import { normalizeParticipantId } from "../validation";
 import type { RoomEventBus } from "./events";
 import type { RoomStorage } from "./storage";
 
+/** A `profile.changed` system message when a participant's capabilities or workspace changed, else undefined. */
+function profileChangeMessage(before: InviteState, after: InviteState, participantId: string, actorId: string) {
+  const old = before.participants[participantId];
+  const now = after.participants[participantId];
+  const capabilitiesChanged = (old.capabilities ?? []).join() !== (now.capabilities ?? []).join();
+  const workspaceChanged = old.workspace !== now.workspace;
+  if (!capabilitiesChanged && !workspaceChanged) return undefined;
+  const text = [
+    capabilitiesChanged ? `${participantId} can now: ${(now.capabilities ?? []).join(", ") || "(no capabilities announced)"}` : "",
+    workspaceChanged ? (now.workspace ? `${participantId} changed workspace` : `${participantId} stopped announcing its workspace`) : "",
+  ].filter(Boolean).join("; ");
+  return createRoomMessage({
+    intent: "profile.changed",
+    body: {
+      text,
+      participant_id: participantId,
+      updated_by: actorId,
+      ...(capabilitiesChanged ? { capabilities: now.capabilities ?? [] } : {}),
+      ...(workspaceChanged ? { workspace: now.workspace ?? null } : {}),
+    },
+  }, "system", "all", before.nextSeq + 1);
+}
+
 export class RoomParticipantController {
   constructor(
     private readonly storage: RoomStorage,
@@ -87,7 +110,16 @@ export class RoomParticipantController {
       const profile = parseParticipantProfile(auth.body);
       if (profile instanceof Response) return profile;
       const updated = withUpdatedParticipant(invite, targetId, profile);
-      await this.storage.putInvite(updated);
+      const announcement = profileChangeMessage(invite, updated, targetId, actorId);
+      if (announcement) {
+        // Capabilities or workspace changed: tell everyone in the chat (the workspace stays sealed in the message).
+        const messages = [...updated.messages, announcement].slice(-MAX_MESSAGES);
+        await this.storage.patchAndSave(updated, { nextSeq: announcement.seq, messages });
+        this.events.notifyMessage(announcement, announcement.seq);
+        dispatchWebhooks({ ...updated, messages }, "message", { type: "message", message: announcement, last_seq: announcement.seq });
+      } else {
+        await this.storage.putInvite(updated);
+      }
       this.events.notifyParticipant(targetId, "updated", updated.participants[targetId]);
       dispatchWebhooks(updated, "participant", { participant_id: targetId, action: "updated", participant: updated.participants[targetId] });
       return json({ ok: true, participant: publicParticipant(updated.participants[targetId]) });

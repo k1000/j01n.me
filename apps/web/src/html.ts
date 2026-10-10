@@ -1083,6 +1083,10 @@ function roomPageScript(roomId: string): string {
   async function cleanMessageBody(message, allMessages) {
     if (message.intent === "participant.joined") return String(message.body?.participant_id || message.from) + " joined the room.";
     if (message.intent === "key.exchange") return String(message.from) + " announced an encryption key.";
+    if (message.intent === "profile.changed" && typeof message.body?.workspace === "string") {
+      const ws = await openSealedKickoff(message.body.workspace).catch(() => null);
+      return String(message.body.text || "") + (ws ? ": " + [ws.repo, ws.branch && "@" + ws.branch, ws.path].filter(Boolean).join(" ") : "");
+    }
     if (message.intent === "kickoff" && typeof message.body?.encrypted_payload === "string" && message.body.encrypted_payload.startsWith("jsk1:")) {
       try { return formatMessageValue(await openSealedKickoff(message.body.encrypted_payload)); }
       catch { return "Encrypted message."; }

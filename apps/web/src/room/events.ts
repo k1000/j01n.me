@@ -65,9 +65,9 @@ export interface RoomEventBus {
   notifyParticipant(participantId: string, action: string, participant?: Participant): void;
 }
 
-/** Who caused a message: its sender, or for a board.changed / host.changed announcement the participant who acted. */
+/** Who caused a message: its sender, or for a board / host / profile .changed announcement the participant who acted. */
 export function messageActor(message: RoomMessage): string {
-  return message.intent === "board.changed" || message.intent === "host.changed" ? ((message.body as { updated_by?: string }).updated_by ?? message.from) : message.from;
+  return message.intent === "board.changed" || message.intent === "host.changed" || message.intent === "profile.changed" ? ((message.body as { updated_by?: string }).updated_by ?? message.from) : message.from;
 }
 
 export class RoomEvents implements RoomEventBus {

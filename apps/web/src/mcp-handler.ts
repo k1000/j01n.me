@@ -319,6 +319,11 @@ async function decryptRoomMessages(crypto: SdkCryptoSession, messages: RoomMessa
       const kickoff = secret === SESSION_ROOM_SECRET ? undefined : await openKickoff(msg.body, secret, roomId).catch(() => undefined);
       return kickoff === undefined ? { ...msg, decrypt_error: "sealed kickoff: pass the room link (inviteJson) to open it" } : { ...msg, body: kickoff };
     }
+    // A profile.changed announcement carries the new workspace sealed with the room key.
+    const announced = msg.body as { workspace?: unknown } | null;
+    if (msg.intent === "profile.changed" && typeof announced?.workspace === "string" && secret !== SESSION_ROOM_SECRET) {
+      return { ...msg, body: { ...announced, workspace: await openWorkspace(announced.workspace, secret, roomId).catch(() => null) } };
+    }
     const body = await crypto.decryptMessageBody(msg).catch(() => msg.body);
     return isEncryptedBody(body)
       ? { ...msg, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" }

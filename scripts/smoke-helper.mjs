@@ -74,6 +74,7 @@ try {
 
   const changed = run(a, ["profile", "--capabilities", "code,browser"]);
   check("profile changes capabilities during the session", changed.team?.find((p) => p.id === "smoke-a")?.capabilities?.join() === "code,browser");
+  check("the change is announced in the chat for everyone", run(b, ["read"]).some((m) => m.intent === "profile.changed" && m.body?.text === "smoke-a can now: code, browser"));
   check("host hands the role to another participant", run(a, ["host", "smoke-b"]).host_id === "smoke-b");
   check("the new host can hand it back", run(b, ["host", "smoke-a"]).host_id === "smoke-a");
 

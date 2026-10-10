@@ -203,7 +203,10 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
   // Flags: --capabilities code,shell,... and --no-workspace (do not announce where you work).
   const capabilitiesFlag = parsed.rest.indexOf("--capabilities");
   const capabilities = capabilitiesFlag >= 0 ? (parsed.rest[capabilitiesFlag + 1] ?? "").split(",").map((c) => c.trim()).filter(Boolean) : undefined;
-  const workspace = parsed.rest.includes("--no-workspace") ? undefined : detectWorkspace();
+  let workspace = parsed.rest.includes("--no-workspace") ? undefined : detectWorkspace();
+  // Re-joining from the same place announces nothing new (every seal differs, so compare the opened values).
+  const mine = workspace && (await client.team().catch(() => [])).find((p) => p.id === parsed.me);
+  if (mine && JSON.stringify(mine.workspace) === JSON.stringify(workspace)) workspace = undefined;
   if (capabilities || workspace) await client.setProfile({ capabilities, workspace });
   let kickoff: unknown = null;
   let kickoffError: string | undefined;

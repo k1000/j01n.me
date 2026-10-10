@@ -278,6 +278,11 @@ async function decryptedMessages(state, messages) {
       out.push(kickoff === undefined ? { ...m, decrypt_error: 'sealed kickoff: open it with the room link or invitation (join secret)' } : { ...m, body: kickoff });
       continue;
     }
+    // A profile.changed announcement carries the new workspace sealed with the room key.
+    if (m.intent === 'profile.changed' && typeof m.body?.workspace === 'string') {
+      out.push({ ...m, body: { ...m.body, workspace: await openKickoff({ encrypted_payload: m.body.workspace }).catch(() => null) } });
+      continue;
+    }
     const body = await decryptBody(state, m);
     out.push(body?.encrypted ? { ...m, decrypt_error: "this client has no key that opens it (sender's key unknown, or it was sent to an older key)" } : { ...m, body });
   }
@@ -423,7 +428,12 @@ const COMMANDS = {
     const capIndex = rest.indexOf('--capabilities');
     const announced = {};
     if (capIndex >= 0) announced.capabilities = String(rest[capIndex + 1] || '').split(',').map((c) => c.trim()).filter(Boolean);
-    if (!rest.includes('--no-workspace')) announced.workspace = await sealJson(await detectWorkspace());
+    if (!rest.includes('--no-workspace')) {
+      const workspace = await detectWorkspace();
+      // Re-joining from the same place announces nothing new (every seal differs, so compare the opened values).
+      const mine = (await team(state)).find((p) => p.id === me);
+      if (JSON.stringify(mine?.workspace) !== JSON.stringify(workspace)) announced.workspace = await sealJson(workspace);
+    }
     if (Object.keys(announced).length) {
       const p = await requestJson(roomUrl + '/participants/' + encodeURIComponent(me), { method: 'PATCH', headers: { ...tokenHeaders(state), 'content-type': 'application/json' }, body: JSON.stringify(announced) });
       if (!p.ok) die(formatErrorBody(p.body));

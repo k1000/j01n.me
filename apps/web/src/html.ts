@@ -241,10 +241,15 @@ function roomPageStyles(): string {
   .room-overview-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 1rem; }
   .room-overview h1 { margin: 0; font-size: clamp(2rem, 6vw, 3rem); overflow-wrap: anywhere; }
   .room-purpose { margin: 0.75rem 0 1.25rem; overflow-wrap: anywhere; }
-  .room-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 1rem; margin: 0; padding: 1rem 0; border-block: 1px dashed color-mix(in srgb, currentColor 22%, transparent); font-size: 0.95rem; }
+  .room-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 1rem; margin: 0; padding: 1rem 0 0; border-top: 1px dashed color-mix(in srgb, currentColor 22%, transparent); font-size: 0.95rem; }
   .room-meta > div { min-width: 0; }
-  .room-meta dt { opacity: 0.72; }
+  .room-meta dt, .room-summary dt { opacity: 0.72; }
   .room-meta dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
+  .room-summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; margin: 0; padding: 1rem 0; border-bottom: 1px dashed color-mix(in srgb, currentColor 22%, transparent); font-size: 0.95rem; }
+  .room-summary > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem 0.75rem; min-width: 0; }
+  .room-summary dd { margin: 0; overflow-wrap: anywhere; }
+  @media (max-width: 760px) { .room-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 480px) { .room-summary { grid-template-columns: minmax(0, 1fr); } }
   .room-expiry { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
   .room-expiry .button { margin: 0; padding: 0.45rem 0.7rem; font-size: 0.85rem; }
   .room-expiry .room-ttl-status { flex-basis: 100%; }
@@ -271,7 +276,7 @@ function roomPageStyles(): string {
   .reservation-list li { padding: 0.6rem 0; border-top: 1px dashed color-mix(in srgb, currentColor 28%, transparent); overflow-wrap: anywhere; }
   .reservation-paths { display: block; margin: 0.3rem 0; }
   .reservation-meta { font-size: 0.85rem; opacity: 0.72; }
-  .board-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 0.75rem 0 1.25rem; }
+  .board-toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 0.75rem; margin: 0.75rem 0 1.25rem; }
   .board-toolbar .button, .board-entry .button, .board-edit-form .button { margin: 0; padding: 0.55rem 0.85rem; }
   .board-edit-form { display: none; gap: 0.75rem; margin: 0 0 1rem; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 35%, transparent); }
   .board-edit-form.is-visible { display: grid; }
@@ -312,16 +317,16 @@ function roomPageStyles(): string {
   .kanban-card .board-value { margin-top: 0.4rem; font-size: 0.85rem; }
   .kanban-card .json-object > div { grid-template-columns: minmax(0, 1fr); }
   @media (max-width: 560px) { .json-object > div { grid-template-columns: minmax(0, 1fr); } }
-  .participant-card { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-top: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
-  .participant-card:first-child { border-top: none; }
+  .room-participants { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 0.75rem; }
+  .room-participants h2, .room-participants > .board-empty { grid-column: 1 / -1; }
+  .participant-card { display: flex; flex-wrap: wrap; align-content: start; align-items: center; gap: 0.75rem; min-width: 0; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 35%, transparent); background: Canvas; color: CanvasText; overflow-wrap: anywhere; }
   .participant-card .participant-name { font-weight: 700; }
   .participant-card .participant-state { font-size: 0.85rem; opacity: 0.72; }
   .participant-card .participant-status { font-size: 0.9rem; }
-  .participant-card { flex-wrap: wrap; }
-  .participant-profile { flex-basis: 100%; display: grid; gap: 0.15rem; font-size: 0.85rem; }
+  .participant-profile { flex-basis: 100%; min-width: 0; display: grid; gap: 0.15rem; font-size: 0.85rem; }
   .button.button-small { margin: 0; padding: 0.35rem 0.6rem; font-size: 0.8rem; }
   .participant-caps { opacity: 0.8; }
-  .participant-model { display: inline-block; margin: 0 0 0 0.5rem; padding: 0.1rem 0.45rem; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 999px; font-family: var(--mono); font-size: 0.78rem; opacity: 0.85; }
+  .participant-model { justify-self: start; max-width: 100%; padding: 0.1rem 0.45rem; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 999px; font-family: var(--mono); font-size: 0.78rem; opacity: 0.85; overflow-wrap: anywhere; }
   .participant-workspace { overflow-wrap: anywhere; }
   .message-composer { display: grid; gap: 0.75rem; margin: 0.75rem 0 1rem; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
   .message-composer label { display: grid; gap: 0.35rem; font-weight: 700; }

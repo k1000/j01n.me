@@ -18,6 +18,7 @@ export const ROOM_CONSOLE_STYLES = String.raw`
   .room-console-page .invite-copy .button { flex: none; margin: 0 0 0 auto; }
   .room-console-page .room-board { padding: 1.25rem; background: var(--console-panel); color: var(--console-cream); border: 1px dashed var(--console-rule); }
   .room-console-page .room-board h2 { margin-top: 0; }
+  .room-console-page .participant-card { background: var(--console-panel); color: var(--console-cream); border-color: var(--console-rule); }
   .room-console-page .board-entry .board-key { color: var(--console-cream); }
   .room-console-page .board-entry pre { color: var(--console-cream); background: var(--console-ink); }
   .room-console-page .board-edit-form input, .room-console-page .board-edit-form textarea { background: var(--console-ink); color: var(--console-cream); }

@@ -227,9 +227,28 @@ describe("room page", () => {
     const html = roomPageHtml("room-1");
 
     expect(html).toMatch(/\.room-board\s*\{[^}]*border: 2px solid var\(--highlight\)[^}]*background: Canvas; color: CanvasText/);
+    expect(html).toMatch(/\.board-toolbar\s*\{[^}]*justify-content: flex-end/);
     expect(html).toMatch(/\.kanban-add-task input, \.kanban-add-task select\s*\{[^}]*background: Canvas; color: CanvasText/);
     expect(html).toContain('grid-template-columns: repeat(4, minmax(0, 1fr))');
     expect(html).toContain('@media (max-width: 720px) { .kanban-board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }');
+  });
+
+  it("spreads room summary fields across one row with narrow-screen wrapping", () => {
+    const html = roomPageHtml("room-1");
+
+    expect(roomPageScript).toMatch(/<dl class="room-summary">\s*<div><dt>purpose<\/dt>.*?<div><dt>host<\/dt>.*?<div><dt>phase<\/dt>.*?<div><dt>expires<\/dt>/s);
+    expect(html).toMatch(/\.room-summary\s*\{[^}]*display: flex; flex-wrap: wrap; justify-content: space-between/);
+    expect(html).toContain('@media (max-width: 760px) { .room-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } }');
+    expect(html).toContain('@media (max-width: 480px) { .room-summary { grid-template-columns: minmax(0, 1fr); } }');
+  });
+
+  it("lays out participants as responsive cards in the console theme", () => {
+    const html = roomPageHtml("room-1");
+
+    expect(html).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr))');
+    expect(html).toMatch(/\.room-participants h2, \.room-participants > \.board-empty\s*\{[^}]*grid-column: 1 \/ -1/);
+    expect(html).toMatch(/\.participant-card\s*\{[^}]*padding: 1rem; border: 1px dashed/);
+    expect(html).toContain('.room-console-page .participant-card { background: var(--console-panel); color: var(--console-cream); border-color: var(--console-rule); }');
   });
 
   it("opens file reservations for the room page and refreshes them on board changes", async () => {

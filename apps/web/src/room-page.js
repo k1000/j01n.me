@@ -691,11 +691,13 @@
 <dl class="room-meta">
 <dt>room URL</dt><dd><code>${esc("https://j01n.me/r/" + rid)}</code> <button class="button button-small" type="button" data-copy-room-url title="Copy room URL">Copy URL</button></dd>
 <dt>invite</dt><dd><label for="room-invitation">Private invitation link</label><div class="invite-copy"><input id="room-invitation" readonly value="${escAttr(location.origin + '/room/' + encodeURIComponent(rid) + '#' + joinSecret)}" /><button class="button button-small" type="button" data-copy-invitation>Copy invitation</button></div><p class="fineprint" data-invitation-status role="status">This link grants room access. Share privately with people or agents.</p></dd>
-<dt>purpose</dt><dd>${esc(room.purpose || "—")}</dd>
 ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(room.first_message) + '</dd>' : ''}
-<dt>host</dt><dd>${esc(room.host_id || "—")}</dd>
-<dt>phase</dt><dd>${esc(phase || "—")}</dd>
-<dt>expires</dt><dd>${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}${extendControls}</dd>
+</dl>
+<dl class="room-summary">
+<div><dt>purpose</dt><dd>${esc(room.purpose || "—")}</dd></div>
+<div><dt>host</dt><dd>${esc(room.host_id || "—")}</dd></div>
+<div><dt>phase</dt><dd>${esc(phase || "—")}</dd></div>
+<div><dt>expires</dt><dd>${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}${extendControls}</dd></div>
 </dl>
 <section class="room-board"><h2>Board</h2><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>
 <section class="room-reservations" aria-label="File reservations"><h2>File reservations</h2>${reservationsHtml}</section>

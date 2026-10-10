@@ -263,6 +263,8 @@ describe("room lifecycle", () => {
       await joinParticipant(fix, "agent-b");
       const { cursor } = await getRoomJson<{ cursor: number }>(fix, "/?view=all", "agent-a");
       const waiting = wait("agent-a", `after=${cursor}&timeout=5`);
+      // Let the wait register before the change: wait only catches up on missed messages, not missed board changes.
+      await new Promise((r) => setTimeout(r, 50));
       await roomRequest(fix, "/board/tasks", {
         method: "PUT",
         headers: { ...participantAuthHeaders(fix, "agent-b"), "content-type": "application/json" },

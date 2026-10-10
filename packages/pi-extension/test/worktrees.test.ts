@@ -44,6 +44,22 @@ describe("managed branch worktrees", () => {
     expect(existsSync(join(path, ".installed"))).toBe(true);
   });
 
+  it("restores the source workspace yaml after pnpm rewrites it, without leaving a dirty checkout", () => {
+    writeFileSync(join(bin, "pnpm"), '#!/bin/sh\ntest "$1" = install && test "$2" = --frozen-lockfile && cp pnpm-workspace.yaml .installed && printf "packages: []\\n" > pnpm-workspace.yaml\n', { mode: 0o755 });
+    const path = createPeerWorktree("rewritten");
+    const original = readFileSync(join(repo, "pnpm-workspace.yaml"), "utf8");
+    expect(readFileSync(join(path, ".installed"), "utf8")).toBe(original);
+    expect(readFileSync(join(path, "pnpm-workspace.yaml"), "utf8")).toBe(original);
+    expect(git(path, "status", "--porcelain")).toBe("");
+  });
+
+  it("also restores the workspace yaml after a failed frozen install", () => {
+    writeFileSync(join(bin, "pnpm"), '#!/bin/sh\nprintf "packages: []\\n" > pnpm-workspace.yaml\nexit 1\n', { mode: 0o755 });
+    const path = join(realpathSync(root), "managed", "repo", "failed");
+    expect(() => createPeerWorktree("failed")).toThrow("frozen install failed");
+    expect(readFileSync(join(path, "pnpm-workspace.yaml"), "utf8")).toBe(readFileSync(join(repo, "pnpm-workspace.yaml"), "utf8"));
+  });
+
   it("exposes cleanup as /j01n worktrees --remove-merged (no room required)", async () => {
     const { runj01n } = await import("../commands");
     expect(JSON.parse(await runj01n(["worktrees", "--remove-merged"]))).toEqual({ removed: [], skipped: [] });

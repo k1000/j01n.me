@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { exportPublicKey } from "@j01n/sdk/crypto";
@@ -34,15 +34,22 @@ export function createPeerWorktree(branch: string, source = process.cwd()): stri
   git(repo, "check-ref-format", "--branch", branch);
   const target = join(worktreeRoot(), basename(repo), branch);
   if (existsSync(target)) throw new Error(`worktree path already exists: ${target}`);
+  const workspaceFile = join(repo, "pnpm-workspace.yaml");
+  const workspaceContents = existsSync(workspaceFile) ? readFileSync(workspaceFile) : undefined;
+  const targetWorkspaceFile = join(target, "pnpm-workspace.yaml");
   mkdirSync(dirname(target), { recursive: true });
   if (!realpathSync(dirname(target)).startsWith(worktreeRoot() + "/")) throw new Error("worktree path escapes internal storage");
   git(repo, "worktree", "add", "-b", branch, target, "HEAD");
-  const workspaceFile = join(repo, "pnpm-workspace.yaml");
-  if (existsSync(workspaceFile) && !existsSync(join(target, "pnpm-workspace.yaml"))) copyFileSync(workspaceFile, join(target, "pnpm-workspace.yaml"));
+  if (workspaceContents && !existsSync(targetWorkspaceFile)) copyFileSync(workspaceFile, targetWorkspaceFile);
   try {
     execFileSync("pnpm", ["install", "--frozen-lockfile"], { cwd: target, encoding: "utf8", timeout: 180_000, stdio: ["ignore", "pipe", "pipe"] });
   } catch (error) {
     throw new Error(`worktree ${target} was created but frozen install failed; inspect it before retrying`, { cause: error });
+  } finally {
+    // Only a checkout created above is eligible; restore the pre-install snapshot if pnpm rewrote it.
+    if (workspaceContents && (!existsSync(targetWorkspaceFile) || !readFileSync(targetWorkspaceFile).equals(workspaceContents))) {
+      writeFileSync(targetWorkspaceFile, workspaceContents);
+    }
   }
   return target;
 }

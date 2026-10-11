@@ -86,10 +86,10 @@ function summarize() {
 function validName(name) { if (!/^[a-z][a-z0-9_-]{0,31}$/.test(name)) fail("--name must be a Herdr-compatible agent name"); return name; }
 function checkFlags(allowed, positional = 0) {
   const flags = args.filter((v) => v.startsWith("--"));
-  if (flags.some((f) => !allowed.includes(f)) || args.length !== positional + flags.reduce((n, f) => n + (["--name", "--peers"].includes(f) ? 2 : 1), 0)) fail(`Invalid ${action} arguments; see docs/SPAWN-RUNBOOK.md`);
+  if (flags.some((f) => !allowed.includes(f)) || args.length !== positional + flags.reduce((n, f) => n + (["--name", "--peers", "--integrator"].includes(f) ? 2 : 1), 0)) fail(`Invalid ${action} arguments; see docs/SPAWN-RUNBOOK.md`);
 }
 async function start() {
-  checkFlags(["--name", "--peers", "--dry-run"], 1);
+  checkFlags(["--name", "--peers", "--integrator", "--dry-run"], 1);
   const spec = resolve(args[0]);
   if (!existsSync(spec) || !statSync(spec).isFile()) fail("spec.md must exist and be a regular file");
   if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_PANE_ID) fail("start requires a Herdr-managed pane");
@@ -108,6 +108,8 @@ async function start() {
   const identity = internal(process.env.J01N_AGENT_DIR || join(homedir(), ".local/share/j01n/agents"));
   if (!existsSync(identity) || (statSync(identity).mode & 0o077)) fail("J01N_AGENT_DIR must be an existing private directory (0700)");
   const inbox = `host-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const integrator = option("--integrator", "");
+  if (integrator) validName(integrator);
   const dev = join(repo, "dev");
   const specInDev = spec.startsWith(dev + sep);
   if (specInDev && !realpathSync(spec).startsWith(realpathSync(repo) + sep)) fail("spec inside dev/ resolves outside the repository");
@@ -118,6 +120,11 @@ async function start() {
   console.log(`Host ${branch} -> ${target}; spec ${spec}; ${peers} peer spawn(s)`);
   console.log(copyDev ? "Spec preflight: dev/ untracked in source and cached gitlab/main; copy only missing dev/ files (reject collisions)." : "Spec preflight: copy only the missing spec; tracked dev/ will not be overwritten.");
   if (dry) { console.log("Plan: fetch gitlab, create host worktree, copy missing spec/dev, install, split/label/start Pi, prompt host, wait for room and open owner invitation. No changes made."); return; }
+  if (integrator) {
+    // The integrator's standing inbox accepts invitations from this wave's host inbox only (registered on first use).
+    try { execFileSync(process.execPath, [helper, "allow", integrator, inbox], { cwd: repo, timeout: 30_000, stdio: "ignore" }); }
+    catch { run(process.execPath, [helper, "register", integrator, inbox], repo); }
+  }
   git("fetch", "gitlab");
   git("worktree", "add", "-b", branch, target, "gitlab/main");
   // Re-check the fetched base; never overwrite tracked content or copy a source symlink.
@@ -135,7 +142,8 @@ async function start() {
   run("herdr", ["pane", "rename", pane, name]);
   run("herdr", ["agent", "start", name, "--kind", "pi", "--pane", pane]);
   const copied = spec.startsWith(dev + sep) ? relative(repo, spec) : basename(spec);
-  run("herdr", ["agent", "prompt", pane, `Host this sprint from ${copied}. Create the sprint with {"host_id":${JSON.stringify(name)},"spec":${JSON.stringify(copied)}}; confirm the owner joins, invite repo agents, spawn one peer per task, coordinate review. Follow docs/SPAWN-RUNBOOK.md. Never paste room credentials into Herdr.`]);
+  run("herdr", ["agent", "prompt", pane, `Host this sprint from ${copied}. Create the sprint with {"host_id":${JSON.stringify(name)},"spec":${JSON.stringify(copied)}}; confirm the owner joins, invite repo agents, spawn one peer per task, coordinate review.${integrator ? ` Right after joining, call invite_integrator({"name":"${integrator}"}); when it joins, give it the owner role (/j01n profile <its id> --role owner).` : ""} Follow docs/SPAWN-RUNBOOK.md. Never paste room credentials into Herdr.`]);
+  if (integrator) console.log(`Integrator: run \`node packages/helper/client/j01n.js listen ${integrator} --as <id>\` from ${repo} to join.`);
   const roomDir = join(process.env.J01N_KEY_DIR || target, ".j01n-rooms");
   let joined = false;
   for (let i = 0; i < 180; i++) {
@@ -272,5 +280,5 @@ try {
   if (action === "start") await start();
   else if (action === "status") { checkFlags([]); summarize(); }
   else if (action === "finish") await finish();
-  else fail("Usage: node scripts/sprint.mjs start <spec.md> [--name <Host>] [--peers N] [--dry-run] | status | finish [--reviewed --owner-read] [--dry-run]");
+  else fail("Usage: node scripts/sprint.mjs start <spec.md> [--name <Host>] [--peers N] [--integrator <inbox>] [--dry-run] | status | finish [--reviewed --owner-read] [--dry-run]");
 } catch (error) { console.error(error.message); process.exitCode = 1; }

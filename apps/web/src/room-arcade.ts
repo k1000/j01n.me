@@ -24,7 +24,7 @@ export function roomArcadeStyles(): string {
   .arcade-frame::after { content: ""; position: absolute; inset: 0; pointer-events: none;
     background: linear-gradient(transparent 50%, rgba(0, 0, 0, 0.22) 50%) 0 0 / 100% var(--px, 2px),
       radial-gradient(ellipse at center, transparent 62%, rgba(0, 0, 0, 0.45) 100%); }
-  .arcade-close { position: absolute; z-index: 1; top: 0; right: 0; width: calc(100% * 16 / 384); height: calc(100% * 16 / 216); padding: 0; border: 0; background: transparent; cursor: pointer; }
+  .arcade-close { position: absolute; z-index: 1; top: 0; right: 0; width: calc(100% * 16 / var(--w, 384)); height: calc(100% * 16 / 216); padding: 0; border: 0; background: transparent; cursor: pointer; }
   .arcade-close:focus-visible { outline: 2px solid #fdedcc; outline-offset: -2px; }
   `;
 }
@@ -36,7 +36,9 @@ export function roomArcadeScript(): string {
 // Plain browser JS. No backticks or dollar-brace in here: it sits inside a template literal.
 const ARCADE_JS = String.raw`
 (() => {
-  const W = 384, H = 216, KEY = "j01n-arcade";
+  const H = 216, KEY = "j01n-arcade";
+  let W = 384;          // scene width in pixels; fitScale() widens it to fill the column
+  const BOARD_W = 168;  // the board panel keeps its width on the right; players get the rest
   // One hue, five shades: background, shadow, dim, mid, bright.
   const PAL = ["#121212", "#3a352c", "#6e6656", "#b3a88f", "#fdedcc"];
   // 5x7 bitmap font: 7 rows per glyph, each row a base-32 digit whose 5 bits are the pixels, left to right.
@@ -162,8 +164,8 @@ const ARCADE_JS = String.raw`
 
   function drawTop(now, t) {
     const v = view;
-    px(367, 0, 1, 16, 2);
-    text("X", 373, 5, 4);
+    px(W - 17, 0, 1, 16, 2);
+    text("X", W - 11, 5, 4);
     let ttl = "--:--";
     const left = Date.parse(v.expiresAt) - now;
     if (left > 0) {
@@ -171,7 +173,7 @@ const ARCADE_JS = String.raw`
       ttl = h >= 24 ? Math.floor(h / 24) + "D" : h > 0 ? h + ":" + pad2(m) + ":" + pad2(s % 60) : pad2(m) + ":" + pad2(s % 60);
     }
     ttl = "TTL " + ttl;
-    const ttlX = 361 - textW(ttl);
+    const ttlX = W - 23 - textW(ttl);
     text(ttl, ttlX, 5, 4);
     const label = live === "connected" ? "LIVE" : live === "connecting" ? "WAIT" : "OFF";
     const liveShade = live === "connected" ? 4 : 2;
@@ -181,13 +183,13 @@ const ARCADE_JS = String.raw`
     const mailHot = now - mailAt < 4000;
     sprite(ENVELOPE, labelX - 19, 5, mailHot && Math.floor(t / 250) % 2 === 0 ? 0 : 2);
     const phase = "PHASE:" + (clean(v.phase) || "-");
-    const phaseX = Math.round(192 - textW(phase) / 2);
+    const phaseX = Math.round(W / 2 - textW(phase) / 2);
     text(phase, phaseX, 5, 4);
     text(fit("J01N " + clean(v.room.name || "ROOM"), phaseX - 16), 5, 5, 4);
     px(0, 16, W, 1, 2);
   }
 
-  // A seat is 42px wide; k is the sprite scale (2 for up to five players, 1 for more).
+  // A seat is 42px wide; k is the sprite scale (2 while everyone fits one row, 1 for two rows).
   function drawSeat(p, x, y, t, k) {
     const ox = x + 21 - 9 * k;   // cabinet left edge; the 14px character sits 2 sprite pixels in
     const cx = ox + 2 * k;
@@ -235,31 +237,35 @@ const ARCADE_JS = String.raw`
   }
 
   function drawPlayers(t) {
-    for (let gy = 28; gy < 181; gy += 12) for (let gx = 11; gx < 215; gx += 12) px(gx, gy, 1, 1, 1);
+    const area = W - BOARD_W - 1;
+    for (let gy = 28; gy < 181; gy += 12) for (let gx = 11; gx < area; gx += 12) px(gx, gy, 1, 1, 1);
     const list = view.players;
     if (!list.length) {
-      if (Math.floor(t / 600) % 2 === 0) textC("WAITING FOR PLAYERS", 107, 95, 3);
+      if (Math.floor(t / 600) % 2 === 0) textC("WAITING FOR PLAYERS", Math.floor(area / 2), 95, 3);
       return;
     }
-    const seats = list.length > 10 ? list.slice(0, 9) : list;
-    const count = seats.length + (list.length > 10 ? 1 : 0);
-    const rows = count > 5 ? 2 : 1;
+    // Seats are 42px wide; a wider scene fits more per row (at least five), with two rows at most.
+    const perRow = Math.max(5, Math.floor((area - 4) / 42));
+    const max = perRow * 2;
+    const seats = list.length > max ? list.slice(0, max - 1) : list;
+    const count = seats.length + (list.length > max ? 1 : 0);
+    const rows = count > perRow ? 2 : 1;
     const k = rows === 1 ? 2 : 1;
     const seatH = 39 * k + 20;
     const top = 17 + Math.floor((164 - (rows * seatH + (rows - 1) * 2)) / 2);
     for (let i = 0; i < count; i++) {
-      const row = i < 5 ? 0 : 1;
-      const inRow = row === 0 ? Math.min(5, count) : count - 5;
-      const x = Math.floor((215 - inRow * 42) / 2) + (i - row * 5) * 42;
+      const row = i < perRow ? 0 : 1;
+      const inRow = row === 0 ? Math.min(perRow, count) : count - perRow;
+      const x = Math.floor((area - inRow * 42) / 2) + (i - row * perRow) * 42;
       const y = top + row * (seatH + 2);
       if (i < seats.length) drawSeat(seats[i], x, y, t, k);
-      else textC("+" + (list.length - 9), x + 21, y + 20 * k, 3);
+      else textC("+" + (list.length - max + 1), x + 21, y + 20 * k, 3);
     }
   }
 
   function drawBoard(now, t) {
-    const X = 216;
-    px(215, 17, 1, 165, 2);
+    const X = W - BOARD_W;
+    px(X - 1, 17, 1, 165, 2);
     const k = view.kanban;
     if (k) {
       k.cols.forEach((col, i) => {
@@ -352,15 +358,21 @@ const ARCADE_JS = String.raw`
   }
   function stop() { running = false; }
 
-  // Scaling by whole device pixels keeps every pixel the same size (on a 2x screen that allows 1.5x steps);
-  // narrower than one device pixel per pixel, it simply shrinks.
+  // Scaling by whole device pixels keeps every pixel the same size (on a 2x screen that allows 1.5x steps).
+  // The scale aims at a scene about 560 pixels wide but at most ~1.5 CSS pixels per pixel, then the scene
+  // widens to fill the column, so the arcade spans the full width at a modest height.
+  // Narrower than 384 pixels, it simply shrinks.
   function fitScale() {
-    const avail = section.clientWidth - 4;
+    const avail = section.clientWidth - 18; // 2px border and 7px of shadow on each side
     const dpr = window.devicePixelRatio || 1;
-    const devicePixels = Math.min(6, Math.floor((avail * dpr) / W));
-    const scale = devicePixels >= 1 ? devicePixels / dpr : avail / W;
+    const devicePixels = Math.max(1, Math.min(Math.round((avail * dpr) / 560), Math.round(1.5 * dpr)));
+    W = Math.max(384, Math.floor((avail * dpr) / devicePixels));
+    const scale = Math.min(devicePixels / dpr, avail / W);
+    canvas.width = W;
     canvas.style.width = W * scale + "px";
     frameEl.style.setProperty("--px", scale + "px");
+    frameEl.style.setProperty("--w", String(W));
+    if (view) draw();
   }
 
   function setOpen(open, remember) {

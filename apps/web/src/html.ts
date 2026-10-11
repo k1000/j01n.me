@@ -276,7 +276,8 @@ function roomPageStyles(): string {
   .reservation-list li { padding: 0.6rem 0; border-top: 1px dashed color-mix(in srgb, currentColor 28%, transparent); overflow-wrap: anywhere; }
   .reservation-paths { display: block; margin: 0.3rem 0; }
   .reservation-meta { font-size: 0.85rem; opacity: 0.72; }
-  .board-toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 0.75rem; margin: 0.75rem 0 1.25rem; }
+  .board-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.75rem; }
+  .board-toolbar h2 { margin: 0; }
   .board-toolbar .button, .board-entry .button, .board-edit-form .button { margin: 0; padding: 0.55rem 0.85rem; }
   .board-edit-form { display: none; gap: 0.75rem; margin: 0 0 1rem; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 35%, transparent); }
   .board-edit-form.is-visible { display: grid; }
@@ -319,15 +320,18 @@ function roomPageStyles(): string {
   @media (max-width: 560px) { .json-object > div { grid-template-columns: minmax(0, 1fr); } }
   .room-participants { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 0.75rem; }
   .room-participants h2, .room-participants > .board-empty { grid-column: 1 / -1; }
-  .participant-card { display: flex; flex-wrap: wrap; align-content: start; align-items: center; gap: 0.75rem; min-width: 0; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 35%, transparent); background: Canvas; color: CanvasText; overflow-wrap: anywhere; }
+  .participant-card { display: grid; align-content: start; gap: 0.5rem; min-width: 0; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 35%, transparent); background: Canvas; color: CanvasText; overflow-wrap: anywhere; }
+  .participant-head, .participant-presence, .participant-runtime { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-width: 0; }
+  .participant-head .button { margin-left: auto; }
   .participant-card .participant-name { font-weight: 700; }
+  .participant-badge { padding: 0 0.4rem; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); font-size: 0.75rem; opacity: 0.8; }
   .participant-card .participant-state { font-size: 0.85rem; opacity: 0.72; }
   .participant-card .participant-status { font-size: 0.9rem; }
-  .participant-profile { flex-basis: 100%; min-width: 0; display: grid; gap: 0.15rem; font-size: 0.85rem; }
+  .participant-profile { min-width: 0; display: grid; gap: 0.4rem; font-size: 0.85rem; }
   .button.button-small { margin: 0; padding: 0.35rem 0.6rem; font-size: 0.8rem; }
   .participant-caps { opacity: 0.8; }
-  .participant-model { justify-self: start; max-width: 100%; padding: 0.1rem 0.45rem; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 999px; font-family: var(--mono); font-size: 0.78rem; opacity: 0.85; overflow-wrap: anywhere; }
-  .participant-workspace { overflow-wrap: anywhere; }
+  .participant-model { max-width: 100%; padding: 0.1rem 0.45rem; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 999px; font-family: var(--mono); font-size: 0.78rem; opacity: 0.85; overflow-wrap: anywhere; }
+  .participant-workspace { overflow-wrap: anywhere; cursor: help; }
   .message-composer { display: grid; gap: 0.75rem; margin: 0.75rem 0 1rem; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
   .message-composer label { display: grid; gap: 0.35rem; font-weight: 700; }
   .message-composer select, .message-composer textarea { width: 100%; box-sizing: border-box; font: inherit; border: 2px solid currentColor; background: Canvas; color: currentColor; }

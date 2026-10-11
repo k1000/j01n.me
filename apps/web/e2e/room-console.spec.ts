@@ -30,8 +30,8 @@ async function createRoom(page: Page, name = "human-host") {
   await dialog.getByLabel("Room name", { exact: true }).fill("Planning room");
   await dialog.getByLabel("Kickoff").fill("Start by planning the parser work.");
   await dialog.getByRole("button", { name: "Create room", exact: true }).click();
-  await expect(page.getByLabel("Private invitation link")).toBeVisible();
-  return page.getByLabel("Private invitation link").inputValue();
+  await expect(page.getByRole("button", { name: "Copy invitation URL" })).toBeVisible();
+  return (await page.getByRole("button", { name: "Copy invitation URL" }).getAttribute("data-copy-invitation"))!;
 }
 
 test("create opens the room as host with Kanban and a shareable private link", async ({ page }) => {
@@ -39,9 +39,9 @@ test("create opens the room as host with Kanban and a shareable private link", a
   await expect(page).toHaveURL(/\/room\/[^?#]+$/);
   await expect(page.getByText("Start by planning the parser work.", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Planning room" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "To Do", exact: true })).toBeVisible();
-  const link = page.getByLabel("Private invitation link");
-  await expect(link).toHaveValue(/\/room\/[^#]+#[A-Za-z0-9_-]+$/);
+  await expect(page.getByRole("heading", { name: /To Do$/ })).toBeVisible();
+  const link = page.getByRole("button", { name: "Copy invitation URL" });
+  await expect(link).toHaveAttribute("data-copy-invitation", /\/room\/[^#]+#[A-Za-z0-9_-]+$/);
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("j01n.rooms") || "{}"));
   expect(Object.values(saved)).toEqual([expect.objectContaining({ participant_id: "human-host", participant_token: expect.any(String) })]);
 });
@@ -90,7 +90,7 @@ test("a private link asks for your own name and saved room access survives a new
   await guest.goto(invitation);
   await guest.getByLabel("Your name", { exact: true }).fill("human-guest");
   await guest.getByRole("button", { name: "Join room", exact: true }).click();
-  await expect(guest.getByLabel("Private invitation link")).toBeVisible();
+  await expect(guest.getByRole("button", { name: "Copy invitation URL" })).toBeVisible();
   const roomUrl = guest.url();
   expect(new URL(roomUrl).hash).toBe("");
   const key = await guest.evaluate(() => localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("j01n.hostKey.")) || ""));
@@ -100,7 +100,7 @@ test("a private link asks for your own name and saved room access survives a new
   await guest.close();
   const resumed = await context.newPage();
   await resumed.goto(roomUrl);
-  await expect(resumed.getByLabel("Private invitation link")).toBeVisible();
+  await expect(resumed.getByRole("button", { name: "Copy invitation URL" })).toBeVisible();
   expect(await resumed.evaluate(() => localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("j01n.hostKey.")) || ""))).toBe(key);
   await context.close();
 });
@@ -187,7 +187,7 @@ test("JSON invitations cannot import another participant's token or identity", a
   await dialog.getByLabel("Your name", { exact: true }).fill("New Guest");
   await dialog.getByLabel("Invitation", { exact: true }).fill(JSON.stringify({ ...parseInviteLink(invitation), participant_id: "Human-Host", participant_token: saved.participant_token }));
   await dialog.getByRole("button", { name: "Join", exact: true }).click();
-  await expect(guest.getByLabel("Private invitation link")).toBeVisible();
+  await expect(guest.getByRole("button", { name: "Copy invitation URL" })).toBeVisible();
   const profile = await guest.evaluate(() => Object.values(JSON.parse(localStorage.getItem("j01n.rooms") || "{}"))[0]) as { participant_id: string; participant_token: string };
   expect(profile.participant_id).toBe("New-Guest");
   expect(profile.participant_token).not.toBe(saved.participant_token);
@@ -238,10 +238,10 @@ test("re-entering a saved room preserves its token, keys and identity", async ({
   await dialog.getByLabel("Your name", { exact: true }).fill("human-host");
   await dialog.getByLabel("Invitation", { exact: true }).fill(invitation);
   await dialog.getByRole("button", { name: "Join", exact: true }).click();
-  await expect(page.getByLabel("Private invitation link")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy invitation URL" })).toBeVisible();
   await page.goto("/");
   await page.evaluate(invite => (window as unknown as { runRoomJoin: (args: object) => Promise<string> }).runRoomJoin({ invite_json: invite }), invitation);
-  await expect(page.getByLabel("Private invitation link")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy invitation URL" })).toBeVisible();
   const after = await page.evaluate(() => ({ rooms: localStorage.getItem("j01n.rooms"), key: localStorage.getItem(Object.keys(localStorage).find(k => k.startsWith("j01n.hostKey."))!) }));
   expect(after.rooms === before.rooms).toBe(true);
   expect(after.key === before.key).toBe(true);
@@ -353,7 +353,7 @@ test("console and Live view fit mobile screens and pass accessibility checks", a
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     const result = await new AxeBuilder({ page }).analyze();
     expect(result.violations.map(v => ({ id: v.id, targets: v.nodes.map(n => n.target) }))).toEqual([]);
-    await page.screenshot({ path: testInfo.outputPath("room-console-" + width + ".png"), fullPage: true, mask: [page.getByLabel("Private invitation link")] });
+    await page.screenshot({ path: testInfo.outputPath("room-console-" + width + ".png"), fullPage: true });
   }
   await page.getByRole("link", { name: "Live view", exact: true }).click();
   await expect(page.getByRole("link", { name: "Room console", exact: true })).toBeVisible();

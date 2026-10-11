@@ -930,6 +930,8 @@
     const isKanban = columnsVal && typeof columnsVal === "object" && !Array.isArray(columnsVal) && ["todo", "doing", "review", "done"].some((c) => c in columnsVal)
       && typeof tasksVal === 'object' && !Array.isArray(tasksVal) && !('encrypted_payload' in tasksVal);
     const sprintTasks = Object.entries(board).filter(([key]) => key.startsWith('task.'));
+    // Beside sprint tasks, an empty Kanban is only four empty columns (a full screen on a phone); hide it and its editor.
+    const showKanban = isKanban && !(sprintTasks.length && ["todo", "doing", "review", "done"].every((c) => !columnsVal[c]?.length));
     const boardEntries = Object.entries(board).filter(([key]) => key !== 'reservations' && !key.startsWith('task.') && (!isKanban || !['columns', 'tasks'].includes(key))).map(([k, entry]) => {
       const meta = `<span class="board-meta" title="${escAttr('updated at ' + entry.updated_at)}">v${esc(entry.version)} · ${esc(entry.updated_by)} · ${esc(shortTime(entry.updated_at))}</span>`;
       const edit = `<button class="button button-small" type="button" data-edit-board-key="${escAttr(k)}" aria-label="${escAttr('Edit board key ' + k)}">Edit</button>`;
@@ -939,7 +941,7 @@
       const preview = boardPreview(boardDisplayValue(entry.value));
       return `<div class="board-entry"><details class="board-entry-details" data-collapse="${escAttr('key:' + k)}"><summary><span class="board-entry-heading"><span class="board-key">${esc(k)}</span><span class="board-preview">${esc(preview.text)}</span>${preview.state ? `<span class="board-preview-state">${esc(preview.state)}</span>` : ""}</span>${meta}</summary>${value}</details>${edit}</div>`;
     }).join('');
-    const boardHtml = boardKeys.length === 0 ? '<p class="board-empty">No board data yet.</p>' : (isKanban ? renderKanbanBoard(board, columnsVal) : '') + (sprintTasks.length ? renderSprintTaskBoard(sprintTasks) : '') + boardEntries;
+    const boardHtml = boardKeys.length === 0 ? '<p class="board-empty">No board data yet.</p>' : (showKanban ? renderKanbanBoard(board, columnsVal) : '') + (sprintTasks.length ? renderSprintTaskBoard(sprintTasks) : '') + boardEntries;
 
     const pList = Object.values(participants);
     // Where each participant works: sealed with the room key, opened here with the join secret.
@@ -998,7 +1000,7 @@ ${isRepeatedRoomPurpose(room.name, room.purpose) ? "" : `<div><dt>purpose</dt><d
 </dl>
 </header>`,
       report: reportHtml,
-      board: `<section class="room-board"><div class="board-toolbar"><h2>Board</h2><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>`,
+      board: `<section class="room-board"><div class="board-toolbar"><h2>Board</h2><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${showKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>`,
       reservations: `<section class="room-reservations" aria-label="File reservations"><h2>File reservations</h2>${reservationsHtml}</section>`,
       help: helpNeededHtml(data),
       participants: `<section class="room-participants"><h2>Participants</h2>${participantsHtml}</section>`,

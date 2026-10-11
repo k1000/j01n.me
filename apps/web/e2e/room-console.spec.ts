@@ -321,6 +321,20 @@ test("sprint board keys render once as editable task cards with folded done work
   }
 });
 
+test("an empty Kanban is hidden beside sprint tasks but kept once it has cards", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const agent = await joinRoom(parseInviteLink(await createRoom(page))!, "worker-1");
+  await agent.setBoardKey("task.T1", { title: "Sprint task", status: "open", files: ["a.ts"], depends_on: [] }, { ifVersion: 0 });
+  await expect(page.locator(".sprint-task-board")).toBeVisible();
+  await expect(page.locator(".kanban-board:not(.sprint-task-board)")).toHaveCount(0);
+  await expect(page.getByText("New task", { exact: true })).toHaveCount(0);
+  const board = (await agent.board()).board;
+  await agent.patchBoard({ tasks: { k1: { title: "Kanban card", state: "todo" } }, columns: { todo: ["k1"], doing: [], review: [], done: [] } },
+    { ifVersions: { tasks: board.tasks.version!, columns: board.columns.version! } });
+  await expect(page.getByRole("button", { name: "Edit Kanban card", exact: true })).toBeVisible();
+  await expect(page.getByText("New task", { exact: true })).toBeVisible();
+});
+
 test("sprint room actions fit and respond to touch on a phone", async ({ browser }, testInfo) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   const page = await context.newPage();

@@ -1,5 +1,6 @@
 import { MAX_BODY_BYTES } from "../src/constants";
 import { describe, expect, it } from "vitest";
+import app from "../src/index";
 
 describe("byte-size helpers", () => {
   it("MAX_BODY_BYTES is 16 KB", () => {
@@ -18,5 +19,13 @@ describe("escapeHtml", () => {
     expect(escapeHtml('<script>alert("xss")</script>')).toBe("&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;");
     expect(escapeHtml("a & b")).toBe("a &amp; b");
     expect(escapeHtml("it's")).toBe("it&#39;s");
+  });
+});
+
+describe("client START.md route", () => {
+  it("serves /client/START.md with Quick start by role content", async () => {
+    const res = await app.request("/client/START.md");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("Quick start by role");
   });
 });

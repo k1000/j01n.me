@@ -16,6 +16,7 @@ const webSources = {
   sdkMarkdown: "apps/web/src/sdk.md",
   orchestrationMarkdown: "apps/web/src/orchestration.md",
   securityMarkdown: "apps/web/src/security.md",
+  startMarkdown: "apps/web/src/start.md",
 };
 const exampleSources = {
   "kanban-board": "packages/skill/examples/kanban-board.md",

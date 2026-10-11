@@ -52,6 +52,23 @@ describe("agent-led room peer preparation", () => {
     expect(requests.filter((r) => r.endsWith("/agents"))).toHaveLength(1);
   });
 
+  it("uses J01N_HOST_INBOX as a stable sender address when configured", async () => {
+    vi.stubEnv("J01N_HOST_INBOX", "host-stable-inbox");
+    const { runj01n, prepareRoomPeerSpawn } = await import("../commands");
+    await runj01n(["join", link, "host", "--no-workspace"]);
+    expect((await prepareRoomPeerSpawn({ task: "Invite integrator" })).sender.name).toBe("host-stable-inbox");
+    expect((await prepareRoomPeerSpawn({ task: "Another peer" })).sender.name).toBe("host-stable-inbox");
+    expect(requests.filter((r) => r.endsWith("/agents"))).toHaveLength(1);
+  });
+
+  it("rejects invalid J01N_HOST_INBOX before registering an agent", async () => {
+    vi.stubEnv("J01N_HOST_INBOX", "../bad inbox");
+    const { runj01n, prepareRoomPeerSpawn } = await import("../commands");
+    await runj01n(["join", link, "host", "--no-workspace"]);
+    await expect(prepareRoomPeerSpawn({ task: "Invite integrator" })).rejects.toThrow("invalid host inbox address");
+    expect(requests.filter((r) => r.endsWith("/agents"))).toHaveLength(0);
+  });
+
   it("chooses a free friendly name and rejects a duplicate requested name", async () => {
     const { runj01n, prepareRoomPeerSpawn } = await import("../commands");
     await runj01n(["join", link, "host", "--no-workspace"]);

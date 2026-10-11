@@ -8,10 +8,12 @@ describe("Pi session startup", () => {
   it("warns about a stale or duplicate extension only when the UI is available", () => {
     type Ctx = { hasUI: boolean; ui: { notify: (message: string, level: string) => void }; sessionManager?: { getSessionId(): string } };
     const handlers = new Map<string, Array<(event: unknown, ctx: Ctx) => void>>();
+    const tools: string[] = [];
     extension({ on: (name: string, handler: (event: unknown, ctx: Ctx) => void) => {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
     },
-      registerCommand: () => {}, registerTool: () => {} } as unknown as ExtensionAPI);
+      registerCommand: () => {}, registerTool: (tool: { name: string }) => { tools.push(tool.name); } } as unknown as ExtensionAPI);
+    expect(tools).toContain("invite_integrator");
     // index() registers the diagnostics handler first, before live/peer-spawn handlers.
     const start = handlers.get("session_start")?.[0];
     expect(start).toBeDefined();

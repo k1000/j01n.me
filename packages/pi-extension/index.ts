@@ -5,6 +5,7 @@ import { runj01n } from "./commands";
 import { registerLive } from "./live";
 import { registerPeerSpawnTool } from "./peer-spawn-tool";
 import { registerRepoInviteTool } from "./repo-invite";
+import { registerIntegratorTool } from "./integrator";
 import { getExtensionDiagnostics } from "./version";
 
 const USAGE = "Usage: /j01n <create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|herdr_agents|invite_herdr|leave|close|participants|room_status|transition|host|profile|reserve|release|reservations|tasks|claim|done|conflicts|worktrees|live> ...";
@@ -20,6 +21,7 @@ export default function (pi: ExtensionAPI) {
   const live = registerLive(pi);
   registerPeerSpawnTool(pi);
   registerRepoInviteTool(pi);
+  registerIntegratorTool(pi);
   pi.registerCommand("j01n", {
     description: "j01n.me encrypted room helper: create, join, doctor, send, read, board, board_set, board_patch, board_delete, status, webhook, wait, register, allow, invite, listen, herdr_agents, invite_herdr, leave, close, participants, room_status, transition, host, profile, reserve, release, reservations, tasks, claim, done, conflicts, worktrees, live",
     handler: async (args, ctx) => {

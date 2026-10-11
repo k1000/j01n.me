@@ -18,7 +18,7 @@ describe("managed branch worktrees", () => {
     root = mkdtempSync(join(tmpdir(), "j01n-worktree-root-"));
     repo = join(root, "repo");
     mkdirSync(repo);
-    git(repo, "init", "-b", "main");
+    git(repo, "init"); git(repo, "symbolic-ref", "HEAD", "refs/heads/main"); // init -b needs git>=2.28
     git(repo, "config", "user.name", "Test");
     git(repo, "config", "user.email", "test@example.com");
     writeFileSync(join(repo, "pnpm-workspace.yaml"), 'packages:\n  - "packages/*"\n');

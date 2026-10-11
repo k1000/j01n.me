@@ -1485,13 +1485,19 @@ async function checkConflicts(client, root, finishedBranch) {
         output2 = git2(root, "merge-tree", "--write-tree", ...pair);
       } catch (error) {
         const e = error;
-        if (e.status !== 1) throw new Error(`merge-tree ${pair.join(" vs ")}: ${e.stderr || String(error)}`);
-        conflicted = true;
-        output2 = e.stdout || "";
+        if (e.status === 1) {
+          conflicted = true;
+          output2 = e.stdout || "";
+        } else if (e.status === 128 || (e.stderr || "").includes("unknown rev")) {
+          const base2 = git2(root, "merge-base", ...pair);
+          output2 = git2(root, "merge-tree", base2, ...pair);
+          conflicted = output2.includes("<<<<<<<");
+        } else throw new Error(`merge-tree ${pair.join(" vs ")}: ${e.stderr || String(error)}`);
       }
       const files = conflicted ? [.../* @__PURE__ */ new Set([
         ...[...output2.matchAll(/^\d{6} [0-9a-f]+ [123]\t(.+)$/gm)].map((match) => match[1]),
-        ...[...output2.matchAll(/^CONFLICT .*? in (.+)$/gm)].map((match) => match[1])
+        ...[...output2.matchAll(/^CONFLICT .*? in (.+)$/gm)].map((match) => match[1]),
+        ...[...output2.matchAll(/^ {2}(?:base|our|their)\s+\d{6} [0-9a-f]+ (.+)$/gm)].map((match) => match[1])
       ])].sort() : [];
       comparisons.push({ branches: pair, files });
     }

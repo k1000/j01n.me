@@ -14,7 +14,8 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 function twoWorktrees() {
   const root = mkdtempSync(join(tmpdir(), "j01n-checkouts-")); dirs.push(root);
   const repo = join(root, "repo"); mkdirSync(repo);
-  git(repo, "init", "-b", "main"); git(repo, "config", "user.email", "test@example.invalid"); git(repo, "config", "user.name", "Test");
+  git(repo, "init"); git(repo, "symbolic-ref", "HEAD", "refs/heads/main"); // init -b needs git>=2.28
+  git(repo, "config", "user.email", "test@example.invalid"); git(repo, "config", "user.name", "Test");
   git(repo, "remote", "add", "origin", "https://example.invalid/repo.git");
   writeFileSync(join(repo, "shared.txt"), "base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base");
   const a = join(root, "a"), b = join(root, "b");

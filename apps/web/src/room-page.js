@@ -397,23 +397,23 @@
     for (const person of Object.values(data.participants || {})) {
       if (!person.left_at && USAGE_ID_PATTERN.test(String(person.id || ""))) ids.add(String(person.id));
     }
-    const rows = await Promise.all(Array.from(ids).sort().map(async (participant) => {
+    const rows = (await Promise.all(Array.from(ids).sort().map(async (participant) => {
       const key = USAGE_KEY_PREFIX + participant;
       const entry = board[key];
-      const opened = entry ? parseUsageSnapshot(await openUsageValue(entry.value, openSealedKickoff), participant) : null;
+      if (!entry) return { participant, key, version: 0, updated_by: "", snapshot: null, stale: true };
+      const opened = parseUsageSnapshot(await openUsageValue(entry.value, openSealedKickoff), participant);
+      // A peer key that will not open with this room's secret is skipped silently: no row, no numbers, no ciphertext.
+      if (!opened) return null;
       // The key is the identity: a snapshot naming somebody else still counts, but never under another name.
-      const snapshot = opened ? { ...opened, participant } : null;
       return {
         participant,
         key,
-        version: entry && entry.version != null ? entry.version : 0,
-        updated_by: (entry && entry.updated_by) || "",
-        snapshot,
-        // A key that will not open with this room's secret is shown as sealed, never as zero usage.
-        sealed: !!entry && !snapshot,
-        stale: snapshot === null || Date.parse(snapshot.updated_at) + USAGE_STALE_MS < now,
+        version: entry.version != null ? entry.version : 0,
+        updated_by: entry.updated_by || "",
+        snapshot: { ...opened, participant },
+        stale: Date.parse(opened.updated_at) + USAGE_STALE_MS < now,
       };
-    }));
+    }))).filter(Boolean);
     const reported = rows.filter((row) => row.snapshot);
     const totals = usageTotals(reported.map((row) => row.snapshot));
     // The room cost people see sums the per-row costs, so estimated rows are not silently free.
@@ -431,9 +431,7 @@
         return '<li class="live-usage-row"' + (snapshot && row.stale ? ' data-stale="true"' : '') + '>' +
           '<header><strong>' + esc(row.participant) + '</strong>' + (model ? '<small>' + esc(model) + '</small>' : '') + badge + '</header>' +
           '<p>' + (snapshot ? esc(formatUsageLine({ active_ms: snapshot.active_ms, input_tokens: snapshot.input_tokens, output_tokens: snapshot.output_tokens, cost_usd: usageCostOf(snapshot) })) + (usageCostEstimated(snapshot) ? ' <small>cost estimated</small>' : '') : '—') + '</p>' +
-          '<small>' + esc(snapshot ? snapshot.reports + (snapshot.reports === 1 ? " report" : " reports") + " · updated " + usageAgo(snapshot.updated_at, usage.nowMs)
-            : row.sealed ? "sealed for another room key or unreadable"
-              : row.version ? "board key at v" + row.version + " but nothing reported" : "waiting for the first report") + '</small>' +
+          '<small>' + esc(snapshot ? snapshot.reports + (snapshot.reports === 1 ? " report" : " reports") + " · updated " + usageAgo(snapshot.updated_at, usage.nowMs) : "waiting for the first report") + '</small>' +
           '</li>';
       }).join("") + '</ul>' +
         '<footer class="live-usage-total"><strong>Room total</strong><span>' + esc(formatUsageLine({ active_ms: usage.totals.active_ms, input_tokens: usage.totals.input_tokens, output_tokens: usage.totals.output_tokens, cost_usd: usage.display.cost_usd })) +

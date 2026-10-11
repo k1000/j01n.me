@@ -277,11 +277,12 @@ describe("live room usage display", () => {
     expect(helpers.usageParticipant("tasks")).toBeNull();
   });
 
-  it("collects sealed rows, keeps the board key as the identity and marks gaps, stale and unreadable reports", async () => {
+  it("keeps the board key as the identity, marks gaps and stale reports and skips unreadable keys", async () => {
     const room = usageRoom(USAGE_NOW);
     const helpers = usageHelpers(room.openSealed);
     const usage = await helpers.collectRoomUsage({ board: room.board, participants: room.people }, USAGE_NOW);
-    expect(usage.rows.map((row: { participant: string }) => row.participant)).toEqual(["bad", "escaped", "ghost", "reporter", "worker-1", "worker-2", "worker-3"]);
+    // "bad" has a usage key that will not decode, so it contributes no row at all.
+    expect(usage.rows.map((row: { participant: string }) => row.participant)).toEqual(["escaped", "ghost", "reporter", "worker-1", "worker-2", "worker-3"]);
     const rowOf = (id: string) => usage.rows.find((row: { participant: string }) => row.participant === id)!;
     // The one key that claims somebody else still counts, and never under another name.
     expect(rowOf("ghost").snapshot!.participant).toBe("ghost");
@@ -291,10 +292,9 @@ describe("live room usage display", () => {
     expect(rowOf("worker-1").stale).toBe(false);
     expect(rowOf("worker-1").version).toBe(4);
     expect(rowOf("worker-2").stale).toBe(true);
-    expect(rowOf("bad")).toMatchObject({ snapshot: null, sealed: true, stale: true });
-    expect(rowOf("worker-3")).toMatchObject({ snapshot: null, sealed: false, stale: true, version: 0 });
+    expect(rowOf("worker-3")).toMatchObject({ snapshot: null, stale: true, version: 0 });
     expect(usage.reported).toBe(5);
-    expect(usage.stale).toBe(3);
+    expect(usage.stale).toBe(2);
     expect(usage.totals).toEqual({
       participants: 5, active_ms: 15_691_000, input_tokens: 2_025_600, output_tokens: 159_010,
       tokens: 2_184_610, cost_usd: 12.5,
@@ -381,9 +381,11 @@ describe("live room usage display", () => {
     expect(html).toContain('data-stale="true"');
     expect(html).toContain('<span class="live-usage-stale">stale</span>');
     expect(html).toContain("no usage reported");
-    expect(html).toContain("sealed for another room key or unreadable");
+    expect(html).toContain("waiting for the first report");
+    // The unreadable key is skipped silently: no row for it, and no hint that it holds anything.
+    expect(html).not.toContain("<strong>bad</strong>");
     expect(html).toContain("<strong>Room total</strong>");
-    expect(html).toContain("5 of 7 reported · 3 stale");
+    expect(html).toContain("5 of 6 reported · 2 stale");
     expect(html).not.toContain("jsk1:");
     expect(html).not.toContain("<img");
     expect(html).toContain("&lt;img src=x onerror=alert(1)>");
@@ -413,7 +415,7 @@ describe("live room usage display", () => {
     });
     expect(root.innerHTML).toContain("Participant usage");
     expect(root.innerHTML).toContain("2h 05m active · 12.3k in / 4.5k out · $0.0091");
-    expect(root.innerHTML).toContain("<dt>Usage reported</dt><dd>5 of 7</dd>");
+    expect(root.innerHTML).toContain("<dt>Usage reported</dt><dd>5 of 6</dd>");
     expect(root.innerHTML).toContain("<dt>Room active time</dt><dd>4h 21m</dd>");
     expect(root.innerHTML).toContain("<dt>Room tokens</dt><dd>2.18M</dd>");
     expect(root.innerHTML).toContain("<dt>Room cost</dt><dd>$12.52 est.</dd>");
@@ -444,12 +446,12 @@ describe("live room usage display", () => {
     expect(usage.rows.map((row: { participant: string }) => row.participant)).toEqual(read.rows.map(row => row.participant));
     expect(usage.reported).toBe(read.reported);
 
-    // A viewer without this room's secret sees an unreadable key, never invented numbers.
+    // A viewer without this room's secret skips the row entirely and never invents numbers.
     const stranger = usageHelpers(pageSealOpener("another-secret", roomId));
     const closed = await stranger.collectRoomUsage({ board, participants: {} }, USAGE_NOW);
-    expect(closed.rows[0]).toMatchObject({ participant: "worker-9", snapshot: null, sealed: true });
+    expect(closed.rows).toEqual([]);
     expect(closed.reported).toBe(0);
-    expect(stranger.renderUsageSection(closed)).not.toContain("750000");
+    expect(stranger.renderUsageSection(closed)).toContain("No usage reported yet");
   });
 
   it("keeps the stats bar unchanged while no participant has reported", async () => {

@@ -235,6 +235,214 @@
     return '<section class="room-help-needed" role="alert"><h2>Help needed</h2><ul>' + data.help_needed.map(ask => '<li>Question #' + esc(ask.ask_id) + ' from ' + esc(ask.from) + ' awaits ' + esc(ask.owed_by) + ' since ' + esc(ask.overdue_since) + '</li>').join('') + '</ul></section>';
   }
 
+  // ── Participant usage display ────────────────────────────────────────────────
+  // Board keys usage.<participant> hold one room seal (jsk1:) of that participant's cumulative UsageSnapshot:
+  // {participant, reports, updated_at, active_ms, input_tokens, output_tokens, cost_usd, model?, provider?}.
+  // Numbers are self-reported, the server never sees them, and the live view mirrors the client-side aggregation
+  // and compact formatting of @j01n/sdk/metrics (see packages/sdk/src/metrics.ts). Display only: nothing here is
+  // written back to the board.
+  const USAGE_KEY_PREFIX = "usage.";
+  const USAGE_STALE_MS = 15 * 60 * 1000;
+  const USAGE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+  const USAGE_SNAPSHOT_FIELDS = ["active_ms", "input_tokens", "output_tokens", "cost_usd", "model", "provider", "participant", "reports", "updated_at"];
+  // USD per million tokens; the longest model name contained in the snapshot's model wins, else the fallback.
+  const USAGE_DEFAULT_RATES = { input_usd_per_mtok: 1, output_usd_per_mtok: 4 };
+  const USAGE_MODEL_RATES = [
+    ["claude-opus", 15, 75], ["claude-sonnet", 3, 15], ["claude-haiku", 0.8, 4], ["gpt-5", 1.25, 10],
+    ["gpt-4.1", 2, 8], ["gpt-4o", 2.5, 10], ["o3", 2, 8], ["gemini-flash", 0.3, 2.5], ["gemini-pro", 1.25, 10],
+    ["qwen3", 0.3, 1.2], ["deepseek", 0.3, 1.2], ["llama", 0.2, 0.6],
+  ];
+
+  // Participant a board key belongs to, or null for every other key.
+  function usageParticipant(key) {
+    if (typeof key !== "string" || key.slice(0, USAGE_KEY_PREFIX.length) !== USAGE_KEY_PREFIX) return null;
+    const id = key.slice(USAGE_KEY_PREFIX.length);
+    return USAGE_ID_PATTERN.test(id) ? id : null;
+  }
+
+  function usageNumber(value, fallback) {
+    if (value === undefined || value === null) return fallback;
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : NaN;
+  }
+
+  // "" when absent, null when present but not a usable string.
+  function usageText(value) {
+    if (value === undefined || value === null) return "";
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  // Tolerant mirror of coerceUsageSnapshot(): a valid snapshot or null, never a throw.
+  function parseUsageSnapshot(value, participantHint) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    for (const field of Object.keys(value)) if (USAGE_SNAPSHOT_FIELDS.indexOf(field) < 0) return null;
+    const counters = [usageNumber(value.active_ms, 0), usageNumber(value.input_tokens, 0), usageNumber(value.output_tokens, 0), usageNumber(value.cost_usd, 0)];
+    const reports = usageNumber(value.reports, NaN);
+    const model = usageText(value.model);
+    const provider = usageText(value.provider);
+    if (counters.some((n) => Number.isNaN(n)) || !Number.isInteger(reports) || model === null || provider === null) return null;
+    let updatedAt = new Date().toISOString();
+    if (value.updated_at !== undefined && value.updated_at !== null) {
+      if (typeof value.updated_at !== "string" || Number.isNaN(Date.parse(value.updated_at))) return null;
+      updatedAt = new Date(value.updated_at).toISOString();
+    }
+    const claimed = value.participant === undefined || value.participant === null ? "" : usageText(value.participant);
+    if (claimed === null) return null;
+    const participant = claimed || (participantHint && USAGE_ID_PATTERN.test(participantHint) ? participantHint : "");
+    if (!participant) return null;
+    const snapshot = { participant, reports, updated_at: updatedAt, active_ms: counters[0], input_tokens: counters[1], output_tokens: counters[2], cost_usd: counters[3] };
+    if (model) snapshot.model = model;
+    if (provider) snapshot.provider = provider;
+    return snapshot;
+  }
+
+  function usageRatesForModel(model) {
+    const needle = String(model || "").toLowerCase();
+    let best;
+    for (const entry of USAGE_MODEL_RATES) {
+      if (needle.indexOf(entry[0]) >= 0 && (!best || entry[0].length > best[0].length)) best = entry;
+    }
+    return best ? { input_usd_per_mtok: best[1], output_usd_per_mtok: best[2] } : USAGE_DEFAULT_RATES;
+  }
+
+  function usageRoundCost(value) { return Math.round(value * 1e6) / 1e6; }
+
+  function estimateUsageCost(snapshot) {
+    const rates = usageRatesForModel(snapshot.model);
+    return usageRoundCost((snapshot.input_tokens / 1e6) * rates.input_usd_per_mtok + (snapshot.output_tokens / 1e6) * rates.output_usd_per_mtok);
+  }
+
+  // A reported cost is an invoice and always beats the rate estimate.
+  function usageCostOf(snapshot) { return snapshot.cost_usd > 0 ? snapshot.cost_usd : estimateUsageCost(snapshot); }
+  function usageCostEstimated(snapshot) { return !(snapshot.cost_usd > 0); }
+
+  function usageTotals(snapshots) {
+    const totals = { participants: 0, active_ms: 0, input_tokens: 0, output_tokens: 0, tokens: 0, cost_usd: 0 };
+    for (const snapshot of snapshots) {
+      totals.participants += 1;
+      totals.active_ms += snapshot.active_ms;
+      totals.input_tokens += snapshot.input_tokens;
+      totals.output_tokens += snapshot.output_tokens;
+      totals.cost_usd += snapshot.cost_usd;
+    }
+    totals.tokens = totals.input_tokens + totals.output_tokens;
+    totals.cost_usd = usageRoundCost(totals.cost_usd);
+    return totals;
+  }
+
+  function formatUsageTime(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) return "0s";
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return seconds + "s";
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + "m " + usagePad(seconds % 60) + "s";
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + "h " + usagePad(minutes % 60) + "m";
+    return Math.floor(hours / 24) + "d " + usagePad(hours % 24) + "h";
+  }
+
+  function formatUsageTokens(value) {
+    if (!Number.isFinite(value) || value <= 0) return "0";
+    if (value < 1000) return String(Math.round(value));
+    if (value < 1e6) return usageTrimZero(value / 1000) + "k";
+    if (value < 1e9) return usageTrimZero(value / 1e6) + "M";
+    return usageTrimZero(value / 1e9) + "B";
+  }
+
+  function formatUsageCost(usd) {
+    if (!Number.isFinite(usd) || usd <= 0) return "$0";
+    if (usd < 1) return "$" + usageTrimZeros(usd.toFixed(4));
+    if (usd < 1000) return "$" + usd.toFixed(2);
+    return "$" + usd.toFixed(0);
+  }
+
+  // "2h 05m active · 12.3k in / 4.5k out · $0.42"
+  function formatUsageLine(usage) {
+    return formatUsageTime(usage.active_ms) + " active · " + formatUsageTokens(usage.input_tokens) + " in / " +
+      formatUsageTokens(usage.output_tokens) + " out · " + formatUsageCost(usage.cost_usd);
+  }
+
+  function usageAgo(iso, nowMs) {
+    const at = Date.parse(iso);
+    if (Number.isNaN(at)) return "unknown";
+    const seconds = Math.max(0, Math.round((nowMs - at) / 1000));
+    if (seconds < 45) return "just now";
+    return formatUsageTime(seconds * 1000) + " ago";
+  }
+
+  function usagePad(value) { return String(value).padStart(2, "0"); }
+  function usageTrimZero(value) { return usageTrimZeros(value.toFixed(2)); }
+  function usageTrimZeros(value) { return value.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, ""); }
+
+  // A usage board value is one room seal; accept the plain string, an envelope, or a board-editor wrap.
+  async function openUsageValue(value, openSealed) {
+    const payload = value && typeof value === "object" ? value.encrypted_payload : value;
+    if (typeof payload === "string") {
+      if (payload.slice(0, 5) === "jsk1:") return await openSealed(payload).catch(() => null);
+      if (payload.slice(0, 3) === "ui:") { try { return JSON.parse(decodeURIComponent(escape(atob(payload.slice(3))))); } catch { return null; } }
+      if (value && typeof value === "object") return null;
+      try { return JSON.parse(payload); } catch { return null; }
+    }
+    return value && typeof value === "object" ? value : null;
+  }
+
+  // Rows for everyone who reported plus every active participant who has not, and the room totals.
+  async function collectRoomUsage(data, nowMs) {
+    const board = data.board || {};
+    const now = typeof nowMs === "number" ? nowMs : Date.now();
+    const ids = new Set();
+    for (const key of Object.keys(board)) {
+      const id = usageParticipant(key);
+      if (id) ids.add(id);
+    }
+    for (const person of Object.values(data.participants || {})) {
+      if (!person.left_at && USAGE_ID_PATTERN.test(String(person.id || ""))) ids.add(String(person.id));
+    }
+    const rows = await Promise.all(Array.from(ids).sort().map(async (participant) => {
+      const key = USAGE_KEY_PREFIX + participant;
+      const entry = board[key];
+      const opened = entry ? parseUsageSnapshot(await openUsageValue(entry.value, openSealedKickoff), participant) : null;
+      // The key is the identity: a snapshot naming somebody else still counts, but never under another name.
+      const snapshot = opened ? { ...opened, participant } : null;
+      return {
+        participant,
+        key,
+        version: entry && entry.version != null ? entry.version : 0,
+        updated_by: (entry && entry.updated_by) || "",
+        snapshot,
+        // A key that will not open with this room's secret is shown as sealed, never as zero usage.
+        sealed: !!entry && !snapshot,
+        stale: snapshot === null || Date.parse(snapshot.updated_at) + USAGE_STALE_MS < now,
+      };
+    }));
+    const reported = rows.filter((row) => row.snapshot);
+    const totals = usageTotals(reported.map((row) => row.snapshot));
+    // The room cost people see sums the per-row costs, so estimated rows are not silently free.
+    const display = { cost_usd: usageRoundCost(reported.reduce((sum, row) => sum + usageCostOf(row.snapshot), 0)), estimated: reported.some((row) => usageCostEstimated(row.snapshot)) };
+    return { rows, totals, display, nowMs: now, reported: reported.length, stale: rows.filter((row) => row.stale).length };
+  }
+
+  function renderUsageSection(usage) {
+    const rows = usage.rows || [];
+    const body = rows.length
+      ? '<ul class="live-usage-list">' + rows.map((row) => {
+        const snapshot = row.snapshot;
+        const model = snapshot ? [snapshot.provider, snapshot.model].filter(Boolean).join("/") : "";
+        const badge = snapshot ? (row.stale ? '<span class="live-usage-stale">stale</span>' : '') : '<span class="live-usage-none">no usage reported</span>';
+        return '<li class="live-usage-row"' + (snapshot && row.stale ? ' data-stale="true"' : '') + '>' +
+          '<header><strong>' + esc(row.participant) + '</strong>' + (model ? '<small>' + esc(model) + '</small>' : '') + badge + '</header>' +
+          '<p>' + (snapshot ? esc(formatUsageLine({ active_ms: snapshot.active_ms, input_tokens: snapshot.input_tokens, output_tokens: snapshot.output_tokens, cost_usd: usageCostOf(snapshot) })) + (usageCostEstimated(snapshot) ? ' <small>cost estimated</small>' : '') : '—') + '</p>' +
+          '<small>' + esc(snapshot ? snapshot.reports + (snapshot.reports === 1 ? " report" : " reports") + " · updated " + usageAgo(snapshot.updated_at, usage.nowMs)
+            : row.sealed ? "sealed for another room key or unreadable"
+              : row.version ? "board key at v" + row.version + " but nothing reported" : "waiting for the first report") + '</small>' +
+          '</li>';
+      }).join("") + '</ul>' +
+        '<footer class="live-usage-total"><strong>Room total</strong><span>' + esc(formatUsageLine({ active_ms: usage.totals.active_ms, input_tokens: usage.totals.input_tokens, output_tokens: usage.totals.output_tokens, cost_usd: usage.display.cost_usd })) +
+        (usage.display.estimated ? ' <small>cost estimated</small>' : '') + '</span>' +
+        '<small>' + esc(usage.reported + " of " + rows.length + " reported") + (usage.stale ? esc(" · " + usage.stale + " stale") : '') + '</small></footer>'
+      : '<p class="live-empty">No usage reported yet. Each participant publishes a sealed usage key of their own.</p>';
+    return '<section class="live-panel live-usage" aria-labelledby="live-usage-title"><header><h2 id="live-usage-title"><span class="live-marker" aria-hidden="true">## </span>Participant usage</h2><span>self-reported · sealed with the room key</span></header><div class="live-panel-body">' + body + '</div></section>';
+  }
+
   function showBrowserNotification(body) {
     if (!("Notification" in window)) return;
     if (Notification.permission === "default") Notification.requestPermission();
@@ -315,7 +523,8 @@
     const messages = data.messages || [];
     const columns = extractValue(board.columns?.value);
     const isKanban = columns && typeof columns === "object" && !Array.isArray(columns) && ["todo", "doing", "review", "done"].some(c => c in columns);
-    const entries = Object.entries(board).filter(([key]) => !isKanban || !["columns", "tasks"].includes(key));
+    const boardKeys = Object.entries(board).filter(([key]) => !usageParticipant(key));
+    const entries = boardKeys.filter(([key]) => !isKanban || !["columns", "tasks"].includes(key));
     const boardHtml = (isKanban ? renderKanbanBoard(board, columns, "h3") : "") + '<div class="live-board-entries">' + entries.map(([key, entry]) =>
       '<article class="live-board-card"><header><h3>' + esc(key) + '</h3><span class="live-version">v' + esc(entry.version ?? 0) + '</span></header><div class="board-value">' + renderBoardValue(entry.value) + '</div><small>Updated by ' + esc(entry.updated_by || "—") + '</small></article>'
     ).join("") + '</div>';
@@ -330,9 +539,11 @@
     const activityHtml = liveActivity.map(item => '<li><span>' + esc(item.text) + '</span><time>' + esc(item.time) + '</time></li>').join("");
     const expanded = new Set(Array.from(root.querySelectorAll("[data-message-id][open]")).map(el => el.dataset.messageId));
     const focusedMessage = document.activeElement?.closest("[data-message-id]")?.dataset.messageId;
+    const usage = await collectRoomUsage(data);
     root.innerHTML = '<header class="live-header"><div><span class="live-eyebrow">j01n.me / live coordination</span><h1>' + esc(room.name || "Room") + '</h1><p>' + esc(room.purpose || "A shared space for agents, ideas, and progress.") + '</p></div><div class="live-connection"><span data-connection-status role="status" aria-live="polite"></span><small>Snapshot ' + esc(new Date().toLocaleTimeString()) + '</small></div></header>' +
-      '<dl class="live-stats"><div><dt>Active participants</dt><dd>' + active.length + '</dd></div><div><dt>Busy right now</dt><dd>' + active.filter(p => p.state === "busy").length + '</dd></div><div><dt>Visible messages</dt><dd>' + messages.length + '</dd></div><div><dt>Room phase</dt><dd>' + esc(data.phase || "Open") + '</dd></div></dl>' +
-      helpNeededHtml(data) + '<div class="live-grid"><section class="live-panel" aria-labelledby="live-board-title"><header><h2 id="live-board-title"><span class="live-marker" aria-hidden="true">## </span>Shared board</h2><span>' + Object.keys(board).length + ' keys</span></header><div class="live-panel-body">' + (Object.keys(board).length ? boardHtml : '<p class="live-empty">No board data yet. Updates will appear here.</p>') + '</div></section>' +
+      '<dl class="live-stats"><div><dt>Active participants</dt><dd>' + active.length + '</dd></div><div><dt>Busy right now</dt><dd>' + active.filter(p => p.state === "busy").length + '</dd></div><div><dt>Visible messages</dt><dd>' + messages.length + '</dd></div><div><dt>Room phase</dt><dd>' + esc(data.phase || "Open") + '</dd></div>' +
+      (usage.reported ? '<div><dt>Usage reported</dt><dd>' + esc(usage.reported + ' of ' + usage.rows.length) + '</dd></div><div><dt>Room active time</dt><dd>' + esc(formatUsageTime(usage.totals.active_ms)) + '</dd></div><div><dt>Room tokens</dt><dd>' + esc(formatUsageTokens(usage.totals.tokens)) + '</dd></div><div><dt>Room cost</dt><dd>' + esc(formatUsageCost(usage.display.cost_usd) + (usage.display.estimated ? ' est.' : '')) + '</dd></div>' : '') + '</dl>' +
+      helpNeededHtml(data) + renderUsageSection(usage) + '<div class="live-grid"><section class="live-panel" aria-labelledby="live-board-title"><header><h2 id="live-board-title"><span class="live-marker" aria-hidden="true">## </span>Shared board</h2><span>' + boardKeys.length + ' keys</span></header><div class="live-panel-body">' + (boardKeys.length ? boardHtml : '<p class="live-empty">No board data yet. Updates will appear here.</p>') + '</div></section>' +
       '<section class="live-panel" aria-labelledby="live-people-title"><header><h2 id="live-people-title"><span class="live-marker" aria-hidden="true">## </span>Participants</h2><span>' + active.length + ' active</span></header><div class="live-panel-body live-people">' + (peopleHtml || '<p class="live-empty">No participants yet.</p>') + '</div></section>' +
       '<section class="live-panel" aria-labelledby="live-messages-title"><header><h2 id="live-messages-title"><span class="live-marker" aria-hidden="true">## </span>Message timeline</h2><span>Visible to you · oldest first</span></header>' + (messagesHtml || '<p class="live-panel-body live-empty">No messages yet. The conversation starts here.</p>') + '</section>' +
       '<section class="live-panel" aria-labelledby="live-events-title"><header><h2 id="live-events-title"><span class="live-marker" aria-hidden="true">## </span>Recent events</h2><span>SSE · this session</span></header><div class="live-panel-body"><ol class="live-activity">' + activityHtml + '</ol>' + (activityHtml ? '' : '<p class="live-empty">Waiting for room events.</p>') + '</div></section></div>' +

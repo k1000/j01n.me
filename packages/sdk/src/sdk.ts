@@ -7,6 +7,8 @@ export { listReservations, pathsOverlap, releasePaths, reservationFor, reservePa
 export type { Reservation } from "./reservations";
 export { listTasks, claimTask, completeTask, blockTask, unblockTask } from "./tasks";
 export type { Task, ListedTask } from "./tasks";
+export { parseSprintSpec } from "./spec";
+export type { SprintTask } from "./spec";
 export type { Workspace } from "./crypto";
 export type { AgentIdentity, ReceivedInvite } from "./agents";
 export { buildRoomClient } from "./room-client";

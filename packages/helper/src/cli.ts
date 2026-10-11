@@ -7,7 +7,7 @@ import { join, relative, resolve } from "node:path";
 import {
   buildMinimalInvite, getClientUpdateNotice, inviteLink, joinRoom, resumeRoom, parseInviteLink,
   registerAgent, setAcceptFrom, inviteAgent, waitForInvites, deleteInvite,
-  sealForRoom, SDK_CLIENT_PROTOCOL,
+  sealForRoom, SDK_CLIENT_PROTOCOL, normalizeInvite, parseSprintSpec,
   type AgentIdentity, type RoomAccess,
 } from "@j01n/sdk";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
@@ -124,9 +124,28 @@ async function agents() {
 async function main() {
   if (cmd === "create") {
     const url = isUrl(args[1]) ? args[1] : base;
-    const options = (isUrl(args[1]) ? args[2] : args[1]) || "{}";
-    const response = await fetch(`${url.replace(/\/$/, "")}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(JSON.parse(options)) });
+    const options = JSON.parse((isUrl(args[1]) ? args[2] : args[1]) || "{}");
+    let specText: string | undefined;
+    if (options.spec !== undefined) {
+      if (typeof options.spec !== "string" || !options.spec) throw Error("create spec needs a Markdown file path");
+      if (options.tasks !== undefined || (options.template !== undefined && options.template !== "sprint")) throw Error("create spec cannot override tasks or sprint template");
+      specText = await fs.readFile(options.spec, "utf8");
+      options.tasks = parseSprintSpec(specText);
+      options.template = "sprint";
+      delete options.spec;
+    }
+    const response = await fetch(`${url.replace(/\/$/, "")}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(options) });
     const text = await response.text(); if (!response.ok) throw Error(text);
+    if (specText !== undefined) {
+      const invite = normalizeInvite(JSON.parse(text));
+      const me = invite.room.host_id;
+      const session = await createSdkCryptoSession(me);
+      const client = await joinRoom(invite, me, {}, session);
+      const keyFile = join(stateDir, `.j01n-${safe(new URL(invite.room_url).pathname)}-${safe(me)}.json`);
+      await fs.writeFile(keyFile, JSON.stringify({ ...await session.exportKeyPair(), peers: {}, participantToken: client.invite.participant_token, joinSecret: invite.join_secret, roomUrl: invite.room_url }), { mode: 0o600 });
+      await remember(invite.room_url, me);
+      await client.send("all", { encrypted_payload: await sealForRoom(specText, invite.join_secret, invite.room_id) }, { intent: "kickoff", plain: true });
+    }
     console.log(text); return;
   }
   if (["register", "allow", "invite", "invites", "listen"].includes(cmd || "")) { await agents(); return; }
@@ -172,8 +191,11 @@ async function main() {
     let board: Awaited<ReturnType<RoomClient["board"]>>["board"] | null = null;
     try { board = (await client.board()).board; } catch { /* join still succeeded */ }
     let kickoff: unknown = board?.kickoff?.value ?? null;
-    if (kickoff === null) kickoff = (await client.read({ all: true, includeSelf: true })).find((m) => m.intent === "kickoff")?.body ?? null;
-    output({ ...profile, kickoff, board, ...notesAndDecisions(board ?? {}), questions: await client.openQuestions(), team: await client.team() });
+    const messages = await client.read({ all: true, includeSelf: true }).catch(() => []);
+    const sealedKickoff = messages.find((m) => m.intent === "kickoff" && !m.decrypt_error)?.body;
+    if (kickoff === null) kickoff = sealedKickoff ?? null;
+    const spec = typeof sealedKickoff === "string" ? { spec: sealedKickoff } : {};
+    output({ ...profile, kickoff, ...spec, board, ...notesAndDecisions(board ?? {}), questions: await client.openQuestions(), team: await client.team() });
     return;
   }
   if (cmd === "invite-link") {

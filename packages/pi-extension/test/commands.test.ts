@@ -190,6 +190,50 @@ describe("pi-extension sessions", () => {
     expect(body).toMatchObject({ host_id: "nora", template: "sprint", tasks: [{ id: "T1", title: "API" }] });
   });
 
+  it("create --spec seeds sprint tasks and sends the complete spec as a sealed kickoff", async () => {
+    const spec = `# Private sprint goal
+
+## Tasks
+- T1 Build
+  files: src/build.ts
+  role: builder
+`;
+    writeFileSync("sprint.md", spec);
+    const originalFetch = globalThis.fetch;
+    boardResponse = Response.json({ board: { kickoff: { value: { rules: ["claim before editing"] }, version: 1 } }, board_schema: null });
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (String(url).startsWith(`${ROOM}/?`) && (init?.method ?? "GET") === "GET") {
+        const posted = calls.find((call) => call.url === ROOM && call.body?.includes('"intent":"kickoff"'));
+        const sealed = posted ? JSON.parse(posted.body!).body : null;
+        return Promise.resolve(Response.json({ cursor: 1, messages: sealed ? [{ id: "spec-kickoff", seq: 1, from: "nora", to: "all", intent: "kickoff", body: sealed }] : [] }));
+      }
+      if (!String(url).endsWith("/rooms")) return originalFetch(url, init);
+      calls.push({ method: init?.method ?? "GET", url: String(url), auth: null, body: String(init?.body) });
+      return Promise.resolve(Response.json({ intro: "intro", next_step: "join", room_id: "room-1", room: { name: "sprint", purpose: "sprint", host_id: "nora", max_participants: 8 }, join_secret: "secret", room_url: ROOM, api: {}, skill: "skill", expires_at: new Date(Date.now() + 60_000).toISOString() }));
+    });
+    const { runj01n } = await import("../commands");
+    await runj01n(["create", JSON.stringify({ host_id: "nora", spec: "sprint.md" })]);
+    const create = JSON.parse(calls.find((c) => c.url.endsWith("/rooms"))!.body!);
+    expect(create).toMatchObject({ template: "sprint", tasks: [{ id: "T1", title: "Build", files: ["src/build.ts"], role: "builder" }] });
+    expect(JSON.stringify(create)).not.toContain("Private sprint goal");
+    expect(create).not.toHaveProperty("spec");
+    const sent = JSON.parse(calls.find((c) => c.url === ROOM && c.method === "POST" && c.body?.includes('"intent":"kickoff"'))!.body!);
+    expect(sent.intent).toBe("kickoff");
+    expect(sent.body.encrypted_payload).toMatch(/^jsk1:/);
+    const { openRoomSeal } = await import("@j01n/sdk");
+    expect(await openRoomSeal(sent.body.encrypted_payload, "secret", "room-1")).toBe(spec);
+    expect(readFileSync(".j01n-_r_room-1-nora.json", "utf8")).not.toContain("Private sprint goal");
+    const joined = JSON.parse(await runj01n(["join", ROOM, "secret", "fresh-peer"]));
+    expect(joined).toMatchObject({ kickoff: { rules: ["claim before editing"] }, spec });
+  });
+
+  it("refuses invalid specs before posting a room", async () => {
+    writeFileSync("invalid.md", "## Tasks\n- T1 Build\n");
+    const { runj01n } = await import("../commands");
+    await expect(runj01n(["create", JSON.stringify({ spec: "invalid.md" })])).rejects.toThrow("valid files");
+    expect(calls.some((c) => c.url.endsWith("/rooms"))).toBe(false);
+  });
+
   it("returns no kickoff for an empty board without failing the join", async () => {
     const { runj01n } = await import("../commands");
     expect(JSON.parse(await runj01n(["join", ROOM, "secret", "pi-agent"])).kickoff).toBeNull();

@@ -5,7 +5,7 @@ import { createHash, webcrypto } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { join, relative, resolve } from "node:path";
 import {
-  buildMinimalInvite, getClientUpdateNotice, inviteLink, joinRoom, resumeRoom, parseInviteLink,
+  buildMinimalInvite, buildRoomClient, getClientUpdateNotice, inviteLink, joinRoom, resumeRoom, parseInviteLink,
   registerAgent, setAcceptFrom, inviteAgent, waitForInvites, deleteInvite,
   sealForRoom, SDK_CLIENT_PROTOCOL, normalizeInvite, parseSprintSpec,
   type AgentIdentity, type RoomAccess,
@@ -149,7 +149,11 @@ async function agents() {
 async function main() {
   if (cmd === "create") {
     const url = isUrl(args[1]) ? args[1] : base;
-    const options = JSON.parse((isUrl(args[1]) ? args[2] : args[1]) || "{}");
+    const optionsIndex = isUrl(args[1]) ? 2 : 1;
+    const joinHost = args[optionsIndex + 1] === "--join";
+    if (args.length > optionsIndex + (joinHost ? 2 : 1)) throw Error("create needs: <options-json> [--join]");
+    const options = JSON.parse(args[optionsIndex] || "{}");
+    if (joinHost && (typeof options.host_id !== "string" || !/^[a-z][a-z0-9_-]{0,31}$/.test(options.host_id))) throw Error("create --join needs a valid host_id");
     let specText: string | undefined;
     if (options.spec !== undefined) {
       if (typeof options.spec !== "string" || !options.spec) throw Error("create spec needs a Markdown file path");
@@ -160,8 +164,28 @@ async function main() {
       options.template = "sprint";
       delete options.spec;
     }
+    const session = joinHost ? await createSdkCryptoSession(options.host_id) : undefined;
+    if (session) options.host_public_key = (await session.announceKeyBody()).public_key;
     const response = await fetch(`${url.replace(/\/$/, "")}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(options) });
-    const text = await response.text(); if (!response.ok) throw Error(text);
+    const text = await response.text(); if (!response.ok) throw Error(joinHost ? `failed to create room (${response.status})` : text);
+    if (session) {
+      const invite = normalizeInvite(JSON.parse(text));
+      if (!invite.host_joined || typeof invite.cursor !== "number" || !invite.participant_token) throw Error("room service did not auto-join the host; private invitation withheld (room will expire)");
+      const client = await buildRoomClient(invite, options.host_id, invite.cursor, session);
+      const keyFile = join(stateDir, `.j01n-${safe(new URL(invite.room_url).pathname)}-${safe(options.host_id)}.json`);
+      try {
+        await fs.writeFile(keyFile, JSON.stringify({ ...await session.exportKeyPair(), peers: {}, participantToken: invite.participant_token, joinSecret: invite.join_secret, roomUrl: invite.room_url }), { mode: 0o600 });
+        await remember(invite.room_url, options.host_id);
+      } catch {
+        await client.close().catch(() => undefined);
+        await fs.rm(keyFile, { force: true });
+        await fs.rm(activePath(invite.room_url, options.host_id), { force: true });
+        throw Error("could not save the host identity; room closed or will expire");
+      }
+      if (specText !== undefined) await client.send("all", { encrypted_payload: await sealForRoom(specText, invite.join_secret, invite.room_id) }, { intent: "kickoff", plain: true });
+      output({ room_id: invite.room_id, participant_id: options.host_id, host_joined: true });
+      return;
+    }
     if (specText !== undefined) {
       const invite = normalizeInvite(JSON.parse(text));
       // The create response carries no room.host_id; join as the requested host.

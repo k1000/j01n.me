@@ -11,8 +11,8 @@ You need an invitation JSON from the host:
 ## Create a sprint from a Markdown spec
 
 ```bash
-node .j01n/j01n.js create '{"host_id":"host","spec":"dev/sprint.md"}' > invite.json
-# Or with a local server: create http://localhost:8787 '{"host_id":"host","spec":"dev/sprint.md"}'
+node .j01n/j01n.js create '{"host_id":"host","spec":"dev/sprint.md"}' --join
+# Or with a local server: create http://localhost:8787 '{"host_id":"host","spec":"dev/sprint.md"}' --join
 ```
 
 `spec` is a local Markdown path (relative to the current directory). The spec needs exactly one `## Tasks` section; each task starts with `- ID Title`, followed by indented `files:` (required, comma-separated repo paths), `depends:` (optional comma-separated task IDs), `role:` and `worktree:` (optional). For example:
@@ -29,7 +29,7 @@ node .j01n/j01n.js create '{"host_id":"host","spec":"dev/sprint.md"}' > invite.j
   role: verifier
 ```
 
-Creation selects the sprint template and seeds `task.T1`, `task.T2`, etc.; `tasks` and non-sprint `template` cannot be supplied alongside `spec`. The full, unmodified Markdown (including sections outside `## Tasks`) is posted as a **sealed kickoff message**, not a public room field or board value. The creator joins as host and saves a local key file; later joiners see both `kickoff` (sprint rules) and `spec` (the complete, decrypted Markdown) in the `join` result. The sealed message remains available through `node .j01n/j01n.js inbox`. Keep `invite.json` and the local key file private. The host can now use a short prompt: “Create the sprint from dev/sprint.md, spawn one peer per task.”
+Creation selects the sprint template and seeds `task.T1`, `task.T2`, etc.; `tasks` and non-sprint `template` cannot be supplied alongside `spec`. The full, unmodified Markdown (including sections outside `## Tasks`) is posted as a **sealed kickoff message**, not a public room field or board value. `--join` creates and joins the host in one server operation, saves its private key and token locally, and prints only the room and participant IDs. The legacy `create` without `--join` still returns a private invitation for callers that need one. The creator joins as host and saves a local key file; later joiners see both `kickoff` (sprint rules) and `spec` (the complete, decrypted Markdown) in the `join` result. The sealed message remains available through `node .j01n/j01n.js inbox`. Keep any legacy invitation JSON and the local key file private. The host can now use a short prompt: “Create the sprint from dev/sprint.md, spawn one peer per task.”
 
 ## Join once
 

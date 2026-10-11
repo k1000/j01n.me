@@ -30,6 +30,7 @@ describe("live identity scoping", () => {
     const peer = { participantId: "ravi", invite: { room_id: "room-1", room_url: ROOM } } as RoomClient;
     expect(liveClientsForProcess([host, peer], { J01N_PEER_ROOM_ID: "room-1", J01N_PEER_PARTICIPANT_ID: "ravi" })).toEqual([peer]);
     expect(liveClientsForProcess([host, peer], { J01N_PEER_PARTICIPANT_ID: "ravi" })).toEqual([]);
+    expect(liveClientsForProcess([host, peer], {})).toEqual([]);
     expect(modelAnnounceClients([host, peer])).toEqual([]);
     expect(modelAnnounceClients([peer])).toEqual([peer]);
   });

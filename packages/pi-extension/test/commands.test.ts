@@ -61,6 +61,54 @@ describe("pi-extension sessions", () => {
     expect(calls).toContainEqual(expect.objectContaining({ method: "GET", url: `${ROOM}/board`, auth: "Bearer tok-1" }));
   });
 
+  it("creates and joins a host atomically without returning credentials", async () => {
+    const base = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (!String(url).endsWith("/rooms")) return base(url, init);
+      calls.push({ method: init?.method ?? "GET", url: String(url), auth: null, body: String(init?.body) });
+      return Promise.resolve(Response.json({ access: ROOM, join_secret: "private-room-secret", host_joined: true, cursor: 0, participant_token: "host-token" }));
+    });
+    const { runj01n, activeRoomClients } = await import("../commands");
+    const result = JSON.parse(await runj01n(["create", JSON.stringify({ host_id: "pi-agent" }), "--join"]));
+    expect(result).toEqual({ room_id: "room-1", participant_id: "pi-agent", host_joined: true });
+    expect(JSON.stringify(result)).not.toMatch(/private-room-secret|host-token/);
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(0);
+    const created = calls.find((call) => call.method === "POST" && call.url.endsWith("/rooms"));
+    expect(JSON.parse(created!.body!).host_public_key).toBeTruthy();
+    expect((await activeRoomClients()).map((client) => client.participantId)).toEqual(["pi-agent"]);
+    const saved = readdirSync(".").find((file) => file.endsWith("-pi-agent.json"))!;
+    expect(statSync(saved).mode & 0o077).toBe(0);
+    expect(JSON.parse(readFileSync(saved, "utf8")).joinSecret).toBe("private-room-secret");
+  });
+
+  it("withholds a private invite when the server cannot auto-join the host", async () => {
+    const base = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url).endsWith("/rooms")
+      ? Promise.resolve(Response.json({ access: ROOM, join_secret: "private-room-secret", host_joined: false }))
+      : base(url, init));
+    const { runj01n, activeRoomClients } = await import("../commands");
+    await expect(runj01n(["create", JSON.stringify({ host_id: "host" }), "--join"])).rejects.toThrow(/did not auto-join/);
+    expect(await activeRoomClients()).toEqual([]);
+  });
+
+  it("binds a shared checkout to an explicitly selected room identity without leaking credentials", async () => {
+    const { runj01n, activeRoomClients } = await import("../commands");
+    const { liveClientsForProcess, modelAnnounceClients } = await import("../live");
+    await runj01n(["join", ROOM, "secret", "host", "--no-workspace"]);
+    await runj01n(["join", ROOM, "secret", "reviewer", "--no-workspace"]);
+    const clients = await activeRoomClients();
+    expect(liveClientsForProcess(clients, {}).map((client) => client.participantId)).toEqual(["reviewer"]);
+    const selected = JSON.parse(await runj01n(["use", "room-1", "host"]));
+    expect(selected).toEqual({ room_id: "room-1", participant_id: "host", selected: true });
+    expect(liveClientsForProcess(clients, {}).map((client) => client.participantId)).toEqual(["host"]);
+    expect(modelAnnounceClients(clients).map((client) => client.participantId)).toEqual(["host"]);
+    await expect(runj01n(["use", "room-1", "stranger"])).rejects.toThrow(/joined|identity/);
+    vi.stubEnv("J01N_PEER_ROOM_ID", "room-1");
+    vi.stubEnv("J01N_PEER_PARTICIPANT_ID", "reviewer");
+    await expect(runj01n(["use", "room-1", "host"])).rejects.toThrow(/cannot select/);
+    expect(JSON.stringify(selected)).not.toContain("secret");
+  });
+
   it("invite-link reads the saved secret locally and refuses non-hosts", async () => {
     const { runj01n } = await import("../commands");
     await runj01n(["join", ROOM, "secret", "pi-agent", "--no-workspace"]);

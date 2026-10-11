@@ -23,7 +23,7 @@ export default function (pi: ExtensionAPI) {
   registerRepoInviteTool(pi);
   registerIntegratorTool(pi);
   pi.registerCommand("j01n", {
-    description: "j01n.me encrypted room helper: create, join, doctor, send, read, board, board_set, board_patch, board_delete, status, webhook, wait, register, allow, invite, listen, herdr_agents, invite_herdr, leave, close, participants, room_status, transition, host, profile, reserve, release, reservations, tasks, claim, done, conflicts, worktrees, live",
+    description: "j01n.me encrypted room helper: create, join, use, doctor, send, read, board, board_set, board_patch, board_delete, status, webhook, wait, register, allow, invite, listen, herdr_agents, invite_herdr, leave, close, participants, room_status, transition, host, profile, reserve, release, reservations, tasks, claim, done, conflicts, worktrees, live",
     handler: async (args, ctx) => {
       const notify: Notify = ctx.ui.notify.bind(ctx.ui);
       const argv = splitArgs(args || "");
@@ -38,7 +38,7 @@ export default function (pi: ExtensionAPI) {
     label: "j01n.me",
     description: "Use the j01n.me encrypted room helper. Args match the j01n client, e.g. ['read','docs-review.json','agent-b'] or ['board','docs-review.json','agent-b'] or ['status','docs-review.json','agent-b','free','working on docs'].",
     parameters: Type.Object({
-      args: Type.Array(Type.String(), { description: "Arguments: create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|herdr_agents|invite_herdr|leave|close|participants|room_status|transition|host|profile|reserve|release|reservations|tasks|claim|done|conflicts|worktrees|live ..." }),
+      args: Type.Array(Type.String(), { description: "Arguments: create|join|use|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|herdr_agents|invite_herdr|leave|close|participants|room_status|transition|host|profile|reserve|release|reservations|tasks|claim|done|conflicts|worktrees|live ..." }),
     }),
     async execute(_toolCallId, params) {
       if (params.args[0] === "live") return toolResult(live.setEnabled(params.args[1] !== "off"), params.args);

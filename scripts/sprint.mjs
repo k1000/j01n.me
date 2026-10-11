@@ -142,7 +142,7 @@ async function start() {
   run("herdr", ["pane", "rename", pane, name]);
   run("herdr", ["agent", "start", name, "--kind", "pi", "--pane", pane]);
   const copied = spec.startsWith(dev + sep) ? relative(repo, spec) : basename(spec);
-  run("herdr", ["agent", "prompt", pane, `Host this sprint from ${copied}. Create the sprint with {"host_id":${JSON.stringify(name)},"spec":${JSON.stringify(copied)}}; confirm the owner joins, invite repo agents, spawn one peer per task, coordinate review.${integrator ? ` Right after joining, call invite_integrator({"name":"${integrator}"}); when it joins, give it the owner role (/j01n profile <its id> --role owner).` : ""} Follow docs/SPAWN-RUNBOOK.md. Never paste room credentials into Herdr.`]);
+  run("herdr", ["agent", "prompt", pane, `Host this sprint from ${copied}. Create the sprint with {"host_id":${JSON.stringify(name)},"spec":${JSON.stringify(copied)}}; the start script opens the owner invitation once, so do not run invite-link --open yourself. Confirm the owner joins, invite repo agents, spawn one peer per task, coordinate review.${integrator ? ` Right after joining, call invite_integrator({"name":"${integrator}"}); when it joins, give it the owner role (/j01n profile <its id> --role owner).` : ""} Follow docs/SPAWN-RUNBOOK.md. Never paste room credentials into Herdr.`]);
   if (integrator) console.log(`Integrator: run \`node packages/helper/client/j01n.js listen ${integrator} --as <id>\` from ${repo} to join.`);
   const roomDir = join(process.env.J01N_KEY_DIR || target, ".j01n-rooms");
   let joined = false;
@@ -150,16 +150,22 @@ async function start() {
     if (existsSync(roomDir) && readdirSync(roomDir).some((v) => /^[a-f0-9]{64}\.json$/.test(v))) { joined = true; break; }
     await pause(1000);
   }
-  if (!joined) fail("host room not joined within 3 minutes; host pane remains running. Open owner invite from host once joined");
-  // A host room may be created before its key file is saved; retry without emitting private CLI output.
+  if (!joined) fail("host room not joined within 3 minutes; host pane remains running. The start script has not opened an owner invitation");
+  // Wait for the key file without repeating the browser-opening side effect.
+  const hostHelper = join(target, "packages/helper/client/j01n.js");
+  let inviteReady = false;
   for (let i = 0; i < 10; i++) {
     try {
-      execFileSync(process.execPath, [join(target, "packages/helper/client/j01n.js"), "invite-link", "--open"], { cwd: target, timeout: 15_000, stdio: "ignore" });
-      console.log("Owner invitation opened in browser (confirm the owner joined in sprint status).");
-      return;
+      execFileSync(process.execPath, [hostHelper, "invite-link"], { cwd: target, timeout: 15_000, stdio: "ignore" });
+      inviteReady = true;
+      break;
     } catch { await pause(1000); }
   }
-  fail("owner invitation could not be opened; host must run invite-link --open before proceeding");
+  if (!inviteReady) fail("owner invitation is not ready; host must inspect the room before opening it");
+  try {
+    execFileSync(process.execPath, [hostHelper, "invite-link", "--open"], { cwd: target, timeout: 15_000, stdio: "ignore" });
+  } catch { fail("owner invitation may have opened; check the browser before retrying manually"); }
+  console.log("Owner invitation opened in browser (confirm the owner joined in sprint status).");
 }
 function remotes() {
   for (const remote of ["gitlab", "origin"]) git("fetch", remote);

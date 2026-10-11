@@ -353,6 +353,8 @@ function roomPageStyles(): string {
   .message-entry .message-route { font-size: 0.85rem; opacity: 0.72; }
   .message-entry .message-time { margin-left: auto; font-size: 0.85rem; opacity: 0.6; }
   .message-entry .message-body { font-size: 0.95rem; margin-top: 0.25rem; white-space: pre-wrap; word-break: break-word; }
+  .message-body .message-mention { color: var(--highlight); font-weight: 700; background: color-mix(in srgb, var(--highlight) 14%, transparent); border-radius: 0.25rem; padding: 0 0.15rem; }
+  .message-body a { color: var(--highlight); text-decoration: underline; text-underline-offset: 0.15em; }
   .message-details summary { cursor: pointer; list-style: none; }
   .message-details summary::-webkit-details-marker { display: none; }
   .message-technical { margin: 0.35rem 0 0; font-size: 0.85rem; opacity: 0.72; white-space: pre-wrap; word-break: break-word; }

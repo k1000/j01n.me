@@ -195,6 +195,60 @@ async function roomPageDecryptors(joinSecret: string, latest: unknown = null) {
 }
 
 describe("room page", () => {
+  function messageBodyHtml(body: string, participants: unknown, workspace: unknown): string {
+    const start = roomPageScript.indexOf("  function repoFileBase(");
+    const end = roomPageScript.indexOf("  async function renderMessage(", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const esc = (value: unknown) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    const render = new Function("esc", "escAttr", roomPageScript.slice(start, end) + "return renderMessageBody;")(esc, esc) as
+      (body: string, participants: unknown, workspace: unknown) => string;
+    return render(body, participants, workspace);
+  }
+
+  it("highlights known mentions by display name or id, preserving unknown mentions as escaped text", () => {
+    const people = { zara: { id: "zara", display_name: "Zara", role: "builder" }, peer_2: { id: "peer_2", display_name: "Leo" } };
+    const html = messageBodyHtml('@ZARA:host, @leo @PEER_2:builder @other:builder <img src=x> & @zara', people, null);
+    expect(html).toContain('<span class="message-mention">@ZARA:host</span>');
+    expect(html).toContain('<span class="message-mention">@leo</span>');
+    expect(html).toContain('<span class="message-mention">@PEER_2:builder</span>');
+    expect(html).toContain('@other:builder');
+    expect(html).not.toContain('<span class="message-mention">@other');
+    expect(html).toContain('&lt;img src=x&gt; &amp;');
+    expect(html).not.toContain('<img');
+    expect(roomPageHtml("room-1")).toContain('.message-body .message-mention');
+  });
+
+  it("links relative repo files with optional lines against the sender's sealed workspace", () => {
+    const body = 'See packages/sdk/src/node.ts:12, apps/web/src/html.ts and https://github.com/group/repo/blob/main/src/no.ts; <script> &';
+    const gitlab = messageBodyHtml(body, {}, { repo: "git@gitlab.com:group/repo.git", branch: "feature/t15" });
+    expect(gitlab).toContain('href="https://gitlab.com/group/repo/-/blob/feature%2Ft15/packages/sdk/src/node.ts#L12" target="_blank" rel="noopener noreferrer">packages/sdk/src/node.ts:12</a>,');
+    expect(gitlab).toContain('href="https://gitlab.com/group/repo/-/blob/feature%2Ft15/apps/web/src/html.ts"');
+    expect(gitlab.match(/<a /g)).toHaveLength(2);
+    expect(gitlab).toContain('https://github.com/group/repo/blob/main/src/no.ts;');
+    expect(gitlab).toContain('&lt;script&gt; &amp;');
+    const github = messageBodyHtml("apps/web/src/html.ts", {}, { repo: "https://github.com/group/repo.git", branch: "main" });
+    expect(github).toContain('href="https://github.com/group/repo/blob/main/apps/web/src/html.ts"');
+    expect(messageBodyHtml("apps/web/src/html.ts", {}, { repo: "git@github.com:group/repo.git", branch: "main" })).toContain('href="https://github.com/group/repo/blob/main/apps/web/src/html.ts"');
+  });
+
+  it("leaves unsafe remotes, non-path tokens and traversal plain", () => {
+    const body = 'src/file.ts:3 https://evil.test/path/src/file.ts ../src/file.ts src/../file.ts src/readme';
+    for (const repo of ["https://evil.test/group/repo", "https://user:secret@gitlab.com/group/repo", "javascript:alert(1)"]) {
+      expect(messageBodyHtml(body, {}, { repo, branch: 'main' })).not.toContain('<a ');
+    }
+    const html = messageBodyHtml(body, {}, { repo: "https://gitlab.com/group/repo", branch: "main" });
+    expect(html).toContain('href="https://gitlab.com/group/repo/-/blob/main/src/file.ts#L3"');
+    expect(html).not.toContain('href="https://evil.test');
+    expect(html).not.toContain('href="https://gitlab.com/group/repo/-/blob/main/../');
+    expect(html).not.toContain('href="https://gitlab.com/group/repo/-/blob/main/src/../');
+    expect(html.match(/<a /g)).toHaveLength(1);
+    expect(html).toContain('src/readme');
+    expect(messageBodyHtml("src/file.ts", {}, null)).not.toContain('<a ');
+    expect(roomPageScript).toContain('renderMessage(m, messages, data.participants, workspaces)');
+    expect(roomPageScript).toContain('renderMessage(m, messages, participants, workspaces)');
+  });
+
   it("opens a sealed kickoff with the invite secret, but not with a wrong secret", async () => {
     const body = { encrypted_payload: await sealForRoom({ text: "Review the tasks" }, "correct-secret", "room-1") };
     const message = { from: "host", intent: "kickoff", body };

@@ -326,7 +326,7 @@
       const where = [workspaces[p.id]?.host, checkoutLabel(p, people)].filter(Boolean).join(' · ');
       return '<article class="live-person"><div><header><strong>' + esc(participantLabel(p)) + '</strong> ' + (p.role ? '<span>' + esc(p.role) + '</span> ' : '') + '<span class="live-state" data-state="' + escAttr(state) + '">' + esc(label) + '</span></header><p>' + esc(p.status || "No status shared") + '</p><small>' + esc(where || [p.provider, p.model].filter(Boolean).join("/") || (p.id === participantId ? "This browser · you" : "Agent")) + '</small></div></article>';
     }).join("");
-    const messagesHtml = (await Promise.all(messages.map(m => renderMessage(m, messages)))).join("");
+    const messagesHtml = (await Promise.all(messages.map(m => renderMessage(m, messages, data.participants, workspaces)))).join("");
     const activityHtml = liveActivity.map(item => '<li><span>' + esc(item.text) + '</span><time>' + esc(item.time) + '</time></li>').join("");
     const expanded = new Set(Array.from(root.querySelectorAll("[data-message-id][open]")).map(el => el.dataset.messageId));
     const focusedMessage = document.activeElement?.closest("[data-message-id]")?.dataset.messageId;
@@ -701,7 +701,7 @@
 
     const messagesHtml = messages.length === 0
       ? `<p class="board-empty">No messages yet.</p>`
-      : (await Promise.all(messages.map((m) => renderMessage(m, messages)))).join("");
+      : (await Promise.all(messages.map((m) => renderMessage(m, messages, participants, workspaces)))).join("");
     const extendControls = isHost ? ` <button class="button button-small" type="button" data-extend-room title="Extend invite by 30 minutes">Extend 30 min</button><p class="room-ttl-status" data-room-ttl-status aria-live="polite"></p>` : "";
 
     const drafts = captureConsoleDrafts();
@@ -1008,14 +1008,54 @@ ${helpNeededHtml(data)}
     return { ciphertext: base64Url(new Uint8Array(ciphertext)), iv: base64Url(iv) };
   }
 
-  async function renderMessage(message, allMessages) {
+  function repoFileBase(workspace) {
+    if (typeof workspace?.repo !== "string" || typeof workspace?.branch !== "string" || !workspace.branch || workspace.branch.split("/").some(part => part === "." || part === "..")) return "";
+    let remote = workspace.repo;
+    const ssh = /^git@(github\.com|gitlab\.com):(.+)$/i.exec(remote);
+    if (ssh) remote = `https://${ssh[1]}/${ssh[2]}`;
+    let url;
+    try { url = new URL(remote); } catch { return ""; }
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash) return "";
+    const host = url.hostname.toLowerCase();
+    if (host !== "github.com" && host !== "gitlab.com") return "";
+    const repo = url.pathname.replace(/\.git$/i, "").replace(/^\//, "");
+    if (!repo || repo.split("/").some(part => !/^[A-Za-z0-9_.-]+$/.test(part) || part === "." || part === "..")) return "";
+    return `https://${host}/${repo}/${host === "gitlab.com" ? "-/blob" : "blob"}/${workspace.branch.split("/").map(encodeURIComponent).join("/")}/`;
+  }
+
+  function renderMessageBody(body, participants, workspace) {
+    const base = repoFileBase(workspace);
+    const people = Object.values(participants || {});
+    const token = /(^|[\s([{"'`,;])(@[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?|[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+(?::[1-9]\d*)?)(?=$|[\s)\]},;!?."'`])/g;
+    let output = "";
+    let offset = 0;
+    for (const match of body.matchAll(token)) {
+      const value = match[2];
+      const start = match.index + match[1].length;
+      output += esc(body.slice(offset, start));
+      if (value.startsWith("@")) {
+        const name = value.slice(1).split(":")[0].toLowerCase();
+        output += people.some(p => [p.id, p.display_name].some(n => typeof n === "string" && n.toLowerCase() === name))
+          ? `<span class="message-mention">${esc(value)}</span>` : esc(value);
+      } else if (base && !value.split("/").some(part => part === "." || part === "..")) {
+        const line = /:(\d+)$/.exec(value);
+        const path = line ? value.slice(0, -line[0].length) : value;
+        const href = base + path.split("/").map(encodeURIComponent).join("/") + (line ? "#L" + line[1] : "");
+        output += `<a href="${escAttr(href)}" target="_blank" rel="noopener noreferrer">${esc(value)}</a>`;
+      } else output += esc(value);
+      offset = start + value.length;
+    }
+    return output + esc(body.slice(offset));
+  }
+
+  async function renderMessage(message, allMessages, participants, workspaces) {
     const clean = await cleanMessageBody(message, allMessages);
     const raw = typeof message.body === "object" ? JSON.stringify(message.body, null, 2) : String(message.body ?? "");
     const recipient = Array.isArray(message.to) ? message.to.join(", ") : message.to || "all";
     const replyButton = !liveView && latest?.participants[message.from] && message.from !== participantId && message.intent !== "key.exchange"
       ? '<button class="button button-small" type="button" data-reply-message="' + escAttr(message.id) + '" data-reply-recipient="' + escAttr(message.from) + '" aria-label="' + escAttr("Reply to " + message.from) + '">Reply</button>' : "";
     const kind = ["finding", "question", "decision", "blocker", "handoff"].includes(message.kind) ? message.kind : "";
-    return `<details class="message-entry message-details${kind ? ' message-kind-' + kind : ''}" data-message-id="${escAttr(message.id || "")}"><summary><div class="message-head"><span class="message-from">${esc(message.from)}</span> <span class="message-route">to ${esc(recipient)} · ${esc(message.intent || "message")}${kind ? ' · ' + esc(kind) : ''} · #${esc(message.seq ?? "—")}${message.expects_reply ? ' · reply requested' : ''}</span> <span class="message-time">${esc(new Date(message.created_at).toLocaleString())}</span></div><div class="message-body">${esc(clean)}</div></summary><pre class="message-technical">${esc(raw)}</pre></details>` + replyButton;
+    return `<details class="message-entry message-details${kind ? ' message-kind-' + kind : ''}" data-message-id="${escAttr(message.id || "")}"><summary><div class="message-head"><span class="message-from">${esc(message.from)}</span> <span class="message-route">to ${esc(recipient)} · ${esc(message.intent || "message")}${kind ? ' · ' + esc(kind) : ''} · #${esc(message.seq ?? "—")}${message.expects_reply ? ' · reply requested' : ''}</span> <span class="message-time">${esc(new Date(message.created_at).toLocaleString())}</span></div><div class="message-body">${renderMessageBody(clean, participants, workspaces?.[message.from])}</div></summary><pre class="message-technical">${esc(raw)}</pre></details>` + replyButton;
   }
 
   async function cleanMessageBody(message, allMessages) {

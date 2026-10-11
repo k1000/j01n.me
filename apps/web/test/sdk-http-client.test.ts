@@ -57,11 +57,17 @@ describe("SDK HTTP client", () => {
     }) as typeof fetch;
     await withFetch(impl, async () => {
       const client = await resumeRoom({ ...makeInvite(), participant_token: "tok" }, "agent-a");
-      await client.setProfile({ checkout: "opaque-checkout", display_name: "Ravi", role: "builder", workspace: { path: "/private/home", host: "host-a" } });
+      await client.setProfile({ checkout: "opaque-checkout", display_name: "Ravi", role: "builder", harness: "claude", skills: ["j01n-builder"], workspace: { path: "/private/home", host: "host-a" } });
     });
-    expect(body).toMatchObject({ checkout: "opaque-checkout", display_name: "Ravi", role: "builder" });
+    expect(body).toMatchObject({ checkout: "opaque-checkout", display_name: "Ravi", role: "builder", harness: "claude", skills: ["j01n-builder"] });
     expect(body.workspace).toMatch(/^jsk1:/);
     expect(JSON.stringify(body)).not.toContain("/private/home");
+  });
+
+  it("includes a participant's self-declared harness in team()", async () => {
+    const transportFetch = (async () => Response.json({ participants: [{ id: "agent-a", state: "free", status: "joined", last_seen_at: "now", harness: "claude" }] })) as typeof fetch;
+    const client = await resumeRoom({ ...makeInvite(), transportFetch }, "host");
+    expect(await client.team()).toMatchObject([{ id: "agent-a", harness: "claude" }]);
   });
 
   it("PATCHes a joined target's owner role using the host token, without modifying self", async () => {
@@ -202,8 +208,8 @@ describe("SDK HTTP client", () => {
       if (init?.method === "PUT") joinBody = JSON.parse(String(init.body));
       return Response.json({ ok: true, cursor: 0 });
     }) as typeof fetch;
-    await joinRoom({ ...makeInvite(), transportFetch }, "agent-a", { state: "free", status: "joined via hosted MCP" });
-    expect(joinBody).toMatchObject({ state: "free", status: "joined via hosted MCP" });
+    await joinRoom({ ...makeInvite(), transportFetch }, "agent-a", { state: "free", status: "joined via hosted MCP", harness: "claude" });
+    expect(joinBody).toMatchObject({ state: "free", status: "joined via hosted MCP", harness: "claude" });
   });
 
   it("sends falsy JSON bodies", async () => {

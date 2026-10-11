@@ -215,13 +215,14 @@ export async function runProfileCommand(client: RoomClient, rest: string[], opti
     const at = rest.indexOf(name);
     return at >= 0 && rest[at + 1] && !rest[at + 1].startsWith("--") ? rest[at + 1] : undefined;
   };
-  const profile: { capabilities?: string[]; workspace?: Workspace | null; checkout?: string | null; display_name?: string; role?: string; model?: string; provider?: string } = {};
+  const profile: { capabilities?: string[]; workspace?: Workspace | null; checkout?: string | null; display_name?: string; role?: string; model?: string; provider?: string; harness?: string | null } = {};
   const at = rest.indexOf("--capabilities");
   if (at >= 0) profile.capabilities = (flag("--capabilities") || "").split(",").map((name) => name.trim()).filter(Boolean);
   const model = flag("--model") || options.modelFallback;
   const provider = flag("--provider") || options.providerFallback;
   if (model) profile.model = model;
   if (provider) profile.provider = provider;
+  if (flag("--harness")) profile.harness = flag("--harness") === "clear" ? null : flag("--harness");
   if (flag("--display-name")) profile.display_name = flag("--display-name");
   if (flag("--role")) profile.role = flag("--role");
   if (rest.includes("--no-workspace")) { profile.workspace = null; profile.checkout = null; }

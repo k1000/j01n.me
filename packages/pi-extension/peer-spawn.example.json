@@ -1,0 +1,22 @@
+{
+  "defaultRole": "builder",
+  "defaultHarness": "pi",
+  "roles": {
+    "planner": {
+      "pi": { "skills": ["builtin:planner"], "tools": ["read", "bash", "j01n"] },
+      "claude": { "skills": ["builtin:planner"], "tools": ["Read", "Bash"] }
+    },
+    "orchestrator": {
+      "pi": { "skills": ["builtin:orchestrator"], "tools": ["read", "bash", "j01n", "spawn_room_peer", "invite_repo_agents", "invite_integrator"] },
+      "claude": { "skills": ["builtin:orchestrator"], "tools": ["Read", "Bash"] }
+    },
+    "builder": {
+      "pi": { "skills": ["builtin:builder"], "tools": ["read", "bash", "edit", "write", "j01n"] },
+      "claude": { "skills": ["builtin:builder"], "tools": ["Read", "Bash", "Edit", "Write"] }
+    },
+    "reviewer": {
+      "pi": { "skills": ["builtin:reviewer"], "tools": ["read", "bash", "j01n"] },
+      "claude": { "skills": ["builtin:reviewer"], "tools": ["Read", "Bash"] }
+    }
+  }
+}

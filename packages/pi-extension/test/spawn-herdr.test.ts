@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,9 +7,10 @@ import type { AgentIdentity } from "@j01n/sdk";
 import type { RoomClient } from "@j01n/sdk";
 import type { Participant, RoomStatusResponse } from "@j01n/sdk/types";
 
-vi.mock("../herdr", () => ({ labelHerdrPane: vi.fn(), listHerdrPeers: vi.fn(), splitHerdrPane: vi.fn(), startHerdrAgent: vi.fn(), promptHerdrAgent: vi.fn() }));
+vi.mock("../herdr", async (importOriginal) => ({ ...await importOriginal<typeof import("../herdr")>(), labelHerdrPane: vi.fn(), listHerdrPeers: vi.fn(), splitHerdrPane: vi.fn(), startHerdrAgent: vi.fn(), promptHerdrAgent: vi.fn() }));
 import { labelHerdrPane, listHerdrPeers, splitHerdrPane, startHerdrAgent, promptHerdrAgent } from "../herdr";
 import { spawnAndInviteHerdr } from "../spawn-herdr";
+import { writePeerConfig } from "./peer-config-fixture";
 
 const link = "https://j01n.me/room/demo#secret-kept-out-of-herdr";
 const roomUrl = "https://j01n.me/r/demo";
@@ -34,6 +35,7 @@ describe("spawn Herdr Pi and invite", () => {
   beforeEach(async () => {
     process.chdir(mkdtempSync(join(tmpdir(), "j01n-spawn-test-")));
     dir = mkdtempSync(join(tmpdir(), "j01n-private-"));
+    vi.stubEnv("J01N_PEER_CONFIG", writePeerConfig(dir));
     sent = [];
     registered = joined = false;
     vi.mocked(listHerdrPeers).mockReset().mockReturnValue([]);
@@ -50,7 +52,7 @@ describe("spawn Herdr Pi and invite", () => {
     sender = { name: "host", base: "https://j01n.me", agentToken: "host-token", privateJwk: await crypto.subtle.exportKey("jwk", senderKeys.privateKey) as JsonWebKey, publicJwk: await crypto.subtle.exportKey("jwk", senderKeys.publicKey) as JsonWebKey };
     recipient = { name: "reviewer", base: "https://j01n.me", agentToken: "reviewer-token", privateJwk: await crypto.subtle.exportKey("jwk", recipientKeys.privateKey) as JsonWebKey, publicJwk: await crypto.subtle.exportKey("jwk", recipientKeys.publicKey) as JsonWebKey };
     recipientKey = await exportPublicKey(recipientKeys.publicKey);
-    client = { invite: { room_url: roomUrl }, participantId: "host", status: vi.fn(async () => ({ ...hostStatus, participants: joined ? [...hostStatus.participants, participant("reviewer")] : hostStatus.participants })) } as unknown as typeof client;
+    client = { invite: { room_url: roomUrl, room_id: "demo" }, participantId: "host", status: vi.fn(async () => ({ ...hostStatus, participants: joined ? [...hostStatus.participants, participant("reviewer")] : hostStatus.participants })) } as unknown as typeof client;
     vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       if (method === "GET") return registered ? Response.json({ public_key: recipientKey }) : Response.json({}, { status: 404 });
@@ -59,13 +61,13 @@ describe("spawn Herdr Pi and invite", () => {
     });
   });
 
-  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); process.chdir(cwd); });
+  afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); process.chdir(cwd); });
 
   it("checks host/capacity before creating any pane", async () => {
     const notHost = { ...client, participantId: "guest" };
-    await expect(spawnAndInviteHerdr(notHost, sender, link, "reviewer", "Review docs", dir)).rejects.toThrow("host");
+    await expect(spawnAndInviteHerdr(notHost, sender, link, "reviewer", "reviewer", dir)).rejects.toThrow("host");
     client.status = vi.fn(async () => ({ ...hostStatus, room: { ...hostStatus.room, max_participants: 1 } }));
-    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir)).rejects.toThrow("capacity");
+    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "reviewer", dir)).rejects.toThrow("capacity");
     expect(splitHerdrPane).not.toHaveBeenCalled();
   });
 
@@ -77,25 +79,62 @@ describe("spawn Herdr Pi and invite", () => {
 
   it("refuses a duplicate Herdr agent name before creating a pane", async () => {
     vi.mocked(listHerdrPeers).mockReturnValue([{ pane_id: "wV:p4", agent: "reviewer", agent_status: "idle" }]);
-    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir)).rejects.toThrow("Herdr workspace");
+    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "reviewer", dir)).rejects.toThrow("Herdr workspace");
     expect(splitHerdrPane).not.toHaveBeenCalled();
   });
 
   it("refuses a claimed inbox before creating a pane", async () => {
     registered = true;
-    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir)).rejects.toThrow("already registered");
+    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "reviewer", dir)).rejects.toThrow("already registered");
     expect(splitHerdrPane).not.toHaveBeenCalled();
   });
 
   it("verifies target registration before sending a sealed invite and confirms join", async () => {
-    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir);
+    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "reviewer", dir);
     expect(result).toEqual({ ok: true, pane_id: "wV:p5", invited: true, joined: true });
-    expect(splitHerdrPane).toHaveBeenCalledWith(dir, "https://j01n.me");
-    expect(startHerdrAgent).toHaveBeenCalledWith("wV:p5", "reviewer");
+    expect(splitHerdrPane).toHaveBeenCalledWith(dir, "https://j01n.me", undefined, undefined, expect.any(String), expect.objectContaining({ role: "reviewer", roomId: "demo", participantId: "reviewer", harness: "pi", skillNames: ["j01n-reviewer"] }));
+    expect(startHerdrAgent).toHaveBeenCalledWith("wV:p5", "reviewer", expect.objectContaining({ model: "user/pi-review-model", skills: [expect.stringContaining("/skills/reviewer/SKILL.md")], tools: expect.arrayContaining(["read", "j01n"]) }));
     expect(sent).toHaveLength(1);
     expect(JSON.stringify(sent)).not.toContain("secret-kept-out-of-herdr");
     expect(JSON.stringify(vi.mocked(promptHerdrAgent).mock.calls)).not.toContain("secret-kept-out-of-herdr");
-    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("Review docs");
+    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("--skills j01n-reviewer");
+    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("Your role: reviewer");
+  });
+
+  it("spawns a Claude peer with a private per-peer helper identity, role model, and CLI join", async () => {
+    vi.mocked(promptHerdrAgent).mockImplementation((_pane, message) => {
+      if (message.includes("register")) {
+        registered = true;
+        mkdirSync(join(dir, "reviewer"), { mode: 0o700 });
+        writeFileSync(join(dir, "reviewer", ".j01n-agent-reviewer.json"), JSON.stringify(recipient));
+      } else joined = true;
+    });
+    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "reviewer", dir, undefined, undefined, undefined, "Review SDK", "claude");
+    expect(result).toMatchObject({ ok: true, invited: true, joined: true });
+    expect(splitHerdrPane).toHaveBeenCalledWith(dir, "https://j01n.me", undefined, undefined, expect.any(String), expect.objectContaining({ role: "reviewer", roomId: "demo", participantId: "reviewer", harness: "claude", inbox: "reviewer", model: "user-claude-review-model", skillNames: ["j01n-reviewer"] }));
+    expect(startHerdrAgent).toHaveBeenCalledWith("wV:p5", "reviewer", expect.objectContaining({ harness: "claude", model: "user-claude-review-model", tools: ["Read", "Bash"], helperDir: expect.any(String), helperCommand: expect.stringMatching(/node '.*j01n.js'/) }));
+    expect(vi.mocked(promptHerdrAgent).mock.calls[0][1]).toMatch(/node '.*j01n.js' register reviewer host/);
+    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toMatch(/node '.*j01n.js' listen reviewer .*--skills j01n-reviewer/);
+    expect(JSON.stringify(vi.mocked(promptHerdrAgent).mock.calls)).not.toContain("secret-kept-out-of-herdr");
+    expect(sent).toHaveLength(1);
+  });
+
+  it("starts a peer with the model configured for its role", async () => {
+    const config = JSON.parse(readFileSync(process.env.J01N_PEER_CONFIG!, "utf8"));
+    config.roles.reviewer.pi.model = "openai/gpt-5.2:high";
+    writeFileSync(process.env.J01N_PEER_CONFIG!, JSON.stringify(config));
+    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "reviewer", dir);
+    expect(result.joined).toBe(true);
+    expect(startHerdrAgent).toHaveBeenCalledWith("wV:p5", "reviewer", expect.objectContaining({ model: "openai/gpt-5.2:high" }));
+  });
+
+  it("rejects unknown roles and invalid role models before creating a pane", async () => {
+    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "owner", dir)).rejects.toThrow("reserved peer role");
+    const config = JSON.parse(readFileSync(process.env.J01N_PEER_CONFIG!, "utf8"));
+    config.roles.reviewer.pi.model = "--no-extensions";
+    writeFileSync(process.env.J01N_PEER_CONFIG!, JSON.stringify(config));
+    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "reviewer", dir)).rejects.toThrow("model");
+    expect(splitHerdrPane).not.toHaveBeenCalled();
   });
 
   it("joins as a friendly room id while preserving a unique global agent inbox", async () => {
@@ -103,21 +142,21 @@ describe("spawn Herdr Pi and invite", () => {
     const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "builder", dir, undefined, undefined, "Maya", "Implement T4");
     expect(result.joined).toBe(true);
     expect(vi.mocked(promptHerdrAgent).mock.calls[0][1]).toContain("register reviewer host");
-    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("listen reviewer --capabilities code,shell,files --as maya --display-name Maya --role \"builder\"");
+    expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("listen reviewer --capabilities code,shell,files --skills j01n-builder --as maya --display-name Maya --role \"builder\"");
     expect(labelHerdrPane).toHaveBeenCalledWith("wV:p5", "Maya");
     expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("Task: Implement T4");
   });
 
   it("starts the peer in a given directory (its own worktree) and rejects one that does not exist", async () => {
     const worktree = mkdtempSync(join(tmpdir(), "j01n-worktree-"));
-    expect((await spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir, worktree)).joined).toBe(true);
+    expect((await spawnAndInviteHerdr(client, sender, link, "reviewer", "reviewer", dir, worktree)).joined).toBe(true);
     expect(vi.mocked(splitHerdrPane).mock.calls[0][4]).toBe(worktree);
-    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer2", "Review docs", dir, "/no/such/worktree")).rejects.toThrow("existing absolute directory");
+    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer2", "reviewer", dir, "/no/such/worktree")).rejects.toThrow("existing absolute directory");
   });
 
   it("allows the joined host to use its own registered sender address", async () => {
     sender.name = "host-inbox";
-    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir);
+    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "reviewer", dir);
     expect(result.joined).toBe(true);
     expect(vi.mocked(promptHerdrAgent).mock.calls[0][1]).toContain("reviewer host-inbox");
   });
@@ -129,7 +168,7 @@ describe("spawn Herdr Pi and invite", () => {
         else joined = true;
       }, 1500);
     });
-    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir);
+    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "reviewer", dir);
     expect(result).toMatchObject({ ok: true, invited: true, joined: true });
     expect(vi.mocked(promptHerdrAgent).mock.calls[1][1]).toContain("--capabilities");
   }, 15_000);
@@ -149,7 +188,7 @@ describe("spawn Herdr Pi and invite", () => {
       }
       return Response.json({}, { status: 404 });
     }));
-    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir);
+    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "reviewer", dir);
     expect(result).toMatchObject({ ok: false, pane_id: "wV:p5", step: "join", invited: true, joined: false, may_be_running: true });
     expect(sent).toHaveLength(1);
   });
@@ -157,7 +196,7 @@ describe("spawn Herdr Pi and invite", () => {
   it("keeps a started pane but sends no invite when the registered key does not match its local identity", async () => {
     const otherKeys = await generateECDHKeyPair();
     recipientKey = await exportPublicKey(otherKeys.publicKey);
-    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "Review docs", dir);
+    const result = await spawnAndInviteHerdr(client, sender, link, "reviewer", "reviewer", dir);
     expect(result).toMatchObject({ ok: false, pane_id: "wV:p5", invited: false, step: "registration" });
     expect(sent).toEqual([]);
   });

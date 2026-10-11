@@ -30,12 +30,14 @@ function profileChangeMessage(before: InviteState, after: InviteState, participa
   const capabilitiesChanged = (old.capabilities ?? []).join() !== (now.capabilities ?? []).join();
   const workspaceChanged = old.workspace !== now.workspace;
   const modelChanged = old.model !== now.model || (old.provider ?? "") !== (now.provider ?? "");
-  if (!capabilitiesChanged && !workspaceChanged && !modelChanged) return undefined;
+  const harnessChanged = old.harness !== now.harness;
+  if (!capabilitiesChanged && !workspaceChanged && !modelChanged && !harnessChanged) return undefined;
   const running = [now.provider, now.model].filter(Boolean).join("/");
   const text = [
     capabilitiesChanged ? `${participantId} can now: ${(now.capabilities ?? []).join(", ") || "(no capabilities announced)"}` : "",
     workspaceChanged ? (now.workspace ? `${participantId} changed workspace` : `${participantId} stopped announcing its workspace`) : "",
     modelChanged ? (running ? `${participantId} now runs ${running}` : `${participantId} stopped announcing its model`) : "",
+    harnessChanged ? (now.harness ? `${participantId} now uses ${now.harness} harness` : `${participantId} stopped announcing its harness`) : "",
   ].filter(Boolean).join("; ");
   return {
     text,
@@ -44,6 +46,7 @@ function profileChangeMessage(before: InviteState, after: InviteState, participa
     ...(capabilitiesChanged ? { capabilities: now.capabilities ?? [] } : {}),
     ...(workspaceChanged ? { workspace: now.workspace ?? null } : {}),
     ...(modelChanged ? { model: now.model ?? null, provider: now.provider ?? null } : {}),
+    ...(harnessChanged ? { harness: now.harness ?? null } : {}),
   };
 }
 
@@ -114,6 +117,9 @@ export class RoomParticipantController {
       }
       const profile = parseParticipantProfile(auth.body);
       if (profile instanceof Response) return profile;
+      if (profile.harness !== undefined && actorId !== targetId) {
+        return json({ error: "only the participant can announce its harness" }, 403);
+      }
       if ((profile.role === "owner" || profile.role === "host") && actorId !== invite.hostId) {
         return json({ error: "only the host can assign owner or host roles" }, 403);
       }

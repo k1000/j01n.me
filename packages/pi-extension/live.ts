@@ -60,6 +60,17 @@ export function modelPatchFor(
   return { model: current.model, ...(current.provider ? { provider: current.provider } : {}) };
 }
 
+/** A spawned peer must not operate using another agent's saved room session in a shared checkout. */
+export function liveClientsForProcess(clients: RoomClient[], env: Record<string, string | undefined> = process.env): RoomClient[] {
+  if (!env.J01N_PEER_PARTICIPANT_ID) return clients;
+  return clients.filter((client) => client.participantId === env.J01N_PEER_PARTICIPANT_ID && client.invite.room_id === env.J01N_PEER_ROOM_ID);
+}
+
+/** Without a process-scoped identity, two actors in one checkout cannot both truthfully announce this Pi model. */
+export function modelAnnounceClients(clients: RoomClient[]): RoomClient[] {
+  return clients.filter((client) => !clients.some((other) => other !== client && other.invite.room_url === client.invite.room_url && other.participantId !== client.participantId));
+}
+
 export function registerLive(pi: ExtensionAPI): { refresh(): Promise<void>; setEnabled(on: boolean): string } {
   let enabled = true;
   const loops = new Set<string>();
@@ -67,7 +78,7 @@ export function registerLive(pi: ExtensionAPI): { refresh(): Promise<void>; setE
   let notify: ((message: string, level: "info" | "warning" | "error") => void) | undefined;
 
   async function refresh(): Promise<void> {
-    clients = enabled ? await activeRoomClients() : [];
+    clients = enabled ? liveClientsForProcess(await activeRoomClients()) : [];
     for (const client of clients) if (!loops.has(roomKey(client))) void deliver(client);
   }
 
@@ -140,7 +151,7 @@ export function registerLive(pi: ExtensionAPI): { refresh(): Promise<void>; setE
   }
   async function announceModel(): Promise<void> {
     if (!enabled) return;
-    await Promise.all(clients.map(async (c) => {
+    await Promise.all(modelAnnounceClients(clients).map(async (c) => {
       try {
         const mine = (await c.team().catch(() => [])).find((t) => t.id === c.participantId);
         const patch = modelPatchFor(currentModel, mine);

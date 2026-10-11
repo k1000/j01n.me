@@ -1,10 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../commands", () => ({ prepareRoomPeerSpawn: vi.fn() }));
 vi.mock("../spawn-herdr", () => ({ spawnAndInviteHerdr: vi.fn() }));
 import { prepareRoomPeerSpawn } from "../commands";
 import { spawnAndInviteHerdr } from "../spawn-herdr";
 import { registerPeerSpawnTool } from "../peer-spawn-tool";
+import { writePeerConfig } from "./peer-config-fixture";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function harness() {
   const entries: Array<{ type: string; customType: string; data: unknown }> = [];
@@ -21,7 +25,8 @@ function harness() {
 }
 
 describe("host-agent peer tool", () => {
-  afterEach(() => { vi.mocked(prepareRoomPeerSpawn).mockReset(); vi.mocked(spawnAndInviteHerdr).mockReset(); });
+  beforeEach(() => vi.stubEnv("J01N_PEER_CONFIG", writePeerConfig(mkdtempSync(join(tmpdir(), "j01n-peer-tool-")))));
+  afterEach(() => { vi.mocked(prepareRoomPeerSpawn).mockReset(); vi.mocked(spawnAndInviteHerdr).mockReset(); vi.unstubAllEnvs(); });
 
   it("infers room and identity without asking the model for credentials and spends one peer per session", async () => {
     vi.mocked(prepareRoomPeerSpawn).mockResolvedValue({ client: {} as never, sender: {} as never, link: "https://j01n.me/room/r#secret", name: "ravi-12345678", displayName: "Ravi", role: "reviewer", task: "Review SDK", identityDir: "/private" });
@@ -46,7 +51,7 @@ describe("host-agent peer tool", () => {
   it("allows as many spawns per session as the human set in J01N_PEER_SPAWNS (still only on direct requests)", async () => {
     vi.stubEnv("J01N_PEER_SPAWNS", "3");
     try {
-      vi.mocked(prepareRoomPeerSpawn).mockResolvedValue({ client: {} as never, sender: {} as never, link: "https://j01n.me/room/r#secret", name: "maya-12345678", displayName: "Maya", role: "worker", task: "T1", identityDir: "/private" });
+      vi.mocked(prepareRoomPeerSpawn).mockResolvedValue({ client: {} as never, sender: {} as never, link: "https://j01n.me/room/r#secret", name: "maya-12345678", displayName: "Maya", role: "builder", task: "T1", identityDir: "/private" });
       vi.mocked(spawnAndInviteHerdr).mockResolvedValue({ ok: true, pane_id: "wV:p5", invited: true, joined: true });
       const h = harness();
       h.input("interactive");
@@ -65,9 +70,45 @@ describe("host-agent peer tool", () => {
     vi.mocked(spawnAndInviteHerdr).mockResolvedValue({ ok: true, pane_id: "wV:p5", invited: true, joined: true });
     const h = harness();
     h.input("interactive");
-    expect((await h.call({ task: "Implement T4", branch: "feature/t4" })).isError).toBeUndefined();
-    expect(spawnAndInviteHerdr).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), "maya-12345678", "builder", "/private", undefined, "feature/t4", "Maya", "Implement T4");
+    expect((await h.call({ task: "Implement T4", branch: "feature/t4", role: "builder" })).isError).toBeUndefined();
+    expect(spawnAndInviteHerdr).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), "maya-12345678", "builder", "/private", undefined, "feature/t4", "Maya", "Implement T4", "pi", expect.objectContaining({ skillNames: ["j01n-builder"] }));
     expect((await h.call({ task: "Invalid", branch: "feature/t5", directory: "/existing" })).isError).toBe(true);
+  });
+
+  it("selects the Claude harness without passing the harness through room preparation", async () => {
+    vi.mocked(prepareRoomPeerSpawn).mockResolvedValue({ client: {} as never, sender: {} as never, link: "https://j01n.me/room/r#secret", name: "maya-12345678", displayName: "Maya", role: "reviewer", task: "Review", identityDir: "/private" });
+    vi.mocked(spawnAndInviteHerdr).mockResolvedValue({ ok: true, pane_id: "wV:p5", invited: true, joined: true });
+    const h = harness(); h.input("interactive");
+    expect((await h.call({ task: "Review", role: "reviewer", harness: "claude" })).isError).toBeUndefined();
+    expect(prepareRoomPeerSpawn).toHaveBeenCalledWith({ task: "Review", role: "reviewer" });
+    expect(vi.mocked(spawnAndInviteHerdr).mock.calls[0].at(-2)).toBe("claude");
+  });
+
+  it("uses the personal default role and harness without per-call loadout commands", async () => {
+    vi.stubEnv("J01N_PEER_CONFIG", writePeerConfig(mkdtempSync(join(tmpdir(), "j01n-personal-default-")), { defaultRole: "reviewer", defaultHarness: "claude" }));
+    vi.mocked(prepareRoomPeerSpawn).mockResolvedValue({ client: {} as never, sender: {} as never, link: "https://j01n.me/room/r#secret", name: "maya-12345678", displayName: "Maya", role: "reviewer", task: "Review", identityDir: "/private" });
+    vi.mocked(spawnAndInviteHerdr).mockResolvedValue({ ok: true, pane_id: "wV:p5", invited: true, joined: true });
+    const h = harness(); h.input("interactive");
+    expect((await h.call({ task: "Review" })).isError).toBeUndefined();
+    expect(prepareRoomPeerSpawn).toHaveBeenCalledWith({ task: "Review", role: "reviewer" });
+    expect(vi.mocked(spawnAndInviteHerdr).mock.calls[0].at(-2)).toBe("claude");
+  });
+
+  it("refuses missing user config before touching the room or reserving a spawn", async () => {
+    vi.stubEnv("J01N_PEER_CONFIG", join(tmpdir(), "missing-peer-spawn.json"));
+    const h = harness(); h.input("interactive");
+    expect((await h.call({ task: "Review" })).content[0].text).toContain("copy");
+    expect(prepareRoomPeerSpawn).not.toHaveBeenCalled();
+    expect(h.entries.at(-1)?.data).toMatchObject({ reserved: false });
+  });
+
+  it("rejects an unsupported role or ad hoc model before preparing an identity", async () => {
+    const h = harness();
+    h.input("interactive");
+    expect((await h.call({ task: "Review docs", role: "owner" })).content[0].text).toContain("reserved peer role");
+    expect((await h.call({ task: "Review docs", model: "--no-extensions" })).content[0].text).toContain("peer-spawn.json");
+    expect(h.entries.at(-1)?.data).toMatchObject({ reserved: false });
+    expect(prepareRoomPeerSpawn).not.toHaveBeenCalled();
   });
 
   it("does not let a room message independently authorize a spawn", async () => {

@@ -732,8 +732,10 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
     async setProfile(profile) {
       const body = {};
       if (profile.capabilities !== void 0) body.capabilities = profile.capabilities;
+      if (profile.skills !== void 0) body.skills = profile.skills;
       if (profile.model !== void 0) body.model = profile.model;
       if (profile.provider !== void 0) body.provider = profile.provider;
+      if (profile.harness !== void 0) body.harness = profile.harness;
       if (profile.checkout !== void 0) body.checkout = profile.checkout;
       if (profile.display_name !== void 0) body.display_name = profile.display_name;
       if (profile.role !== void 0) body.role = profile.role;
@@ -760,6 +762,7 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
         last_seen_at: p.last_seen_at,
         ...p.model ? { model: p.model } : {},
         ...p.provider ? { provider: p.provider } : {},
+        ...p.harness ? { harness: p.harness } : {},
         ...p.checkout ? { checkout: p.checkout } : {},
         checkout_status: !p.checkout ? "checkout unknown" : (() => {
           const other = participants.find((candidate) => candidate.id !== p.id && !candidate.left_at && candidate.checkout === p.checkout);
@@ -1112,6 +1115,7 @@ async function runProfileCommand(client, rest, options) {
   const provider = flag("--provider") || options.providerFallback;
   if (model) profile.model = model;
   if (provider) profile.provider = provider;
+  if (flag("--harness")) profile.harness = flag("--harness") === "clear" ? null : flag("--harness");
   if (flag("--display-name")) profile.display_name = flag("--display-name");
   if (flag("--role")) profile.role = flag("--role");
   if (rest.includes("--no-workspace")) {
@@ -1253,12 +1257,17 @@ var repo = () => {
   const root = git3("rev-parse", "--show-toplevel") || process.cwd();
   return { root, id: git3("remote", "get-url", "origin")?.replace(/\/\/[^@/]+@/, "//") || root };
 };
+var modelProfileFlag = (rest, name) => {
+  const i = rest.indexOf(name);
+  return i >= 0 && rest[i + 1] && !rest[i + 1].startsWith("--") ? rest[i + 1] : void 0;
+};
+var declaredHarness = (rest) => process.env.J01N_PEER_ROLE ? process.env.J01N_HARNESS : modelProfileFlag(rest, "--harness") || process.env.J01N_HARNESS;
 var modelProfile = (rest) => {
-  const flag = (name) => {
-    const i = rest.indexOf(name);
-    return i >= 0 && rest[i + 1] && !rest[i + 1].startsWith("--") ? rest[i + 1] : void 0;
-  };
-  return { ...flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL ? { model: flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL } : {}, ...flag("--provider") || process.env.J01N_PROVIDER ? { provider: flag("--provider") || process.env.J01N_PROVIDER } : {} };
+  const flag = (name) => modelProfileFlag(rest, name);
+  const inherited = process.env.J01N_PEER_ROLE && process.env.J01N_HARNESS === "claude" ? void 0 : process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL;
+  const model = flag("--model") || process.env.J01N_MODEL || inherited;
+  const provider = flag("--provider") || process.env.J01N_PROVIDER;
+  return { ...model ? { model } : {}, ...provider ? { provider } : {} };
 };
 var roomCommand = (client, command, rest, beforeSend) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend, repo: repo().id, conflicts: (branch) => checkConflicts(client, repo().root, branch) });
 async function isRoomRef(ref) {
@@ -1290,7 +1299,7 @@ async function remember(url, me) {
 async function resolveRoom() {
   const env = process.env;
   const envRoom = env.ROOM_URL && (env.PARTICIPANT_TOKEN || env.JOIN_SECRET) && env.ME;
-  if (envRoom && (cmd === "send" && args.length <= 3 || ["join", "read", "team", "inbox", "watch", "doctor"].includes(cmd || "") && args.length === 1)) return { roomUrl: env.ROOM_URL, secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET, token: env.PARTICIPANT_TOKEN, me: env.ME, rest: args.slice(1) };
+  if (envRoom && (cmd === "send" && args.length <= 3 || cmd === "join" && (!args[1] || args[1].startsWith("--")) || ["read", "team", "inbox", "watch", "doctor"].includes(cmd || "") && args.length === 1)) return { roomUrl: env.ROOM_URL, secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET, token: env.PARTICIPANT_TOKEN, me: env.ME, rest: args.slice(1) };
   const link = parseInviteLink(args[1] || "");
   if (link) return { roomUrl: link.access, secret: link.join_secret, me: args[2], rest: args.slice(3) };
   if (isUrl(args[1])) return { roomUrl: args[1], secret: args[2], token: cmd === "join" ? void 0 : args[2], me: args[3], rest: args.slice(4) };
@@ -1336,17 +1345,35 @@ async function agents() {
   }
   if (cmd === "listen") {
     const as = rest.indexOf("--as");
-    const participant = as >= 0 ? rest[as + 1] : me;
+    const participant = process.env.J01N_PEER_PARTICIPANT_ID || (as >= 0 ? rest[as + 1] : me);
     if (!participant || !/^[a-z][a-z0-9_-]{0,31}$/.test(participant)) throw Error("--as needs a valid room participant id");
     const flags = rest.filter((arg, i) => !/^\d+$/.test(arg) && (as < 0 || i !== as && i !== as + 1));
+    const role = process.env.J01N_PEER_ROLE;
+    if (role) {
+      if (!/^[a-z][a-z0-9_-]{0,31}$/.test(role) || role === "owner" || role === "host") throw Error("invalid or reserved peer role");
+      if (!process.env.J01N_PEER_SKILLS || !process.env.J01N_PEER_SKILLS.split(",").every((name) => /^[a-z][a-z0-9_-]*$/.test(name))) throw Error("spawned peer needs validated skill names");
+      for (const name of ["--role", "--skills", "--model", "--provider", "--harness"]) {
+        let index;
+        while ((index = flags.indexOf(name)) >= 0) flags.splice(index, 2);
+      }
+      flags.push("--role", role, "--skills", process.env.J01N_PEER_SKILLS);
+    }
     const pending = await waitForInvites(identity, Number(rest.find((arg) => /^\d+$/.test(arg))) || 50);
     if (!pending.length) {
       output({ timeout: true });
       return;
     }
     const invite = pending[0];
+    const room = parseInviteLink(invite.room_link);
+    if (!room?.access || !room.join_secret) throw Error("invalid room invitation");
+    const assignedRoom = process.env.J01N_PEER_ROOM_ID;
+    if (assignedRoom && room.access.split("/").pop() !== assignedRoom) throw Error("invitation is for a different room");
     await deleteInvite(identity, invite.id);
-    const joined = JSON.parse(execFileSync3(process.execPath, [process.argv[1], "join", invite.room_link, participant, ...flags], { encoding: "utf8", env: process.env }));
+    const joined = JSON.parse(execFileSync3(process.execPath, [process.argv[1], "join", ...flags], { encoding: "utf8", env: { ...process.env, PARTICIPANT_TOKEN: "", ROOM_URL: room.access, JOIN_SECRET: room.join_secret, ME: participant } }));
+    if (role) {
+      delete joined.participant_token;
+      delete joined.key_file;
+    }
     output({ invited_by: invite.from, ...joined });
   }
 }
@@ -1371,7 +1398,7 @@ async function main() {
       const invite2 = normalizeInvite(JSON.parse(text));
       const me2 = options.host_id;
       const session2 = await createSdkCryptoSession(me2);
-      const client2 = await joinRoom(invite2, me2, {}, session2);
+      const client2 = await joinRoom(invite2, me2, process.env.J01N_HARNESS ? { harness: process.env.J01N_HARNESS } : {}, session2);
       const keyFile2 = join2(stateDir, `.j01n-${safe(new URL(invite2.room_url).pathname)}-${safe(me2)}.json`);
       await fs.writeFile(keyFile2, JSON.stringify({ ...await session2.exportKeyPair(), peers: {}, participantToken: client2.invite.participant_token, joinSecret: invite2.join_secret, roomUrl: invite2.room_url }), { mode: 384 });
       await remember(invite2.room_url, me2);
@@ -1403,7 +1430,7 @@ async function main() {
   let client;
   if (cmd === "join") {
     try {
-      client = await joinRoom(invite, me, {}, session);
+      client = await joinRoom(invite, me, declaredHarness(rest) ? { harness: declaredHarness(rest) } : {}, session);
       state.announcedKey = (await session.announceKeyBody()).public_key;
     } catch (error) {
       if (!(error instanceof RoomApiError && error.status === 409)) throw error;
@@ -1429,11 +1456,15 @@ async function main() {
     const announced = {};
     const i = rest.indexOf("--capabilities");
     if (i >= 0) announced.capabilities = names(rest[i + 1]);
+    const k = rest.indexOf("--skills");
+    if (k >= 0) announced.skills = names(rest[k + 1]);
     const d = rest.indexOf("--display-name");
     if (d >= 0 && rest[d + 1]) announced.display_name = rest[d + 1];
     const r = rest.indexOf("--role");
     if (r >= 0 && rest[r + 1]) announced.role = rest[r + 1];
     const mine = (await client.team()).find((p) => p.id === me);
+    const harness = declaredHarness(rest);
+    if (harness && mine?.harness !== harness) announced.harness = harness;
     const model = modelProfile(rest);
     if (model.model && model.model !== mine?.model) announced.model = model.model;
     if (model.provider && model.provider !== mine?.provider) announced.provider = model.provider;

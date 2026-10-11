@@ -861,6 +861,34 @@ describe("room lifecycle", () => {
 });
 
 describe("participant profile updates", () => {
+  it("stores a participant's declared harness on join and self-update, but rejects host reassignment", async () => {
+    const fix = await bootstrapRoom();
+    await joinParticipant(fix, "host");
+    const joined = await roomRequest(fix, "/participants/agent-a", {
+      method: "PUT", headers: { authorization: `Bearer ${fix.joinSecret}`, "content-type": "application/json" },
+      body: JSON.stringify({ harness: "pi" }),
+    });
+    expect(joined.status).toBe(200);
+    const token = (await joined.json() as { participant_token: string }).participant_token;
+    fix.participantTokens["agent-a"] = token;
+    const patch = (actor: string, harness: unknown) => roomRequest(fix, "/participants/agent-a", {
+      method: "PATCH", headers: { ...participantAuthHeaders(fix, actor), "content-type": "application/json" }, body: JSON.stringify({ harness }),
+    });
+    let parts = await getRoomJson<{ participants: Array<{ id: string; harness?: string }> }>(fix, "/participants", "host");
+    expect(parts.participants.find((p) => p.id === "agent-a")?.harness).toBe("pi");
+    expect((await patch("host", "claude")).status).toBe(403);
+    expect((await patch("agent-a", "claude")).status).toBe(200);
+    parts = await getRoomJson(fix, "/participants", "host");
+    expect(parts.participants.find((p) => p.id === "agent-a")?.harness).toBe("claude");
+    expect((await patch("agent-a", "bad\nlabel")).status).toBe(400);
+    expect((await patch("agent-a", " ")).status).toBe(400);
+    const events = (await getRoomJson<{ messages: RoomMessage[] }>(fix, "/?view=all", "host")).messages.filter((m) => m.intent === "profile.changed");
+    expect(events.at(-1)?.body).toMatchObject({ participant_id: "agent-a", harness: "claude" });
+    await patch("agent-a", "claude");
+    const after = (await getRoomJson<{ messages: RoomMessage[] }>(fix, "/?view=all", "host")).messages.filter((m) => m.intent === "profile.changed");
+    expect(after).toHaveLength(events.length);
+  });
+
   it("persists public_key on a profile PATCH so peers can encrypt to the participant", async () => {
     const fix = await bootstrapRoom();
     await joinParticipant(fix, "agent-a");

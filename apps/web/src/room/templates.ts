@@ -26,6 +26,8 @@ export interface SprintTask {
   depends_on?: string[];
   worktree?: string;
   role?: string;
+  /** One-line free-text brief, seeded into the task board value so late joiners can read it. */
+  brief?: string;
 }
 
 const SPRINT_KICKOFF = {
@@ -57,14 +59,16 @@ function sprintBoard(tasks: SprintTask[]): Record<string, unknown> {
       typeof task.title !== "string" || !task.title.trim() || !Array.isArray(task.files) || !task.files.every((file) => typeof file === "string" && file.length > 0) ||
       (task.depends_on !== undefined && (!Array.isArray(task.depends_on) || !task.depends_on.every((id) => typeof id === "string"))) ||
       (task.worktree !== undefined && typeof task.worktree !== "string") ||
-      (task.role !== undefined && typeof task.role !== "string")) throw new Error("invalid sprint task");
+      (task.role !== undefined && typeof task.role !== "string") ||
+      (task.brief !== undefined && (typeof task.brief !== "string" || !task.brief.trim() || task.brief.includes("\n")))) throw new Error("invalid sprint task");
     if (task.files.some((file) => /(?:^|\/)(?:client-script\.ts|markdown-assets\.ts|skill\.ts)$/.test(file))) throw new Error("generated files cannot be sprint task files");
     ids.add(task.id);
   }
   if (tasks.some((task) => task.depends_on?.some((id) => !ids.has(id) || id === task.id))) throw new Error("sprint task has unknown or self dependency");
   return Object.fromEntries(tasks.map((task) => [`task.${task.id}`, {
     title: task.title, files: task.files, depends_on: task.depends_on ?? [],
-    ...(task.worktree ? { worktree: task.worktree } : {}), ...(task.role ? { role: task.role } : {}), status: "open",
+    ...(task.worktree ? { worktree: task.worktree } : {}), ...(task.role ? { role: task.role } : {}),
+    ...(task.brief ? { brief: task.brief } : {}), status: "open",
   }]));
 }
 

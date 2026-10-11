@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { MAX_BOARD_VALUE_BYTES } from "../src/constants";
+import { createRoomDirect } from "../src/invite";
+import { RendezvousSession } from "../src/rendezvous";
+import { applyTemplate } from "../src/room/templates";
+import { parseSprintSpec } from "@j01n/sdk/spec";
 import {
   bootstrapRoom,
+  createMockState,
   encryptedPayload,
   getRoomJson,
   joinParticipant,
@@ -236,4 +241,65 @@ describe("board", () => {
     });
   });
 
+});
+
+describe("sprint spec briefs on the board", () => {
+  const spec = [
+    "# Sprint goal",
+    "",
+    "## Tasks",
+    "- t1 Seed briefs",
+    "  files: packages/sdk/src/spec.ts",
+    "  role: builder",
+    "  brief: late joiners read  briefs from the board, never from chat",
+    "- t2 No brief",
+    "  files: packages/sdk/src/tasks.ts",
+  ].join("\n");
+  const BRIEF = "late joiners read  briefs from the board, never from chat";
+  type ParsedTask = ReturnType<typeof parseSprintSpec>[number];
+
+  /** Create a sprint room through the real create path, like a host would from a parsed spec. */
+  async function sprintRoom(tasks: ParsedTask[]): Promise<RoomFixture> {
+    const session = new RendezvousSession(createMockState(), {} as never);
+    const env = { RENDEZVOUS: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (url: string, init: RequestInit) => session.fetch(new Request(url, init)) }),
+    } as unknown as DurableObjectNamespace };
+    const { roomId, joinSecret } = await createRoomDirect(env, { template: "sprint", host_id: "host", tasks }, "https://j01n.me");
+    return { session, roomId, joinSecret, roomPath: `/r/${roomId}`, participantTokens: {} };
+  }
+
+  const taskValues = async (fix: RoomFixture, as: string) =>
+    (await getRoomJson<{ board: Record<string, { value: unknown }> }>(fix, "/board", as)).board;
+
+  it("keeps a one-line brief with its inner spacing while parsing the spec", () => {
+    expect(parseSprintSpec(spec)).toEqual([
+      { id: "t1", title: "Seed briefs", files: ["packages/sdk/src/spec.ts"], role: "builder", brief: BRIEF },
+      { id: "t2", title: "No brief", files: ["packages/sdk/src/tasks.ts"] },
+    ]);
+  });
+
+  it("seeds the brief into the task board value and leaves tasks without brief unchanged", async () => {
+    const fix = await sprintRoom(parseSprintSpec(spec));
+    await joinParticipant(fix, "host");
+    const board = await taskValues(fix, "host");
+    expect(board["task.t1"].value).toEqual({
+      title: "Seed briefs", files: ["packages/sdk/src/spec.ts"], depends_on: [], role: "builder", brief: BRIEF, status: "open",
+    });
+    expect(board["task.t2"].value).toEqual({ title: "No brief", files: ["packages/sdk/src/tasks.ts"], depends_on: [], status: "open" });
+  });
+
+  it("shows briefs to a participant that joins after the room was created", async () => {
+    const fix = await sprintRoom(parseSprintSpec(spec));
+    await joinParticipant(fix, "late-agent");
+    const board = await taskValues(fix, "late-agent");
+    expect((board["task.t1"].value as { brief?: string }).brief).toBe(BRIEF);
+    expect("brief" in (board["task.t2"].value as Record<string, unknown>)).toBe(false);
+  });
+
+  it("refuses a multi-line or blank brief before the room exists", () => {
+    const task = (brief: string): ParsedTask => ({ id: "t1", title: "A", files: ["a.ts"], brief });
+    expect(() => applyTemplate("sprint", { tasks: [task("one\ntwo")] })).toThrow("invalid sprint task");
+    expect(() => applyTemplate("sprint", { tasks: [task("   ")] })).toThrow("invalid sprint task");
+  });
 });

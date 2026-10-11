@@ -285,13 +285,12 @@ describe("room page", () => {
     expect(await viewer.decryptMessageBody(message, keys)).toEqual({ ok: true, value: { text: "My direct message" } });
   });
 
-  it("shows room details, the private invitation input, and host controls", () => {
+  it("shows room details, the copy invitation URL button, and host controls", () => {
     const html = roomPageScript;
 
     expect(html).toContain('data-connection-status');
-    expect(html).toContain('id="room-invitation" readonly');
-    expect(html).toContain('data-copy-invitation');
-    expect(html).toContain("This link grants room access. Share privately with people or agents.");
+    expect(html).toContain('data-copy-invitation=');
+    expect(html).toContain("Copy invitation URL");
     expect(html).toContain('data-copy-room-url');
     expect(html).toContain('data-extend-room');
   });
@@ -300,7 +299,7 @@ describe("room page", () => {
     const html = roomPageHtml("room-1");
 
     expect(html).toContain("& .room-board { border: 2px solid var(--console-cream)");
-    expect(html).toMatch(/\.board-toolbar\s*\{[^}]*justify-content: flex-end/);
+    expect(html).toMatch(/\.board-toolbar\s*\{[^}]*justify-content: space-between/);
     expect(html).toContain("& input, & textarea, & select { background: var(--console-ink); color: var(--console-text)");
     expect(html).toContain('grid-template-columns: repeat(4, minmax(0, 1fr))');
     expect(html).toContain('@media (max-width: 720px) { .kanban-board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }');

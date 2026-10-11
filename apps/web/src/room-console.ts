@@ -45,9 +45,6 @@ ${HOME_PALETTE}
     & .room-meta dt, & .room-summary dt { color: var(--console-dim); opacity: 1; font-size: 0.75rem; letter-spacing: 0.07em; text-transform: uppercase; }
     & .room-meta dd, & .room-summary dd { min-width: 0; margin: 0; color: var(--console-text); overflow-wrap: anywhere; }
     & .room-kickoff { white-space: pre-wrap; }
-    & .invite-copy { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: stretch; }
-    & .invite-copy input { flex: 1 1 16rem; }
-    & .invite-copy .button { flex: none; margin: 0 0 0 auto; }
     & .room-summary { gap: 1rem; margin-top: 1.25rem; padding: 1.25rem 0 0; border-top: 1px dashed var(--console-rule); border-bottom: 0; }
     & .room-summary > div { display: grid; gap: 0.25rem; align-content: start; }
     & .room-summary dd { font-weight: 700; }
@@ -85,7 +82,7 @@ ${HOME_PALETTE}
     & .participant-card { background: var(--console-panel); color: var(--console-text); border-color: var(--console-rule); }
     & .participant-name { color: var(--console-cream); }
     & .participant-state, & .participant-workspace { color: var(--console-dim); opacity: 1; }
-    & .participant-status { flex-basis: 100%; }
+    & .participant-badge { color: var(--console-dim); border-color: var(--console-rule); opacity: 1; }
     & .participant-profile { padding-top: 0.5rem; border-top: 1px dashed var(--console-rule); }
     & .participant-model { border-color: var(--console-rule); border-radius: 0; color: var(--console-cream); opacity: 1; }
 

@@ -894,18 +894,23 @@
       const minutes = Math.round((Date.now() - Date.parse(p.last_seen_at || p.joined_at)) / 60000);
       return minutes < 1 ? "active now" : "active " + minutes + " min ago";
     };
+    // Card reads top-down by priority: who, what they are doing, what runs them, where they work.
     const profileLine = (p) => {
-      const caps = (p.capabilities || []).length ? `<span class="participant-caps">${esc(p.capabilities.join(" · "))}</span>` : "";
       const running = [p.provider, p.model].filter(Boolean).join("/");
       const modelChip = running ? `<span class="participant-model">${esc(running)}</span>` : "";
+      const caps = (p.capabilities || []).length ? `<span class="participant-caps">${esc(p.capabilities.join(" · "))}</span>` : "";
+      const runtime = modelChip || caps ? `<div class="participant-runtime">${modelChip}${caps}</div>` : "";
       const ws = workspaces[p.id];
-      const where = ws ? [[ws.repo, ws.branch && "@" + ws.branch].filter(Boolean).join(" "), ws.path, ws.host && "machine: " + ws.host].filter(Boolean).map((line) => `<code class="participant-workspace">${esc(line)}</code>`).join("") : "";
       const checkout = checkoutLabel(p, pList);
-      return caps || modelChip || where || checkout ? `<div class="participant-profile">${caps}${modelChip}${where}${checkout ? `<span class="participant-workspace">${esc(checkout)}</span>` : ""}</div>` : "";
+      const details = ws ? [ws.repo && "repo: " + ws.repo, ws.branch && "branch: " + ws.branch, ws.path && "path: " + ws.path, ws.host && "machine: " + ws.host].filter(Boolean).join("\n") : "";
+      const summary = [ws && (ws.branch || (ws.repo || "").split("/").pop()), ws && ws.host, checkout].filter(Boolean).join(" · ");
+      const where = summary ? `<span class="participant-workspace"${details ? ` title="${escAttr(details)}"` : ""}>${esc(summary)}</span>` : "";
+      return runtime || where ? `<div class="participant-profile">${runtime}${where}</div>` : "";
     };
+    const hostControl = (p) => p.id === room.host_id ? `<span class="participant-badge">host</span>` : isHost && !p.left_at ? `<button class="button button-small" type="button" data-make-host="${escAttr(p.id)}" title="Hand the host role to ${escAttr(p.id)}">Make host</button>` : "";
     const participantsHtml = pList.length === 0
       ? `<p class="board-empty">No participants yet.</p>`
-      : pList.map(p => `<div class="participant-card"><span class="participant-name">${esc(participantLabel(p))}</span>${p.role ? `<span class="participant-state">${esc(p.role)}</span>` : ""}<span class="participant-state">[${esc(p.state)}]</span><span class="participant-status">${esc(p.status)}</span><span class="participant-state">${esc(activeAgo(p))}</span>${p.id === room.host_id ? ` <span class="participant-state">host</span>` : isHost && !p.left_at ? ` <button class="button button-small" type="button" data-make-host="${escAttr(p.id)}" title="Hand the host role to ${escAttr(p.id)}">Make host</button>` : ""}${profileLine(p)}</div>`).join("");
+      : pList.map(p => `<div class="participant-card"><div class="participant-head"><span class="participant-name">${esc(participantLabel(p))}</span>${p.role ? `<span class="participant-badge">${esc(p.role)}</span>` : ""}${hostControl(p)}</div><div class="participant-presence">${p.status ? `<span class="participant-status">${esc(p.status)}</span>` : ""}<span class="participant-state">${esc([p.state, activeAgo(p)].filter(Boolean).join(" · "))}</span></div>${profileLine(p)}</div>`).join("");
     const recipientOptions = [`<option value="all">all</option>`, ...pList.filter(p => !p.left_at && p.id !== participantId).map(p => `<option value="${escAttr(p.id)}">${esc(p.id)}</option>`)].join("");
 
     const messagesHtml = messages.length === 0
@@ -922,8 +927,7 @@
 <header class="room-overview">
 <h1>${esc(room.name || "Room")} <span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></h1>
 <dl class="room-meta">
-<dt>room URL</dt><dd><code>${esc("https://j01n.me/r/" + rid)}</code> <button class="button button-small" type="button" data-copy-room-url title="Copy room URL">Copy URL</button></dd>
-<dt>invite</dt><dd><label for="room-invitation">Private invitation link</label><div class="invite-copy"><input id="room-invitation" readonly value="${escAttr(location.origin + '/room/' + encodeURIComponent(rid) + '#' + joinSecret)}" /><button class="button button-small" type="button" data-copy-invitation>Copy invitation</button></div><p class="fineprint" data-invitation-status role="status">This link grants room access. Share privately with people or agents.</p></dd>
+<dt>room URL</dt><dd><code>${esc("https://j01n.me/r/" + rid)}</code> <button class="button button-small" type="button" data-copy-room-url title="Copy room URL">Copy URL</button> <button class="button button-small" type="button" data-copy-invitation="${escAttr(location.origin + '/room/' + encodeURIComponent(rid) + '#' + joinSecret)}" title="Copy private invitation URL — it grants room access, share privately">Copy invitation URL</button></dd>
 ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(room.first_message) + '</dd>' : ''}
 </dl>
 <dl class="room-summary">
@@ -934,7 +938,7 @@ ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(
 </dl>
 </header>
 ${reportHtml}
-<section class="room-board"><h2>Board</h2><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>
+<section class="room-board"><div class="board-toolbar"><h2>Board</h2><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><form class="board-edit-form" data-board-form><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>
 <section class="room-reservations" aria-label="File reservations"><h2>File reservations</h2>${reservationsHtml}</section>
 ${helpNeededHtml(data)}
 <section class="room-participants"><h2>Participants</h2>${participantsHtml}</section>
@@ -944,11 +948,10 @@ ${helpNeededHtml(data)}
       const url = "https://j01n.me/r/" + rid;
       navigator.clipboard.writeText(url).catch(() => {});
     });
-    root.querySelector("[data-copy-invitation]")?.addEventListener("click", async () => {
-      const input = root.querySelector("#room-invitation");
-      const status = root.querySelector("[data-invitation-status]");
-      try { await navigator.clipboard.writeText(input.value); status.textContent = "Copied. Share privately."; }
-      catch { input.select(); status.textContent = "Select and copy the invitation link manually."; }
+    root.querySelector("[data-copy-invitation]")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      try { await navigator.clipboard.writeText(button.dataset.copyInvitation); button.textContent = "Copied — share privately"; }
+      catch { window.prompt("Copy the private invitation URL", button.dataset.copyInvitation); }
     });
     wireExtendInvite();
     wireMakeHost();

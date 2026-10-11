@@ -295,6 +295,10 @@ function roomPageStyles(): string {
   .kanban-card { background: Canvas; color: CanvasText; padding: 0.5rem 0.75rem; border: 1px solid color-mix(in srgb, currentColor 22%, transparent); }
   .kanban-card-title { display: block; font-weight: 700; font-size: 0.95rem; }
   .kanban-card-owner { display: block; font-size: 0.85rem; opacity: 0.6; margin-top: 0.15rem; }
+  .kanban-card-priority { display: block; width: fit-content; margin-top: 0.3rem; padding: 0 0.35rem; border: 1px solid currentColor; font-size: 0.75rem; opacity: 0.8; }
+  .kanban-card-priority[data-priority="low"] { opacity: 0.55; }
+  .kanban-done-more > summary { cursor: pointer; font-size: 0.85rem; opacity: 0.72; padding: 0.25rem 0; }
+  .kanban-done-more[open] { display: grid; gap: 0.5rem; }
   .kanban-add-task { margin: 0 0 1.25rem; display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; }
   .kanban-add-task label { display: grid; gap: 0.35rem; min-width: 0; flex: 1 1 10rem; font-size: 0.85rem; }
   .kanban-add-task label:first-child { flex-grow: 2; }
@@ -330,7 +334,7 @@ function roomPageStyles(): string {
   .kanban-card .board-value { margin-top: 0.4rem; font-size: 0.85rem; }
   .kanban-card .json-object > div { grid-template-columns: minmax(0, 1fr); }
   @media (max-width: 560px) { .json-object > div { grid-template-columns: minmax(0, 1fr); } }
-  .room-participants { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 0.75rem; }
+  .room-participants { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); align-items: start; gap: 0.75rem; }
   .room-participants h2, .room-participants > .board-empty { grid-column: 1 / -1; }
   .participant-card { display: grid; align-content: start; gap: 0.5rem; min-width: 0; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 35%, transparent); background: Canvas; color: CanvasText; overflow-wrap: anywhere; }
   .participant-head, .participant-presence, .participant-runtime { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-width: 0; }
@@ -343,7 +347,9 @@ function roomPageStyles(): string {
   .button.button-small { margin: 0; padding: 0.35rem 0.6rem; font-size: 0.8rem; }
   .participant-caps { opacity: 0.8; }
   .participant-model { max-width: 100%; padding: 0.1rem 0.45rem; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 999px; font-family: var(--mono); font-size: 0.78rem; opacity: 0.85; overflow-wrap: anywhere; }
-  .participant-workspace { overflow-wrap: anywhere; cursor: help; }
+  .participant-workspace { overflow-wrap: anywhere; }
+  .participant-workspace-details > summary { cursor: pointer; }
+  .participant-workspace-details code { display: block; margin-top: 0.25rem; }
   .message-composer { display: grid; gap: 0.75rem; margin: 0.75rem 0 1rem; padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
   .message-composer label { display: grid; gap: 0.35rem; font-weight: 700; }
   .message-composer select, .message-composer textarea { width: 100%; box-sizing: border-box; font: inherit; border: 2px solid currentColor; background: Canvas; color: currentColor; }

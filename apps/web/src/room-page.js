@@ -473,19 +473,24 @@
     return '<div class="kanban-board">' + cols.map(c => {
       const columnTitle = {todo: "To Do", doing: "Doing", review: "Review", done: "Done"}[c] || c;
       const taskIds = Array.isArray(columnsVal[c]) ? columnsVal[c] : [];
-      const cards = taskIds.map(id => {
+      const card = (id) => {
         const task = tasks[id];
         const title = task ? (typeof task === "object" ? (task.title || id) : String(task)) : id;
         const owner = task && typeof task === "object" && task.owner ? esc(task.owner) : "";
         return '<div class="kanban-card" data-task-id="' + escAttr(id) + '">' +
           '<span class="kanban-card-title">' + esc(title) + '</span>' +
           (owner ? '<span class="kanban-card-owner">Owner: ' + owner + '</span>' : '') +
+          (task?.priority === "high" || task?.priority === "low" ? '<span class="kanban-card-priority" data-priority="' + task.priority + '">' + task.priority + ' priority</span>' : '') +
           (task?.description || taskExtras(task) ? '<details class="kanban-card-details" data-collapse="' + escAttr('task:' + id) + '"><summary>Details</summary>' +
             (task?.description ? '<p>' + esc(task.description) + '</p>' : '') +
             (taskExtras(task) ? '<div class="board-value">' + renderValue(taskExtras(task)) + '</div>' : '') + '</details>' : '') +
           (!liveView ? '<button class="button" type="button" data-edit-task="' + escAttr(id) + '" aria-label="' + escAttr('Edit ' + title) + '">Edit</button>' : '') +
         '</div>';
-      }).join("");
+      };
+      // Done only grows: keep the three most recent cards in view and fold the older ones.
+      const older = c === "done" ? taskIds.slice(0, -3) : [];
+      const cards = (older.length ? '<details class="kanban-done-more" data-collapse="done-more"><summary>Show ' + older.length + ' more</summary>' + older.map(card).join("") + '</details>' : '') +
+        taskIds.slice(older.length).map(card).join("");
       return '<div class="kanban-column"><' + headingTag + ' class="kanban-column-title">' + columnTitle + '</' + headingTag + '><div class="kanban-cards">' + cards + '</div></div>';
     }).join("") + '</div>';
   }
@@ -899,7 +904,7 @@
     const isKanban = columnsVal && typeof columnsVal === "object" && !Array.isArray(columnsVal) && ["todo", "doing", "review", "done"].some((c) => c in columnsVal)
       && typeof tasksVal === 'object' && !Array.isArray(tasksVal) && !('encrypted_payload' in tasksVal);
     const boardEntries = Object.entries(board).filter(([key]) => key !== 'reservations' && (!isKanban || !['columns', 'tasks'].includes(key))).map(([k, entry]) => {
-      const meta = `<span class="board-meta" title="${escAttr('updated at ' + entry.updated_at)}">v${esc(entry.version)} · ${esc(entry.updated_by)}</span>`;
+      const meta = `<span class="board-meta" title="${escAttr('updated at ' + entry.updated_at)}">v${esc(entry.version)} · ${esc(entry.updated_by)} · ${esc(shortTime(entry.updated_at))}</span>`;
       const edit = `<button class="button" type="button" data-edit-board-key="${escAttr(k)}" aria-label="${escAttr('Edit board key ' + k)}">Edit</button>`;
       const value = `<div class="board-value">${renderBoardValue(entry.value)}</div>`;
       const plain = extractValue(entry.value);
@@ -925,15 +930,18 @@
       const runtime = modelChip || caps ? `<div class="participant-runtime">${modelChip}${caps}</div>` : "";
       const ws = workspaces[p.id];
       const checkout = checkoutLabel(p, pList);
-      const details = ws ? [ws.repo && "repo: " + ws.repo, ws.branch && "branch: " + ws.branch, ws.path && "path: " + ws.path, ws.host && "machine: " + ws.host].filter(Boolean).join("\n") : "";
+      const details = ws ? [ws.repo && "repo: " + ws.repo, ws.branch && "branch: " + ws.branch, ws.path && "path: " + ws.path, ws.host && "machine: " + ws.host].filter(Boolean) : [];
       const summary = [ws && (ws.branch || (ws.repo || "").split("/").pop()), ws && ws.host, checkout].filter(Boolean).join(" · ");
-      const where = summary ? `<span class="participant-workspace"${details ? ` title="${escAttr(details)}"` : ""}>${esc(summary)}</span>` : "";
+      // Full repo, path and machine sit behind a toggle (works on touch, unlike a hover tooltip).
+      const where = !summary ? "" : details.length
+        ? `<details class="participant-workspace-details" data-collapse="${escAttr("ws:" + p.id)}"><summary class="participant-workspace">${esc(summary)}</summary>${details.map((line) => `<code class="participant-workspace">${esc(line)}</code>`).join("")}</details>`
+        : `<span class="participant-workspace">${esc(summary)}</span>`;
       return runtime || where ? `<div class="participant-profile">${runtime}${where}</div>` : "";
     };
     const hostControl = (p) => p.id === room.host_id ? `<span class="participant-badge">host</span>` : isHost && !p.left_at ? `<button class="button button-small" type="button" data-make-host="${escAttr(p.id)}" title="Hand the host role to ${escAttr(p.id)}">Make host</button>` : "";
     const participantsHtml = pList.length === 0
       ? `<p class="board-empty">No participants yet.</p>`
-      : pList.map(p => `<div class="participant-card"><div class="participant-head"><span class="participant-name">${esc(participantLabel(p))}</span>${p.role ? `<span class="participant-badge">${esc(p.role)}</span>` : ""}${hostControl(p)}</div><div class="participant-presence">${p.status ? `<span class="participant-status">${esc(p.status)}</span>` : ""}<span class="participant-state">${esc([p.state, activeAgo(p)].filter(Boolean).join(" · "))}</span></div>${profileLine(p)}</div>`).join("");
+      : pList.map(p => `<div class="participant-card"><div class="participant-head"><span class="participant-name">${esc(participantLabel(p))}</span>${p.role && !(p.role === "host" && p.id === room.host_id) ? `<span class="participant-badge">${esc(p.role)}</span>` : ""}${hostControl(p)}</div><div class="participant-presence">${p.status ? `<span class="participant-status">${esc(p.status)}</span>` : ""}<span class="participant-state">${esc([p.state, activeAgo(p)].filter(Boolean).join(" · "))}</span></div>${profileLine(p)}</div>`).join("");
     const recipientOptions = [`<option value="all">all</option>`, ...pList.filter(p => !p.left_at && p.id !== participantId).map(p => `<option value="${escAttr(p.id)}">${esc(p.id)}</option>`)].join("");
 
     const messagesHtml = messages.length === 0
@@ -1468,9 +1476,18 @@ ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(
   }
 
   // Task fields the kanban card does not already show (title, owner, description; state is the column).
+  // A stable short time (not "5 min ago"), so the board's markup does not change while nothing happens.
+  function shortTime(iso) {
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return "";
+    return at.toDateString() === new Date().toDateString()
+      ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : at.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+
   function taskExtras(task) {
     if (!task || typeof task !== "object") return null;
-    const rest = Object.fromEntries(Object.entries(task).filter(([key]) => !["title", "owner", "description", "state"].includes(key)));
+    const rest = Object.fromEntries(Object.entries(task).filter(([key]) => !["title", "owner", "description", "state", "priority"].includes(key)));
     return Object.keys(rest).length ? rest : null;
   }
 

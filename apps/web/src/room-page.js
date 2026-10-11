@@ -946,7 +946,7 @@
 <header class="room-overview">
 <h1>${esc(room.name || "Room")} <span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></h1>
 <dl class="room-meta">
-<dt>room URL</dt><dd><code>${esc("https://j01n.me/r/" + rid)}</code> <button class="button button-small" type="button" data-copy-room-url title="Copy room URL">Copy URL</button> <button class="button button-small" type="button" data-copy-invitation="${escAttr(location.origin + '/room/' + encodeURIComponent(rid) + '#' + joinSecret)}" title="Copy private invitation URL — it grants room access, share privately">Copy invitation URL</button></dd>
+<dt>room URL</dt><dd class="room-url"><code>${esc("https://j01n.me/r/" + rid)}</code> <button class="button button-small" type="button" data-copy-room-url title="Copy room URL">Copy URL</button> <button class="button button-small" type="button" data-copy-invitation="${escAttr(location.origin + '/room/' + encodeURIComponent(rid) + '#' + joinSecret)}" title="Copy private invitation URL — it grants room access, share privately">Copy invitation URL</button></dd>
 ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(room.first_message) + '</dd>' : ''}
 </dl>
 <dl class="room-summary">

@@ -41,7 +41,9 @@ ${HOME_PALETTE}
     & .connection-status { display: inline-flex; align-items: center; gap: 0.5rem; margin-left: 0.5rem; padding: 0.25rem 0.55rem; border: 1px solid var(--console-rule); vertical-align: middle; font-size: 0.7rem; font-weight: 500; letter-spacing: 0.05em; color: var(--console-cream); }
     & .connection-status.connected { color: var(--console-ok); }
     & .connection-status.disconnected { color: #f0aa9c; }
-    & .room-meta { grid-template-columns: max-content minmax(0, 1fr); gap: 0.75rem 1.25rem; padding: 1rem; border: 1px dashed var(--console-rule); background: var(--console-ink); font-size: 0.85rem; }
+    & .room-meta { grid-template-columns: max-content minmax(0, 1fr); gap: 0.75rem 1.25rem; padding: 0; border: 0; align-items: baseline; font-size: 0.85rem; }
+    & .room-url { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+    & .room-url code { margin-right: auto; }
     & .room-meta dt, & .room-summary dt { color: var(--console-dim); opacity: 1; font-size: 0.75rem; letter-spacing: 0.07em; text-transform: uppercase; }
     & .room-meta dd, & .room-summary dd { min-width: 0; margin: 0; color: var(--console-text); overflow-wrap: anywhere; }
     & .room-kickoff { white-space: pre-wrap; }

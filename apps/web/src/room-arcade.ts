@@ -26,6 +26,8 @@ export function roomArcadeStyles(): string {
       radial-gradient(ellipse at center, transparent 62%, rgba(0, 0, 0, 0.45) 100%); }
   .arcade-close { position: absolute; z-index: 1; top: 0; right: 0; width: calc(100% * 16 / var(--w, 384)); height: calc(100% * 16 / 216); padding: 0; border: 0; background: transparent; cursor: pointer; }
   .arcade-close:focus-visible { outline: 2px solid #fdedcc; outline-offset: -2px; }
+  /* On phones the pixel text would be ~3px tall; the arcade is a desktop extra. */
+  @media (max-width: 499px) { .arcade-toggle, .room-arcade { display: none !important; } }
   `;
 }
 
@@ -352,22 +354,23 @@ const ARCADE_JS = String.raw`
     draw();
   }
   function start() {
-    if (running || section.hidden || document.hidden) return;
+    if (running || section.hidden || document.hidden || !section.offsetWidth) return; // offsetWidth 0: hidden on phones
     running = true;
     requestAnimationFrame(tick);
   }
   function stop() { running = false; }
 
-  // Scaling by whole device pixels keeps every pixel the same size (on a 2x screen that allows 1.5x steps).
-  // The scale aims at a scene about 560 pixels wide but at most ~1.5 CSS pixels per pixel, then the scene
-  // widens to fill the column, so the arcade spans the full width at a modest height.
+  // The scale aims at a scene about 560 pixels wide, at most 1.5 CSS pixels per pixel, in whole device pixels
+  // on high-density screens and half-pixel steps on 1x screens (1.5x there makes pixel columns slightly
+  // uneven, but keeps the arcade as short as on retina). The scene then widens to fill the column.
   // Narrower than 384 pixels, it simply shrinks.
   function fitScale() {
+    if (!section.offsetWidth) return;
     const avail = section.clientWidth - 18; // 2px border and 7px of shadow on each side
-    const dpr = window.devicePixelRatio || 1;
-    const devicePixels = Math.max(1, Math.min(Math.round((avail * dpr) / 560), Math.round(1.5 * dpr)));
-    W = Math.max(384, Math.floor((avail * dpr) / devicePixels));
-    const scale = Math.min(devicePixels / dpr, avail / W);
+    const step = Math.min(0.5, 1 / (window.devicePixelRatio || 1));
+    let scale = Math.max(step, Math.min(1.5, Math.round(avail / 560 / step) * step));
+    W = Math.max(384, Math.floor(avail / scale));
+    scale = Math.min(scale, avail / W);
     canvas.width = W;
     canvas.style.width = W * scale + "px";
     frameEl.style.setProperty("--px", scale + "px");
@@ -387,7 +390,7 @@ const ARCADE_JS = String.raw`
   closeButton.addEventListener("click", close);
   section.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
   document.addEventListener("visibilitychange", () => (document.hidden ? stop() : start()));
-  window.addEventListener("resize", () => { if (!section.hidden) fitScale(); });
+  window.addEventListener("resize", () => { if (!section.hidden) { fitScale(); start(); } });
 
   window.j01nArcade = {
     update(snap, selfId, extract) {

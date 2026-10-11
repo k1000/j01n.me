@@ -19,6 +19,7 @@
     "./tasks": "./src/tasks.ts",
     "./spec": "./src/spec.ts",
     "./notes": "./src/notes.ts",
+    "./metrics": "./src/metrics.ts",
     "./room-commands": "./src/room-commands.ts",
     "./transport": "./src/transport.ts"
   }

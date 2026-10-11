@@ -14,7 +14,8 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 function twoWorktrees() {
   const root = mkdtempSync(join(tmpdir(), "j01n-checkouts-")); dirs.push(root);
   const repo = join(root, "repo"); mkdirSync(repo);
-  git(repo, "init", "-b", "main"); git(repo, "config", "user.email", "test@example.invalid"); git(repo, "config", "user.name", "Test");
+  git(repo, "init"); git(repo, "symbolic-ref", "HEAD", "refs/heads/main"); // init -b needs git>=2.28
+  git(repo, "config", "user.email", "test@example.invalid"); git(repo, "config", "user.name", "Test");
   git(repo, "remote", "add", "origin", "https://example.invalid/repo.git");
   writeFileSync(join(repo, "shared.txt"), "base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base");
   const a = join(root, "a"), b = join(root, "b");
@@ -56,6 +57,34 @@ describe("checkout identity and real merge conflicts", () => {
     expect(report.conflicts).toEqual([{ branches: ["feature/a", "feature/b"], files: ["shared.txt"] }]);
     expect(report.comparisons).toHaveLength(3);
     expect((await checkConflicts(client, repo, "feature/a")).conflicts).toEqual(report.conflicts);
+  });
+
+  it("legacy fallback: marker-looking file content is not a conflict; real overlap still is", async () => {
+    const { repo, a, b } = twoWorktrees();
+    // seed a 20-line file; both edit DISTINCT far-apart lines -> clean auto-merge, no markers
+    const lines = Array.from({ length: 20 }, (_, i) => `line${i}`);
+    writeFileSync(join(repo, "clean.txt"), lines.join("\n") + "\n");
+    git(repo, "add", "."); git(repo, "commit", "-qm", "seed");
+    git(a, "pull", "--rebase", "--quiet", repo, "main"); git(b, "pull", "--rebase", "--quiet", repo, "main");
+    writeFileSync(join(a, "clean.txt"), ["line0a", ...lines.slice(1)].join("\n") + "\n");
+    // a also adds code containing literal marker strings — the old substring detector matched these in diffs
+    writeFileSync(join(a, "detector.ts"), "const m = /^<<<<<<< \\.our$/m.test(s) && /^>>>>>>> \\.their$/m.test(s);\n");
+    git(a, "add", "."); git(a, "commit", "-qm", "a");
+    writeFileSync(join(b, "clean.txt"), [...lines.slice(0, 19), "line19b"].join("\n") + "\n");
+    git(b, "add", "."); git(b, "commit", "-qm", "b");
+    const board = {
+      "task.T1": { value: { title: "A", files: ["clean.txt"], depends_on: [], status: "claimed", owner: "a" } },
+      "task.T2": { value: { title: "B", files: ["clean.txt"], depends_on: [], status: "claimed", owner: "b" } },
+    };
+    const client = { async board() { return { board }; }, team: async () => [
+      { id: "a", workspace: detectWorkspace("secret", "room", a).workspace },
+      { id: "b", workspace: detectWorkspace("secret", "room", b).workspace },
+    ] } as unknown as RoomClient;
+    expect((await checkConflicts(client, repo)).conflicts).toEqual([]);
+    // sanity: a REAL same-line overlap is reported by whichever merge-tree mode this git has
+    writeFileSync(join(b, "clean.txt"), ["line0a2", ...lines.slice(1), "line19b"].join("\n") + "\n");
+    git(b, "commit", "-qam", "overlap");
+    expect((await checkConflicts(client, repo)).conflicts).toEqual([{ branches: ["feature/a", "feature/b"], files: ["clean.txt"] }]);
   });
 
   it("keeps key files in the directory, except on /Volumes where a private internal folder is used", () => {

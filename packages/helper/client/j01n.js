@@ -80,8 +80,8 @@ function buildMinimalInvite(roomUrlRaw, joinSecret) {
 function inviteLink(roomUrl, joinSecret) {
   return `${roomUrl.replace(/\/$/, "").replace(/\/r\/([^/]+)$/, "/room/$1")}#${joinSecret}`;
 }
-function parseInviteLink(text) {
-  const match = /^(https?:\/\/[^/\s]+)\/room\/([^/#?\s]+)#(\S+)$/.exec(text.trim());
+function parseInviteLink(text2) {
+  const match = /^(https?:\/\/[^/\s]+)\/room\/([^/#?\s]+)#(\S+)$/.exec(text2.trim());
   return match ? { access: `${match[1]}/r/${match[2]}`, join_secret: match[3] } : void 0;
 }
 function normalizeInvite(invite) {
@@ -605,6 +605,248 @@ async function createSdkCryptoSession(participantId, privateJwk, publicJwk) {
   };
 }
 
+// packages/sdk/src/metrics.ts
+var USAGE_KEY_PREFIX = "usage.";
+var MAX_USAGE_DELTA_ACTIVE_MS = 24 * 60 * 60 * 1e3;
+var MAX_USAGE_DELTA_TOKENS = 1e9;
+var MAX_USAGE_DELTA_COST_USD = 1e4;
+var USAGE_STALE_AFTER_MS = 15 * 60 * 1e3;
+var DEFAULT_TOKEN_RATES = { input_usd_per_mtok: 1, output_usd_per_mtok: 4 };
+var MODEL_TOKEN_RATES = {
+  "claude-opus": { input_usd_per_mtok: 15, output_usd_per_mtok: 75 },
+  "claude-sonnet": { input_usd_per_mtok: 3, output_usd_per_mtok: 15 },
+  "claude-haiku": { input_usd_per_mtok: 0.8, output_usd_per_mtok: 4 },
+  "gpt-5": { input_usd_per_mtok: 1.25, output_usd_per_mtok: 10 },
+  "gpt-4.1": { input_usd_per_mtok: 2, output_usd_per_mtok: 8 },
+  "gpt-4o": { input_usd_per_mtok: 2.5, output_usd_per_mtok: 10 },
+  "o3": { input_usd_per_mtok: 2, output_usd_per_mtok: 8 },
+  "gemini-flash": { input_usd_per_mtok: 0.3, output_usd_per_mtok: 2.5 },
+  "gemini-pro": { input_usd_per_mtok: 1.25, output_usd_per_mtok: 10 },
+  "qwen3": { input_usd_per_mtok: 0.3, output_usd_per_mtok: 1.2 },
+  "deepseek": { input_usd_per_mtok: 0.3, output_usd_per_mtok: 1.2 },
+  "llama": { input_usd_per_mtok: 0.2, output_usd_per_mtok: 0.6 }
+};
+var PARTICIPANT_ID = /^[a-zA-Z0-9_-]{1,64}$/;
+function usageKey(participantId) {
+  if (!PARTICIPANT_ID.test(participantId)) throw new Error(`invalid participant id for a usage key: ${participantId}`);
+  return `${USAGE_KEY_PREFIX}${participantId}`;
+}
+function isUsageKey(key2) {
+  return key2.startsWith(USAGE_KEY_PREFIX) && PARTICIPANT_ID.test(key2.slice(USAGE_KEY_PREFIX.length));
+}
+function participantFromUsageKey(key2) {
+  return isUsageKey(key2) ? key2.slice(USAGE_KEY_PREFIX.length) : void 0;
+}
+var isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+function count(value, name, { integer = false, max } = {}) {
+  if (value === void 0 || value === null) return void 0;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || integer && !Number.isInteger(value)) {
+    throw new Error(`usage ${name} must be a ${integer ? "whole " : ""}number >= 0`);
+  }
+  if (max !== void 0 && value > max) throw new Error(`usage ${name} must be <= ${max}`);
+  return value;
+}
+function text(value, name) {
+  if (value === void 0 || value === null) return void 0;
+  if (typeof value !== "string" || !value.trim()) throw new Error(`usage ${name} must be a non-empty string`);
+  return value.trim();
+}
+function timestamp(value, name, now) {
+  if (value === void 0 || value === null) return now().toISOString();
+  if (typeof value !== "string" || Number.isNaN(Date.parse(value))) throw new Error(`usage ${name} must be an ISO timestamp`);
+  return new Date(value).toISOString();
+}
+var DELTA_FIELDS = ["active_ms", "input_tokens", "output_tokens", "cost_usd", "model", "provider", "at"];
+var SNAPSHOT_FIELDS = [...DELTA_FIELDS.slice(0, 6), "participant", "reports", "updated_at"];
+function parseUsageDelta(value) {
+  if (!isObject(value)) throw new Error("usage delta must be an object");
+  const unknown = Object.keys(value).filter((key2) => !DELTA_FIELDS.includes(key2));
+  if (unknown.length) throw new Error(`unknown usage delta field(s): ${unknown.join(", ")}`);
+  const delta = {};
+  const active = count(value.active_ms, "active_ms", { integer: true, max: MAX_USAGE_DELTA_ACTIVE_MS });
+  const input = count(value.input_tokens, "input_tokens", { integer: true, max: MAX_USAGE_DELTA_TOKENS });
+  const output2 = count(value.output_tokens, "output_tokens", { integer: true, max: MAX_USAGE_DELTA_TOKENS });
+  const cost = count(value.cost_usd, "cost_usd", { max: MAX_USAGE_DELTA_COST_USD });
+  const model = text(value.model, "model");
+  const provider = text(value.provider, "provider");
+  const at = value.at === void 0 || value.at === null ? void 0 : timestamp(value.at, "at", () => /* @__PURE__ */ new Date());
+  if (active === void 0 && input === void 0 && output2 === void 0 && cost === void 0 && model === void 0 && provider === void 0 && at === void 0) {
+    throw new Error("usage delta needs at least one of active_ms, input_tokens, output_tokens, cost_usd, model, provider, at");
+  }
+  if (active !== void 0) delta.active_ms = active;
+  if (input !== void 0) delta.input_tokens = input;
+  if (output2 !== void 0) delta.output_tokens = output2;
+  if (cost !== void 0) delta.cost_usd = cost;
+  if (model !== void 0) delta.model = model;
+  if (provider !== void 0) delta.provider = provider;
+  if (at !== void 0) delta.at = at;
+  return delta;
+}
+function parseUsageSnapshot(value, participantHint) {
+  if (!isObject(value)) throw new Error("usage snapshot must be an object");
+  const unknown = Object.keys(value).filter((key2) => !SNAPSHOT_FIELDS.includes(key2));
+  if (unknown.length) throw new Error(`unknown usage snapshot field(s): ${unknown.join(", ")}`);
+  const participant = text(value.participant, "participant") ?? (participantHint && PARTICIPANT_ID.test(participantHint) ? participantHint : void 0);
+  if (!participant) throw new Error("usage snapshot needs a participant");
+  const reports = count(value.reports, "reports", { integer: true });
+  if (reports === void 0) throw new Error("usage reports must be a whole number >= 0");
+  const model = text(value.model, "model");
+  const provider = text(value.provider, "provider");
+  return {
+    participant,
+    reports,
+    updated_at: timestamp(value.updated_at, "updated_at", () => /* @__PURE__ */ new Date()),
+    active_ms: count(value.active_ms, "active_ms") ?? 0,
+    input_tokens: count(value.input_tokens, "input_tokens") ?? 0,
+    output_tokens: count(value.output_tokens, "output_tokens") ?? 0,
+    cost_usd: count(value.cost_usd, "cost_usd") ?? 0,
+    ...model !== void 0 ? { model } : {},
+    ...provider !== void 0 ? { provider } : {}
+  };
+}
+function coerceUsageSnapshot(value, participantHint) {
+  try {
+    return parseUsageSnapshot(value, participantHint);
+  } catch {
+    return null;
+  }
+}
+function emptyUsage(participant, at = (/* @__PURE__ */ new Date()).toISOString()) {
+  return { participant, reports: 0, updated_at: new Date(at).toISOString(), active_ms: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0 };
+}
+function applyUsageDelta(participant, previous, deltaInput) {
+  const delta = parseUsageDelta(deltaInput);
+  const base2 = previous && previous.participant === participant ? previous : emptyUsage(participant);
+  const model = delta.model ?? base2.model;
+  const provider = delta.provider ?? base2.provider;
+  return {
+    participant,
+    reports: base2.reports + 1,
+    updated_at: timestamp(delta.at, "at", () => /* @__PURE__ */ new Date()),
+    active_ms: base2.active_ms + (delta.active_ms ?? 0),
+    input_tokens: base2.input_tokens + (delta.input_tokens ?? 0),
+    output_tokens: base2.output_tokens + (delta.output_tokens ?? 0),
+    cost_usd: roundCost(base2.cost_usd + (delta.cost_usd ?? 0)),
+    ...model ? { model } : {},
+    ...provider ? { provider } : {}
+  };
+}
+function nextUsage(participant, previousValue, deltaInput) {
+  return applyUsageDelta(participant, coerceUsageSnapshot(previousValue, participant), deltaInput);
+}
+function usageTotals(snapshots) {
+  const totals = { participants: 0, active_ms: 0, input_tokens: 0, output_tokens: 0, tokens: 0, cost_usd: 0 };
+  for (const snapshot of snapshots) {
+    totals.participants += 1;
+    totals.active_ms += snapshot.active_ms;
+    totals.input_tokens += snapshot.input_tokens;
+    totals.output_tokens += snapshot.output_tokens;
+    totals.cost_usd += snapshot.cost_usd;
+  }
+  totals.tokens = totals.input_tokens + totals.output_tokens;
+  totals.cost_usd = roundCost(totals.cost_usd);
+  return totals;
+}
+function ratesForModel(model, table = MODEL_TOKEN_RATES, fallback = DEFAULT_TOKEN_RATES) {
+  if (!model) return fallback;
+  const needle = model.toLowerCase();
+  let best;
+  for (const [key2, rates] of Object.entries(table)) {
+    if (needle.includes(key2.toLowerCase()) && (!best || key2.length > best.key.length)) best = { key: key2, rates };
+  }
+  return best?.rates ?? fallback;
+}
+function estimateCost(usage, rates) {
+  return roundCost(usage.input_tokens / 1e6 * rates.input_usd_per_mtok + usage.output_tokens / 1e6 * rates.output_usd_per_mtok);
+}
+async function sealUsage(snapshot, joinSecret, roomId) {
+  return sealForRoom(parseUsageSnapshot(snapshot), joinSecret, roomId);
+}
+async function openUsage(sealed, participantHint, joinSecret = "", roomId = "") {
+  if (typeof sealed !== "string" || !sealed.startsWith("jsk1:")) return null;
+  const value = await openRoomSeal(sealed, joinSecret, roomId).catch(() => null);
+  return value === null ? null : coerceUsageSnapshot(value, participantHint);
+}
+async function usageRows(board, options) {
+  const { joinSecret, roomId, nowMs = Date.now(), staleAfterMs = USAGE_STALE_AFTER_MS } = options;
+  const ids = /* @__PURE__ */ new Set();
+  for (const key2 of Object.keys(board)) {
+    const id = participantFromUsageKey(key2);
+    if (id) ids.add(id);
+  }
+  for (const id of options.participants ?? []) if (PARTICIPANT_ID.test(id)) ids.add(id);
+  const rows = await Promise.all([...ids].sort().map(async (participant) => {
+    const key2 = usageKey(participant);
+    const entry = board[key2];
+    const snapshot = entry ? await openUsage(entry.value, participant, joinSecret, roomId) : null;
+    return {
+      participant,
+      key: key2,
+      version: entry?.version ?? 0,
+      // The key is the identity: a snapshot claiming somebody else still counts, but never under another name.
+      snapshot: snapshot ? { ...snapshot, participant } : null,
+      stale: snapshot === null || Date.parse(snapshot.updated_at) + staleAfterMs < nowMs
+    };
+  }));
+  return rows;
+}
+async function roomUsage(board, options) {
+  const rows = await usageRows(board, options);
+  const reported = rows.filter((row) => row.snapshot);
+  return {
+    rows,
+    totals: usageTotals(reported.map((row) => row.snapshot)),
+    reported: reported.length,
+    stale: rows.filter((row) => row.stale).length
+  };
+}
+function formatActiveTime(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+  const seconds = Math.floor(ms / 1e3);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${pad(seconds % 60)}s`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${pad(minutes % 60)}m`;
+  return `${Math.floor(hours / 24)}d ${pad(hours % 24)}h`;
+}
+function formatTokens(value) {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (value < 1e3) return `${Math.round(value)}`;
+  if (value < 1e6) return `${trimZero(value / 1e3)}k`;
+  if (value < 1e9) return `${trimZero(value / 1e6)}M`;
+  return `${trimZero(value / 1e9)}B`;
+}
+function formatCost(usd) {
+  if (!Number.isFinite(usd) || usd <= 0) return "$0";
+  if (usd < 1) return `$${trimZeros(usd.toFixed(4))}`;
+  if (usd < 1e3) return `$${usd.toFixed(2)}`;
+  return `$${usd.toFixed(0)}`;
+}
+function formatUsage(usage, label) {
+  const line = `${formatActiveTime(usage.active_ms)} active \xB7 ${formatTokens(usage.input_tokens)} in / ${formatTokens(usage.output_tokens)} out \xB7 ${formatCost(usage.cost_usd)}`;
+  return label ? `${label}: ${line}` : line;
+}
+function formatUsageRow(row, options = {}) {
+  if (!row.snapshot) return `${row.participant}: no usage reported`;
+  const snapshot = row.snapshot;
+  const cost = snapshot.cost_usd > 0 ? snapshot.cost_usd : estimateCost(snapshot, ratesForModel(snapshot.model, options.table, options.fallback));
+  const model = snapshot.model ? ` \xB7 ${snapshot.model}` : "";
+  return formatUsage({ ...snapshot, cost_usd: cost }, row.participant) + model + (row.stale ? " \xB7 stale" : "");
+}
+function pad(value) {
+  return value.toString().padStart(2, "0");
+}
+function trimZero(value) {
+  return trimZeros(value.toFixed(2));
+}
+function trimZeros(value) {
+  return value.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
+function roundCost(value) {
+  return Math.round(value * 1e6) / 1e6;
+}
+
 // packages/sdk/src/room-client.ts
 function boardKeyUrl(roomUrl, key2, ifVersion) {
   return `${roomUrl}/board/${encodeURIComponent(key2)}${ifVersion === void 0 ? "" : `?if_version=${ifVersion}`}`;
@@ -847,6 +1089,33 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
     },
     async export() {
       return request(`${invite.room_url}/export`, invite, { participantId });
+    },
+    async reportUsage(delta) {
+      const key2 = usageKey(participantId);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const board = (await client.board()).board;
+        const entry = board[key2];
+        const previous = entry ? await openUsage(entry.value, participantId, invite.join_secret, invite.room_id) : null;
+        const next = nextUsage(participantId, previous, delta);
+        const sealed = await sealUsage(next, invite.join_secret, invite.room_id);
+        try {
+          await client.setBoardKey(key2, sealed, { ifVersion: entry?.version ?? 0 });
+          return { participant: participantId, key: key2, version: (entry?.version ?? 0) + 1, snapshot: next, stale: false };
+        } catch (error) {
+          if (error instanceof RoomApiError && error.status === 409) continue;
+          throw error;
+        }
+      }
+      throw new Error(`reportUsage kept failing on version conflicts; try again`);
+    },
+    async usageReport() {
+      const board = (await client.board()).board;
+      const { participants = [] } = await client.participants();
+      return roomUsage(board, {
+        joinSecret: invite.join_secret,
+        roomId: invite.room_id,
+        participants: participants.map((p) => p.id)
+      });
     }
   };
   return client;
@@ -904,10 +1173,10 @@ function notesAndDecisions(board) {
     decisions: Array.isArray(board.decisions?.value) ? board.decisions.value : []
   };
 }
-async function addNote(client, text, tags = [], files = []) {
-  if (!text.trim()) throw new Error("note needs non-empty text");
+async function addNote(client, text2, tags = [], files = []) {
+  if (!text2.trim()) throw new Error("note needs non-empty text");
   if (tags.some((tag) => !["gotcha", "finding", "howto"].includes(tag))) throw new Error("note --tag must be gotcha, finding or howto");
-  return append(client, "notes", { by: client.participantId, at: (/* @__PURE__ */ new Date()).toISOString(), text: text.trim(), tags, files });
+  return append(client, "notes", { by: client.participantId, at: (/* @__PURE__ */ new Date()).toISOString(), text: text2.trim(), tags, files });
 }
 async function addDecision(client, decision, why) {
   if (!decision.trim() || !why.trim()) throw new Error("decide needs: <decision> --why <reason>");
@@ -957,14 +1226,14 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
   if (cmd2 === "tasks") return { tasks: await listTasks(client) };
   if (cmd2 === "summary") return roomSummary(client);
   if (cmd2 === "note") {
-    const text = rest[0];
-    if (!text || text.startsWith("--")) throw new Error("note needs: <text> [--tag gotcha|finding|howto] [--files a,b]");
+    const text2 = rest[0];
+    if (!text2 || text2.startsWith("--")) throw new Error("note needs: <text> [--tag gotcha|finding|howto] [--files a,b]");
     const flags = /* @__PURE__ */ new Map();
     for (let i = 1; i < rest.length; i += 2) {
       if (!["--tag", "--files"].includes(rest[i]) || flags.has(rest[i]) || !rest[i + 1] || rest[i + 1].startsWith("--")) throw new Error("note needs: <text> [--tag gotcha|finding|howto] [--files a,b]");
       flags.set(rest[i], rest[i + 1]);
     }
-    return { notes: await addNote(client, text, flags.has("--tag") ? [flags.get("--tag")] : [], flags.get("--files")?.split(",").map((file) => file.trim()).filter(Boolean) ?? []) };
+    return { notes: await addNote(client, text2, flags.has("--tag") ? [flags.get("--tag")] : [], flags.get("--files")?.split(",").map((file) => file.trim()).filter(Boolean) ?? []) };
   }
   if (cmd2 === "decide") {
     if (!rest[0] || rest[1] !== "--why" || !rest[2]) throw new Error("decide needs: <decision> --why <reason>");
@@ -1171,6 +1440,39 @@ import { execFileSync as execFileSync2 } from "node:child_process";
 function git2(root, ...args2) {
   return execFileSync2("git", args2, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
+function conflictedFilesFromOutput(output2) {
+  const files = /* @__PURE__ */ new Set();
+  for (const match of output2.matchAll(/^\d{6} [0-9a-f]+ [123]\t(.+)$/gm)) files.add(match[1]);
+  for (const match of output2.matchAll(/^CONFLICT .*: Merge conflict in (.+)$/gm)) files.add(match[1]);
+  let block = null;
+  const close = () => {
+    if (block?.saw_our && block.saw_their && block.file) files.add(block.file);
+    block = null;
+  };
+  for (const line of output2.split("\n")) {
+    if (line === "changed in both") {
+      close();
+      block = {};
+      continue;
+    }
+    if (line === "simple conflict") {
+      close();
+      block = { saw_our: true, saw_their: true };
+      continue;
+    }
+    if (block && /^(?:merged|added in (?:both|local|remote)|removed in (?:local|remote)|unchanged|missing (?:local|remote))$/.test(line)) {
+      close();
+      continue;
+    }
+    if (!block) continue;
+    const header = line.match(/^ {2}(?:base|our|their)\s+\d{6} [0-9a-f]+ (.+)$/);
+    if (header && !block.file) block.file = header[1];
+    else if (/^\+?<<<<<<< \.our$/.test(line)) block.saw_our = true;
+    else if (/^\+?>>>>>>> \.their$/.test(line)) block.saw_their = true;
+  }
+  close();
+  return files;
+}
 async function checkConflicts(client, root, finishedBranch) {
   const repo2 = (() => {
     try {
@@ -1215,19 +1517,17 @@ async function checkConflicts(client, root, finishedBranch) {
       if (other === existing[i] || finishedBranch && existing[i] !== finishedBranch && other !== finishedBranch) continue;
       const pair = [existing[i], other];
       let output2;
-      let conflicted = false;
       try {
         output2 = git2(root, "merge-tree", "--write-tree", ...pair);
       } catch (error) {
         const e = error;
-        if (e.status !== 1) throw new Error(`merge-tree ${pair.join(" vs ")}: ${e.stderr || String(error)}`);
-        conflicted = true;
-        output2 = e.stdout || "";
+        if (e.status === 1) output2 = e.stdout || "";
+        else if (e.status === 128 || (e.stderr || "").includes("unknown rev")) {
+          const base2 = git2(root, "merge-base", ...pair);
+          output2 = git2(root, "merge-tree", base2, ...pair);
+        } else throw new Error(`merge-tree ${pair.join(" vs ")}: ${e.stderr || String(error)}`);
       }
-      const files = conflicted ? [.../* @__PURE__ */ new Set([
-        ...[...output2.matchAll(/^\d{6} [0-9a-f]+ [123]\t(.+)$/gm)].map((match) => match[1]),
-        ...[...output2.matchAll(/^CONFLICT .*? in (.+)$/gm)].map((match) => match[1])
-      ])].sort() : [];
+      const files = [...conflictedFilesFromOutput(output2)].sort();
       comparisons.push({ branches: pair, files });
     }
   }
@@ -1269,6 +1569,51 @@ var modelProfile = (rest) => {
   const provider = flag("--provider") || process.env.J01N_PROVIDER;
   return { ...model ? { model } : {}, ...provider ? { provider } : {} };
 };
+var USAGE_REPORT_FLAGS = {
+  "--active": { field: "active_ms", number: true, scale: 6e4 },
+  "--active-ms": { field: "active_ms", number: true },
+  "--active-minutes": { field: "active_ms", number: true, scale: 6e4 },
+  "--input-tokens": { field: "input_tokens", number: true },
+  "--output-tokens": { field: "output_tokens", number: true },
+  "--cost": { field: "cost_usd", number: true },
+  "--cost-usd": { field: "cost_usd", number: true },
+  "--model": { field: "model" },
+  "--provider": { field: "provider" },
+  "--at": { field: "at" }
+};
+var usageHelp = (command) => `${command} [--active <minutes> | --active-ms N | --active-minutes N] [--tokens <in,out> | --input-tokens N --output-tokens N] [--cost <usd> | --cost-usd X] [--model M] [--provider P] [--at ISO]`;
+function usageDeltaFromFlags(args2) {
+  const delta = {};
+  const put = (name, field, value) => {
+    if (delta[field] !== void 0) throw Error(`usage report ${name} conflicts with another ${field.replace(/_/g, "-")} flag`);
+    delta[field] = value;
+  };
+  const number = (name, raw, scale = 1) => {
+    const parsed = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(parsed)) throw Error(`usage report ${name} needs a number, got "${raw}"`);
+    return scale === 1 ? parsed : Math.round(parsed * scale);
+  };
+  for (let i = 0; i < args2.length; i++) {
+    const name = args2[i];
+    if (!name.startsWith("--")) throw Error(`usage report takes "<flag> <value>" pairs only, got the argument "${name}"`);
+    const value = args2[++i];
+    if (value === void 0 || value.startsWith("--")) throw Error(`usage report ${name} needs a value`);
+    if (name === "--tokens") {
+      const parts = value.split(",");
+      if (parts.length !== 2 || parts.some((part) => part.trim() === "")) throw Error(`usage report --tokens needs "<in,out>", got "${value}"`);
+      put(name, "input_tokens", number(name, parts[0]));
+      put(name, "output_tokens", number(name, parts[1]));
+      continue;
+    }
+    const spec = USAGE_REPORT_FLAGS[name];
+    if (!spec) throw Error(`unknown usage flag: ${name}
+Usage: ${usageHelp("usage report")}`);
+    put(name, spec.field, spec.number ? number(name, value, spec.scale) : value);
+  }
+  if (!Object.keys(delta).length) throw Error(`usage report needs at least one flag
+Usage: ${usageHelp("usage report")}`);
+  return parseUsageDelta(delta);
+}
 var roomCommand = (client, command, rest, beforeSend) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend, repo: repo().id, conflicts: (branch) => checkConflicts(client, repo().root, branch) });
 async function isRoomRef(ref) {
   if (!ref) return false;
@@ -1299,29 +1644,36 @@ async function remember(url, me) {
 async function resolveRoom() {
   const env = process.env;
   const envRoom = env.ROOM_URL && (env.PARTICIPANT_TOKEN || env.JOIN_SECRET) && env.ME;
-  if (envRoom && (cmd === "send" && args.length <= 3 || cmd === "join" && (!args[1] || args[1].startsWith("--")) || ["read", "team", "inbox", "watch", "doctor"].includes(cmd || "") && args.length === 1)) return { roomUrl: env.ROOM_URL, secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET, token: env.PARTICIPANT_TOKEN, me: env.ME, rest: args.slice(1) };
+  if (envRoom && (cmd === "send" && args.length <= 3 || cmd === "join" && (!args[1] || args[1].startsWith("--")) || ["read", "team", "inbox", "watch", "doctor"].includes(cmd || "") && args.length === 1)) return { roomUrl: env.ROOM_URL, secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET, token: env.PARTICIPANT_TOKEN, joinSecret: env.JOIN_SECRET, me: env.ME, rest: args.slice(1) };
   const link = parseInviteLink(args[1] || "");
-  if (link) return { roomUrl: link.access, secret: link.join_secret, me: args[2], rest: args.slice(3) };
-  if (isUrl(args[1])) return { roomUrl: args[1], secret: args[2], token: cmd === "join" ? void 0 : args[2], me: args[3], rest: args.slice(4) };
+  if (link) return { roomUrl: link.access, secret: link.join_secret, joinSecret: link.join_secret, me: args[2], rest: args.slice(3) };
+  if (isUrl(args[1])) return { roomUrl: args[1], secret: args[2], token: cmd === "join" ? void 0 : args[2], positionalSecret: args[2], me: args[3], rest: args.slice(4) };
   if (await isRoomRef(args[1])) {
     const ref = args[1].trim().startsWith("{") ? args[1] : await fs.readFile(args[1], "utf8");
     const invite = JSON.parse(ref);
     const roomUrl = invite.access || invite.follow || invite.room_url;
     if (!roomUrl) throw Error("profile must include access");
-    if (invite.participant_token) return { roomUrl, secret: invite.participant_token, token: invite.participant_token, me: invite.participant_id || invite.me, rest: args.slice(2) };
+    if (invite.participant_token) {
+      const me = invite.participant_id || invite.me;
+      return { roomUrl, secret: invite.participant_token, token: invite.participant_token, joinSecret: invite.join_secret, me, rest: args.slice(args[2] === me ? 3 : 2) };
+    }
     if (!invite.join_secret) throw Error("invite must include access and join_secret");
-    return { roomUrl, secret: invite.join_secret, me: args[2], rest: args.slice(3) };
+    return { roomUrl, secret: invite.join_secret, joinSecret: invite.join_secret, me: args[2], rest: args.slice(3) };
   }
   const rooms = await activeRooms();
   if (rooms.length > 1) throw Error("several rooms are active in this directory; pass the room link or participant profile");
   if (rooms.length) return { roomUrl: rooms[0].room_url, secret: "resume-only", me: rooms[0].participant_id, rest: args.slice(1) };
   if (args[1]) throw Error(`ENOENT: cannot read invitation ${args[1]}`);
-  return { roomUrl: env.ROOM_URL || "", secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET || "", token: env.PARTICIPANT_TOKEN, me: env.ME || "", rest: args.slice(1) };
+  return { roomUrl: env.ROOM_URL || "", secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET || "", token: env.PARTICIPANT_TOKEN, joinSecret: env.JOIN_SECRET, me: env.ME || "", rest: args.slice(1) };
 }
 async function agents() {
-  const me = args[1];
-  const rest = args.slice(2);
-  if (!me) throw Error("usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]");
+  let me = args[1];
+  const rest = args.slice(me ? 2 : 1);
+  if (!me) {
+    const seeds = (await fs.readdir(stateDir).catch(() => [])).filter((n) => /^\.j01n-agent-[a-z0-9_-]+\.json$/.test(n)).map((n) => n.slice(".j01n-agent-".length, -".json".length));
+    if (seeds.length !== 1) throw Error("usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]" + (seeds.length > 1 ? ` (several seeded identities: ${seeds.join(", ")})` : " (no seeded identity in this directory)"));
+    me = seeds[0];
+  }
   const file = join2(stateDir, `.j01n-agent-${safe(me)}.json`);
   if (cmd === "register") {
     const identity2 = await registerAgent(base, me, names(rest[0]));
@@ -1392,10 +1744,10 @@ async function main() {
       delete options.spec;
     }
     const response = await fetch(`${url.replace(/\/$/, "")}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(options) });
-    const text = await response.text();
-    if (!response.ok) throw Error(text);
+    const text2 = await response.text();
+    if (!response.ok) throw Error(text2);
     if (specText !== void 0) {
-      const invite2 = normalizeInvite(JSON.parse(text));
+      const invite2 = normalizeInvite(JSON.parse(text2));
       const me2 = options.host_id;
       const session2 = await createSdkCryptoSession(me2);
       const client2 = await joinRoom(invite2, me2, process.env.J01N_HARNESS ? { harness: process.env.J01N_HARNESS } : {}, session2);
@@ -1404,14 +1756,14 @@ async function main() {
       await remember(invite2.room_url, me2);
       await client2.send("all", { encrypted_payload: await sealForRoom(specText, invite2.join_secret, invite2.room_id) }, { intent: "kickoff", plain: true });
     }
-    console.log(text);
+    console.log(text2);
     return;
   }
   if (["register", "allow", "invite", "invites", "listen"].includes(cmd || "")) {
     await agents();
     return;
   }
-  const { roomUrl, secret, me, rest, token } = await resolveRoom();
+  const { roomUrl, secret, me, rest, token, joinSecret, positionalSecret } = await resolveRoom();
   if (!cmd || !roomUrl || !secret || !me) throw Error("usage: j01n <create|join|send|read|team|watch|doctor> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.");
   const keyFile = join2(stateDir, `.j01n-${safe(new URL(roomUrl).pathname)}-${safe(me)}.json`);
   let state;
@@ -1543,10 +1895,10 @@ async function main() {
         if (event === "message") await print("message");
         else if (event === "changed") await print("message");
         else {
-          const text = data.join("\n");
-          let parsed = text || void 0;
+          const text2 = data.join("\n");
+          let parsed = text2 || void 0;
           try {
-            parsed = JSON.parse(text);
+            parsed = JSON.parse(text2);
           } catch {
           }
           output({ event, data: parsed });
@@ -1603,6 +1955,24 @@ async function main() {
     }));
     return;
   }
+  if (cmd === "usage") {
+    const sealSecret = [joinSecret, state.joinSecret, positionalSecret].find((value) => value && value !== "resume-only") || "";
+    if (!sealSecret) throw Error("usage needs the room link or invitation (usage is sealed with the room key, and a participant token is not one): usage <room link> <me> [report ...], or run it in the directory that joined the room");
+    const sealInvite = buildMinimalInvite(roomUrl, sealSecret);
+    sealInvite.participant_token = token || state.participantToken;
+    const usageClient = sealSecret === client.invite.join_secret ? client : await resumeRoom(sealInvite, me, session);
+    const [sub, ...args2] = rest;
+    if (sub === "report") {
+      const row = await usageClient.reportUsage(usageDeltaFromFlags(args2));
+      output({ ok: true, participant: row.participant, key: row.key, version: row.version, snapshot: row.snapshot, line: formatUsageRow(row) });
+      return;
+    }
+    if (sub !== void 0) throw Error(`unknown usage command: ${sub}; expected "report" or nothing
+Usage: ${usageHelp("usage [report]")}`);
+    const { rows, totals, reported, stale } = await usageClient.usageReport();
+    output({ rows, totals, reported, stale, lines: [...rows.map((row) => formatUsageRow(row)), formatUsage(totals, "room")] });
+    return;
+  }
   if (cmd === "leave") {
     await client.leave({ release: rest.includes("--release") });
     await fs.rm(activePath(roomUrl, me), { force: true });
@@ -1613,7 +1983,7 @@ async function main() {
     output(await roomCommand(client, cmd, rest));
     return;
   }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|invite-link|note|decide|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|usage|invite-link|note|decide|leave`);
 }
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));

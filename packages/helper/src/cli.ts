@@ -8,7 +8,8 @@ import {
   buildMinimalInvite, getClientUpdateNotice, inviteLink, joinRoom, resumeRoom, parseInviteLink,
   registerAgent, setAcceptFrom, inviteAgent, waitForInvites, deleteInvite,
   sealForRoom, SDK_CLIENT_PROTOCOL, normalizeInvite, parseSprintSpec,
-  type AgentIdentity, type RoomAccess,
+  formatUsage, formatUsageRow, parseUsageDelta,
+  type AgentIdentity, type RoomAccess, type UsageDelta,
 } from "@j01n/sdk";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { RoomApiError } from "@j01n/sdk/errors";
@@ -46,6 +47,55 @@ const modelProfile = (rest: string[]) => {
   const provider = flag("--provider") || process.env.J01N_PROVIDER;
   return { ...(model ? { model } : {}), ...(provider ? { provider } : {}) };
 };
+// Usage reporting flags map onto the SDK's UsageDelta fields, so one validation rule (parseUsageDelta) covers CLI and SDK.
+// The short spellings the host approved (--active minutes, --cost usd) fill the same fields as the key-named ones.
+const USAGE_REPORT_FLAGS: Record<string, { field: keyof UsageDelta; number?: boolean; scale?: number }> = {
+  "--active": { field: "active_ms", number: true, scale: 60_000 },
+  "--active-ms": { field: "active_ms", number: true },
+  "--active-minutes": { field: "active_ms", number: true, scale: 60_000 },
+  "--input-tokens": { field: "input_tokens", number: true },
+  "--output-tokens": { field: "output_tokens", number: true },
+  "--cost": { field: "cost_usd", number: true },
+  "--cost-usd": { field: "cost_usd", number: true },
+  "--model": { field: "model" },
+  "--provider": { field: "provider" },
+  "--at": { field: "at" },
+};
+const usageHelp = (command: string) => `${command} [--active <minutes> | --active-ms N | --active-minutes N] [--tokens <in,out> | --input-tokens N --output-tokens N] [--cost <usd> | --cost-usd X] [--model M] [--provider P] [--at ISO]`;
+
+/** Parse `--flag value` pairs into a validated UsageDelta; numbers and bounds are checked by parseUsageDelta. */
+function usageDeltaFromFlags(args: string[]): UsageDelta {
+  const delta: Record<string, unknown> = {};
+  const put = (name: string, field: keyof UsageDelta, value: number | string) => {
+    if (delta[field] !== undefined) throw Error(`usage report ${name} conflicts with another ${field.replace(/_/g, "-")} flag`);
+    delta[field] = value;
+  };
+  const number = (name: string, raw: string, scale = 1) => {
+    const parsed = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(parsed)) throw Error(`usage report ${name} needs a number, got "${raw}"`);
+    return scale === 1 ? parsed : Math.round(parsed * scale);
+  };
+  for (let i = 0; i < args.length; i++) {
+    const name = args[i];
+    if (!name.startsWith("--")) throw Error(`usage report takes "<flag> <value>" pairs only, got the argument "${name}"`);
+    const value = args[++i];
+    if (value === undefined || value.startsWith("--")) throw Error(`usage report ${name} needs a value`);
+    if (name === "--tokens") {
+      // Always an "in,out" pair: a bare number is ambiguous between total and input tokens.
+      const parts = value.split(",");
+      if (parts.length !== 2 || parts.some((part) => part.trim() === "")) throw Error(`usage report --tokens needs "<in,out>", got "${value}"`);
+      put(name, "input_tokens", number(name, parts[0]));
+      put(name, "output_tokens", number(name, parts[1]));
+      continue;
+    }
+    const spec = USAGE_REPORT_FLAGS[name];
+    if (!spec) throw Error(`unknown usage flag: ${name}\nUsage: ${usageHelp("usage report")}`);
+    put(name, spec.field, spec.number ? number(name, value, spec.scale) : value);
+  }
+  if (!Object.keys(delta).length) throw Error(`usage report needs at least one flag\nUsage: ${usageHelp("usage report")}`);
+  return parseUsageDelta(delta);
+}
+
 const roomCommand = (client: RoomClient, command: string, rest: string[], beforeSend?: () => Promise<void>) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend, repo: repo().id, conflicts: (branch) => checkConflicts(client, repo().root, branch) });
 
 async function isRoomRef(ref?: string) {
@@ -69,33 +119,51 @@ async function remember(url: string, me: string) {
   await fs.writeFile(`${path}.${process.pid}.tmp`, JSON.stringify({ room_url: url, participant_id: me }), { mode: 0o600 });
   await fs.rename(`${path}.${process.pid}.tmp`, path);
 }
-type Resolved = { roomUrl: string; secret: string; me: string; rest: string[]; token?: string };
+/**
+ * How a command authenticated, plus the room key it carries.
+ * `secret`/`token` are request credentials. `joinSecret` is set only by the forms that name the room key outright
+ * (room link, invitation `join_secret`, JOIN_SECRET); `positionalSecret` is the `<access> <secret> <me>` slot,
+ * which documents the room key but doubles as the request credential, so it counts only as a last resort. A
+ * participant token never seals room data: commands that need the room key read these fields, not `secret`.
+ */
+type Resolved = { roomUrl: string; secret: string; me: string; rest: string[]; token?: string; joinSecret?: string; positionalSecret?: string };
 async function resolveRoom(): Promise<Resolved> {
   const env = process.env;
   const envRoom = env.ROOM_URL && (env.PARTICIPANT_TOKEN || env.JOIN_SECRET) && env.ME;
-  if (envRoom && ((cmd === "send" && args.length <= 3) || (cmd === "join" && (!args[1] || args[1].startsWith("--"))) || (["read", "team", "inbox", "watch", "doctor"].includes(cmd || "") && args.length === 1))) return { roomUrl: env.ROOM_URL!, secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET!, token: env.PARTICIPANT_TOKEN, me: env.ME!, rest: args.slice(1) };
+  if (envRoom && ((cmd === "send" && args.length <= 3) || (cmd === "join" && (!args[1] || args[1].startsWith("--"))) || (["read", "team", "inbox", "watch", "doctor"].includes(cmd || "") && args.length === 1))) return { roomUrl: env.ROOM_URL!, secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET!, token: env.PARTICIPANT_TOKEN, joinSecret: env.JOIN_SECRET, me: env.ME!, rest: args.slice(1) };
   const link = parseInviteLink(args[1] || "");
-  if (link) return { roomUrl: link.access!, secret: link.join_secret!, me: args[2], rest: args.slice(3) };
-  if (isUrl(args[1])) return { roomUrl: args[1], secret: args[2], token: cmd === "join" ? undefined : args[2], me: args[3], rest: args.slice(4) };
+  if (link) return { roomUrl: link.access!, secret: link.join_secret!, joinSecret: link.join_secret!, me: args[2], rest: args.slice(3) };
+  if (isUrl(args[1])) return { roomUrl: args[1], secret: args[2], token: cmd === "join" ? undefined : args[2], positionalSecret: args[2], me: args[3], rest: args.slice(4) };
   if (await isRoomRef(args[1])) {
     const ref = args[1].trim().startsWith("{") ? args[1] : await fs.readFile(args[1], "utf8");
     const invite = JSON.parse(ref) as RoomAccess & { participant_id?: string; me?: string };
     const roomUrl = invite.access || invite.follow || invite.room_url;
     if (!roomUrl) throw Error("profile must include access");
-    if (invite.participant_token) return { roomUrl, secret: invite.participant_token, token: invite.participant_token, me: invite.participant_id || invite.me!, rest: args.slice(2) };
+    if (invite.participant_token) {
+      const me = invite.participant_id || invite.me!;
+      // A profile names itself, but the documented "<profile> <me>" spelling is accepted too.
+      return { roomUrl, secret: invite.participant_token, token: invite.participant_token, joinSecret: invite.join_secret, me, rest: args.slice(args[2] === me ? 3 : 2) };
+    }
     if (!invite.join_secret) throw Error("invite must include access and join_secret");
-    return { roomUrl, secret: invite.join_secret, me: args[2], rest: args.slice(3) };
+    return { roomUrl, secret: invite.join_secret, joinSecret: invite.join_secret, me: args[2], rest: args.slice(3) };
   }
   const rooms = await activeRooms();
   if (rooms.length > 1) throw Error("several rooms are active in this directory; pass the room link or participant profile");
   if (rooms.length) return { roomUrl: rooms[0].room_url, secret: "resume-only", me: rooms[0].participant_id, rest: args.slice(1) };
   if (args[1]) throw Error(`ENOENT: cannot read invitation ${args[1]}`);
-  return { roomUrl: env.ROOM_URL || "", secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET || "", token: env.PARTICIPANT_TOKEN, me: env.ME || "", rest: args.slice(1) };
+  return { roomUrl: env.ROOM_URL || "", secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET || "", token: env.PARTICIPANT_TOKEN, joinSecret: env.JOIN_SECRET, me: env.ME || "", rest: args.slice(1) };
 }
 
 async function agents() {
-  const me = args[1]; const rest = args.slice(2);
-  if (!me) throw Error("usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]");
+  let me = args[1]; const rest = args.slice(me ? 2 : 1);
+  if (!me) {
+    // A pane seeded with exactly one agent identity can start `listen` without repeating its name.
+    const seeds = (await fs.readdir(stateDir).catch(() => []))
+      .filter((n) => /^\.j01n-agent-[a-z0-9_-]+\.json$/.test(n))
+      .map((n) => n.slice(".j01n-agent-".length, -".json".length));
+    if (seeds.length !== 1) throw Error("usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]" + (seeds.length > 1 ? ` (several seeded identities: ${seeds.join(", ")})` : " (no seeded identity in this directory)"));
+    me = seeds[0];
+  }
   const file = join(stateDir, `.j01n-agent-${safe(me)}.json`);
   if (cmd === "register") {
     const identity = await registerAgent(base, me, names(rest[0]));
@@ -176,7 +244,7 @@ async function main() {
     console.log(text); return;
   }
   if (["register", "allow", "invite", "invites", "listen"].includes(cmd || "")) { await agents(); return; }
-  const { roomUrl, secret, me, rest, token } = await resolveRoom();
+  const { roomUrl, secret, me, rest, token, joinSecret, positionalSecret } = await resolveRoom();
   if (!cmd || !roomUrl || !secret || !me) throw Error("usage: j01n <create|join|send|read|team|watch|doctor> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.");
   const keyFile = join(stateDir, `.j01n-${safe(new URL(roomUrl).pathname)}-${safe(me)}.json`);
   let state: any;
@@ -309,8 +377,29 @@ async function main() {
       repo: id, path: (path) => relative(root, resolve(path)) || ".", requirePaths: true, releaseReasonDelimiter: true,
     })); return;
   }
+  if (cmd === "usage") {
+    // Usage snapshots are room-sealed like the kickoff, workspaces and reservations: the key is always the room
+    // join secret. Whatever a command authenticated with (participant profile, env, active room), take the room key
+    // from the auth form itself or from the join secret saved in the key file - sealing with a participant token
+    // writes a row nobody holding the room link can open, and the room cannot hand that key back to a token.
+    const sealSecret = [joinSecret, state.joinSecret, positionalSecret].find((value) => value && value !== "resume-only") || "";
+    if (!sealSecret) throw Error("usage needs the room link or invitation (usage is sealed with the room key, and a participant token is not one): usage <room link> <me> [report ...], or run it in the directory that joined the room");
+    const sealInvite = buildMinimalInvite(roomUrl, sealSecret);
+    sealInvite.participant_token = token || state.participantToken;
+    const usageClient = sealSecret === client.invite.join_secret ? client : await resumeRoom(sealInvite, me, session);
+    const [sub, ...args] = rest;
+    if (sub === "report") {
+      const row = await usageClient.reportUsage(usageDeltaFromFlags(args));
+      output({ ok: true, participant: row.participant, key: row.key, version: row.version, snapshot: row.snapshot, line: formatUsageRow(row) });
+      return;
+    }
+    if (sub !== undefined) throw Error(`unknown usage command: ${sub}; expected "report" or nothing\nUsage: ${usageHelp("usage [report]")}`);
+    const { rows, totals, reported, stale } = await usageClient.usageReport();
+    output({ rows, totals, reported, stale, lines: [...rows.map((row) => formatUsageRow(row)), formatUsage(totals, "room")] });
+    return;
+  }
   if (cmd === "leave") { await client.leave({ release: rest.includes("--release") }); await fs.rm(activePath(roomUrl, me), { force: true }); output({ ok: true, left: true }); return; }
   if (cmd === "host") { output(await roomCommand(client, cmd, rest)); return; }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|invite-link|note|decide|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|usage|invite-link|note|decide|leave`);
 }
 main().catch((error: unknown) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

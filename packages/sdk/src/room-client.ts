@@ -14,6 +14,17 @@ import type {
   RoomExportResponse,
   Participant,
 } from "./types";
+import { RoomApiError } from "./errors";
+import {
+  nextUsage,
+  openUsage,
+  roomUsage,
+  sealUsage,
+  usageKey,
+  type UsageDelta,
+  type UsageRow,
+  type UsageTotals,
+} from "./metrics";
 
 // ── Public types ────────────────────────────────────────────────
 
@@ -176,6 +187,14 @@ export interface RoomClient {
   transferHost(to: string): Promise<{ ok: true; host_id: string }>;
   extend(options?: { extendMs?: number }): Promise<{ ok: true; extended_ms: number; expires_at: string }>;
   export(): Promise<RoomExportResponse>;
+  /**
+   * Report usage for this participant. The delta is added to the previous cumulative snapshot
+   * (or starts from zero if none exists). The sealed snapshot is written to `usage.<participantId>`.
+   * Retries on 409 version conflicts.
+   */
+  reportUsage(delta: UsageDelta): Promise<UsageRow>;
+  /** Read every `usage.*` board key, returning per-participant rows and the room total. */
+  usageReport(): Promise<{ rows: UsageRow[]; totals: UsageTotals; reported: number; stale: number }>;
 }
 
 // ── Send payload helpers ────────────────────────────────────────
@@ -429,6 +448,33 @@ export async function buildRoomClient(
     },
     async export() {
       return request<RoomExportResponse>(`${invite.room_url}/export`, invite, { participantId });
+    },
+    async reportUsage(delta: UsageDelta) {
+      const key = usageKey(participantId);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const board = (await client.board()).board;
+        const entry = board[key];
+        const previous = entry ? await openUsage(entry.value, participantId, invite.join_secret, invite.room_id) : null;
+        const next = nextUsage(participantId, previous, delta);
+        const sealed = await sealUsage(next, invite.join_secret, invite.room_id);
+        try {
+          await client.setBoardKey(key, sealed, { ifVersion: entry?.version ?? 0 });
+          return { participant: participantId, key, version: (entry?.version ?? 0) + 1, snapshot: next, stale: false };
+        } catch (error) {
+          if (error instanceof RoomApiError && error.status === 409) continue;
+          throw error;
+        }
+      }
+      throw new Error(`reportUsage kept failing on version conflicts; try again`);
+    },
+    async usageReport() {
+      const board = (await client.board()).board;
+      const { participants = [] } = await client.participants();
+      return roomUsage(board, {
+        joinSecret: invite.join_secret,
+        roomId: invite.room_id,
+        participants: participants.map((p) => p.id),
+      });
     },
   };
 

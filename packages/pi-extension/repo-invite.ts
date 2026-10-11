@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { inviteAgent } from "@j01n/sdk";
 import type { AgentIdentity, RoomClient } from "@j01n/sdk";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -9,9 +10,12 @@ import { labelHerdrPane, listHerdrRepoAgents, promptHerdrAgent, type HerdrRepoAg
 
 function gitCommonDir(cwd: string): string | undefined {
   try {
-    return realpathSync(execFileSync("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], {
+    // --path-format=absolute needs git>=2.31; resolve the (possibly relative) output against cwd instead so
+    // this works on old and new git alike.
+    const out = execFileSync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], {
       encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
-    }).trim());
+    }).trim();
+    return realpathSync(isAbsolute(out) ? out : join(cwd, out));
   } catch { return undefined; }
 }
 

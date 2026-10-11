@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,13 +16,28 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
+function followLinks(path: string): string {
+  // readlink-walk that works even when the final target does not exist (e.g. a dangling symlink to
+  // /Volumes on Linux); realpathSync would throw ENOENT there and the escape check never sees the target.
+  let current = path;
+  for (let i = 0; i < 40; i++) {
+    let stat;
+    try { stat = lstatSync(current); } catch { break; }
+    if (!stat.isSymbolicLink()) break;
+    const target = readlinkSync(current);
+    current = isAbsolute(target) ? target : resolve(dirname(current), target);
+  }
+  return current;
+}
+
 function internalRoot(root: string): string {
   if (!isAbsolute(root)) throw new Error("J01N_WORKTREE_ROOT must be an absolute path on internal storage");
   const path = resolve(root);
-  let ancestor = path;
+  const finalPath = followLinks(path);
+  let ancestor = finalPath;
   while (!existsSync(ancestor)) ancestor = dirname(ancestor);
-  const physical = resolve(realpathSync(ancestor), relative(ancestor, path));
-  if ([path, physical].some((item) => item === "/Volumes" || item.startsWith("/Volumes/"))) throw new Error("worktrees on /Volumes (exFAT/external storage) are not allowed");
+  const physical = resolve(realpathSync(ancestor), relative(ancestor, finalPath));
+  if ([path, finalPath, physical].some((item) => item === "/Volumes" || item.startsWith("/Volumes/"))) throw new Error("worktrees on /Volumes (exFAT/external storage) are not allowed");
   return physical;
 }
 

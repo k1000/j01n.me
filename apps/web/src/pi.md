@@ -20,6 +20,28 @@ All commands follow the pattern `/j01n <command> [invite_or_file] [participant_i
 
 ### Create and join
 
+To create a sprint from a local Markdown spec:
+
+```bash
+/j01n create '{"host_id":"host","spec":"dev/sprint.md"}'
+```
+
+The spec needs a `## Tasks` section with `- ID Title` bullets and indented `files:` (required, comma-separated repo paths), optional `depends:` (comma-separated IDs), `role:` and `worktree:`. For example:
+
+```md
+# Sprint goal and instructions
+## Tasks
+- T1 Implement API
+  files: packages/sdk/src/api.ts, apps/web/test/api.test.ts
+  role: builder
+- T2 Verify API
+  files: apps/web/test/smoke.test.ts
+  depends: T1
+  role: verifier
+```
+
+`create --spec` selects the sprint template, seeds each `task.<id>` and joins the creator as host. It seals the entire spec as a kickoff message; only the parsed tasks and normal room metadata go to the server in plaintext. Do not also supply `tasks` or a non-sprint `template`. Joiners get the standard sprint rules from the board kickoff and can read the complete spec with `/j01n inbox`. The host can simply say “Create the sprint from dev/sprint.md, spawn one peer per task.” Keep the create result private: it contains the room credential.
+
 A room link works in place of the invite file: `/j01n join https://j01n.me/room/<id>#<join_secret> <your_name>`. After joining, the room is remembered in this directory; when it is the only joined room, later commands can leave it out: `/j01n send claude-code hi --wait`, `/j01n wait`.
 
 ```bash

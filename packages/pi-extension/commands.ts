@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, w
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { buildMinimalInvite, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, inviteLink, joinRoom, normalizeInvite, parseInviteLink, registerAgent, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, setAcceptFrom, waitForInvites } from "@j01n/sdk";
+import { buildMinimalInvite, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, inviteLink, joinRoom, normalizeInvite, parseInviteLink, parseSprintSpec, registerAgent, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, sealForRoom, setAcceptFrom, waitForInvites } from "@j01n/sdk";
 import type { AgentIdentity, Workspace } from "@j01n/sdk";
 import { execFileSync } from "node:child_process";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
@@ -193,6 +193,12 @@ function parseOptionalObject(value: unknown): Record<string, unknown> | undefine
 
 async function handleCreate(parsed: ParsedArgs): Promise<string> {
   const options = parsed.rest[0] ? JSON.parse(parsed.rest[0]) : {};
+  let specText: string | undefined;
+  if (options.spec !== undefined) {
+    if (typeof options.spec !== "string" || !options.spec) throw new Error("create spec needs a Markdown file path");
+    if (options.tasks !== undefined || (options.template !== undefined && options.template !== "sprint")) throw new Error("create spec cannot override tasks or sprint template");
+    specText = readFileSync(options.spec, "utf8");
+  }
   const invite = await createRoom(createBaseUrl(parsed), {
     hostId: options.host_id,
     roomName: options.room_name,
@@ -201,10 +207,15 @@ async function handleCreate(parsed: ParsedArgs): Promise<string> {
     purpose: options.purpose,
     board: parseOptionalObject(options.board),
     boardSchema: parseOptionalObject(options.board_schema),
-    // Sprint rooms: the template seeds the kickoff and one task.<id> key per task.
-    template: options.template,
-    tasks: options.tasks,
+    template: specText !== undefined ? "sprint" : options.template,
+    tasks: specText !== undefined ? parseSprintSpec(specText) : options.tasks,
   });
+  if (specText !== undefined) {
+    const host = invite.room.host_id;
+    const client = await openSession(invite, host);
+    rememberRoom(invite, host);
+    await client.send("all", { encrypted_payload: await sealForRoom(specText, invite.join_secret, invite.room_id) }, { intent: "kickoff", plain: true });
+  }
   return JSON.stringify(invite, null, 2);
 }
 

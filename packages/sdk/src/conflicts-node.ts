@@ -41,13 +41,20 @@ export async function checkConflicts(client: RoomClient, root: string, finishedB
       try { output = git(root, "merge-tree", "--write-tree", ...pair); }
       catch (error) {
         const e = error as { status?: number; stdout?: string; stderr?: string };
-        if (e.status !== 1) throw new Error(`merge-tree ${pair.join(" vs ")}: ${e.stderr || String(error)}`);
-        conflicted = true;
-        output = e.stdout || "";
+        if (e.status === 1) { conflicted = true; output = e.stdout || ""; }
+        else if (e.status === 128 || (e.stderr || "").includes("unknown rev")) {
+          // git<2.38 has no merge-tree --write-tree; the legacy <base> <b1> <b2> form exits 0 even when
+          // conflicted, so conflict detection switches from exit status to the presence of merge markers.
+          const base = git(root, "merge-base", ...pair);
+          output = git(root, "merge-tree", base, ...pair);
+          conflicted = output.includes("<<<<<<<");
+        }
+        else throw new Error(`merge-tree ${pair.join(" vs ")}: ${e.stderr || String(error)}`);
       }
       const files = conflicted ? [...new Set([
         ...[...output.matchAll(/^\d{6} [0-9a-f]+ [123]\t(.+)$/gm)].map((match) => match[1]),
         ...[...output.matchAll(/^CONFLICT .*? in (.+)$/gm)].map((match) => match[1]),
+        ...[...output.matchAll(/^ {2}(?:base|our|their)\s+\d{6} [0-9a-f]+ (.+)$/gm)].map((match) => match[1]),
       ])].sort() : [];
       comparisons.push({ branches: pair, files });
     }

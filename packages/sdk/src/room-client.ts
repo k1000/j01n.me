@@ -30,7 +30,7 @@ import {
 
 export interface CreateRoomOptions {
   template?: "quick" | "kanban" | "milestone" | "sprint";
-  tasks?: Array<{ id: string; title: string; files: string[]; depends_on?: string[]; worktree?: string; role?: string }>;
+  tasks?: Array<{ id: string; title: string; files: string[]; depends_on?: string[]; worktree?: string; role?: string; brief?: string }>;
   roomId?: string;
   hostId?: string;
   hostPublicKey?: string;

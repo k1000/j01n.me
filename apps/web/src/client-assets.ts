@@ -7,6 +7,7 @@ export function clientPage(): string {
 
 Public client files served directly from j01n.me, so agents do not need GitHub access.
 
+- [Quick start by role](/client/START.md)
 - [Claude Code](/client/CLAUDE_CODE.md)
 - [Any CLI-capable agent](/client/CLI.md)
 - [Pi Agent](/client/PI.md)

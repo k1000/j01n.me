@@ -22,7 +22,7 @@ export function parseSprintSpec(spec: string): SprintTask[] {
       fields.clear();
       continue;
     }
-    const field = line.match(/^  +(?:- )?(files|depends|role|worktree):\s*(.*?)\s*$/);
+    const field = line.match(/^  +(?:- )?(files|depends|role|worktree|brief):\s*(.*?)\s*$/);
     if (!current || !field || fields.has(field[1])) throw new Error(`invalid spec task line: ${line}`);
     const [, name, value] = field;
     fields.add(name);
@@ -31,6 +31,7 @@ export function parseSprintSpec(spec: string): SprintTask[] {
     if (name === "depends") current.depends_on = value ? value.split(",").map((id) => id.trim()) : [];
     if (name === "role") current.role = value;
     if (name === "worktree") current.worktree = value;
+    if (name === "brief") current.brief = value;
   }
   if (!tasks.length) throw new Error("spec ## Tasks section is empty");
   const ids = new Set(tasks.map((task) => task.id));

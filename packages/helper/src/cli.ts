@@ -269,7 +269,7 @@ async function main() {
   }
   if (["register", "allow", "invite", "invites", "listen"].includes(cmd || "")) { await agents(); return; }
   const { roomUrl, secret, me, rest, token, joinSecret, positionalSecret } = await resolveRoom();
-  if (!cmd || !roomUrl || !secret || !me) throw Error("usage: j01n <create|join|send|read|team|watch|doctor> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.");
+  if (!cmd || !roomUrl || !secret || !me) throw Error("usage: j01n <create|join|send|read|team|watch|doctor|extend> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.");
   const keyFile = join(stateDir, `.j01n-${safe(new URL(roomUrl).pathname)}-${safe(me)}.json`);
   let state: any;
   try { state = JSON.parse(await fs.readFile(keyFile, "utf8")); } catch { state = { ...await createSdkCryptoSession(me).then((s) => s.exportKeyPair()), peers: {}, created: true }; }
@@ -424,6 +424,21 @@ async function main() {
   }
   if (cmd === "leave") { await client.leave({ release: rest.includes("--release") }); await fs.rm(activePath(roomUrl, me), { force: true }); output({ ok: true, left: true }); return; }
   if (cmd === "host") { output(await roomCommand(client, cmd, rest)); return; }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|usage|invite-link|note|decide|leave`);
+  if (cmd === "extend") {
+    // Room keepalive. The server owns the default (DEFAULT_EXTEND_MS), so with no minutes given the CLI sends none:
+    // a client-side copy of the number would drift the moment the server changes it.
+    if (rest.length > 1) throw Error("extend needs: [minutes]");
+    let extendMs: number | undefined;
+    if (rest[0] !== undefined) {
+      const minutes = Number(rest[0]);
+      if (!Number.isFinite(minutes) || minutes <= 0) throw Error(`extend minutes needs a positive number, got "${rest[0]}"`);
+      extendMs = Math.round(minutes * 60_000);
+    }
+    if ((await client.status()).room.host_id !== me) throw Error("extend is host only; ask the host to run it");
+    const extended = await client.extend(extendMs === undefined ? undefined : { extendMs });
+    output({ ok: true, expires_at: extended.expires_at });
+    return;
+  }
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|extend|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|usage|invite-link|note|decide|leave`);
 }
 main().catch((error: unknown) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

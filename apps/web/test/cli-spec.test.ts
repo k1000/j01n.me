@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { openRoomSeal, openUsage, usageKey } from "@j01n/sdk";
+import { DEFAULT_EXTEND_MS } from "../src/constants";
 
 const exec = promisify(execFile);
 const server = createServer(async (req, res) => {
@@ -241,5 +242,184 @@ describe("CLI usage commands", () => {
     } catch (error) {
       expect(String((error as { stderr?: string }).stderr)).toMatch(/usage needs the room link or invitation/);
     }
+  });
+});
+
+// ── CLI extend: the host keeps a room alive from the helper, not only from the web page (t2) ──
+// The real cli.ts runs against a fake room that owns the TTL, so these pin who may call /extend, what body it
+// receives (the default stays a server decision) and that the printed expiry is the one the room answered with.
+describe("CLI extend command", () => {
+  const extendRoomId = "extend-1";
+  const extendSecret = "test-room-secret-0123456789";
+  const tokens: Record<string, string> = { host: "host-token-1", peer: "peer-token-1" };
+  // One directory per participant: two active rooms in one directory is a failure the CLI must not paper over.
+  const hostDir = mkdtempSync(join(tmpdir(), "j01n-cli-extend-host-"));
+  const peerDir = mkdtempSync(join(tmpdir(), "j01n-cli-extend-peer-"));
+  const extendCli = fileURLToPath(new URL("../../../packages/helper/src/cli.ts", import.meta.url));
+  const extendTsx = fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url));
+  let extendServer: ReturnType<typeof createServer>;
+  let extendPort: number;
+  let expiresAt = 0;
+  /** What GET /status claims; POST /extend always checks against the real host, so a stale view still fails. */
+  let statusHostId = "host";
+  let extendBodies: unknown[] = [];
+  const roomUrl = () => `http://127.0.0.1:${extendPort}/r/${extendRoomId}`;
+  const roomLink = () => `http://127.0.0.1:${extendPort}/room/${extendRoomId}#${extendSecret}`;
+
+  /** Run the CLI in a directory; a non-zero exit comes back as { code, stderr } instead of throwing. */
+  const runIn = (dir: string) => async (...args: string[]): Promise<{ code: number; stdout: string; stderr: string; json: any }> => {
+    try {
+      const result = await exec(process.execPath, [extendTsx, extendCli, ...args], { cwd: dir, env: { ...process.env, J01N_KEY_DIR: dir } });
+      return { code: 0, stdout: result.stdout, stderr: result.stderr, json: JSON.parse(result.stdout) };
+    } catch (error) {
+      const failure = error as { code?: number; stdout?: string; stderr?: string };
+      return { code: failure.code ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "", json: undefined };
+    }
+  };
+  const host = runIn(hostDir);
+  const peer = runIn(peerDir);
+
+  const route = async (req: { url?: string; method?: string; headers?: Record<string, string | string[] | undefined> }, res: { statusCode: number; end: (body: string) => void }) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req as unknown as AsyncIterable<Buffer>) chunks.push(chunk);
+    const body: unknown = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
+    const url = req.url || "";
+    const path = url.split("?")[0];
+    const reply = (value: unknown) => res.end(JSON.stringify(value));
+    const token = String(req.headers?.authorization ?? "").replace(/^Bearer\s+/i, "");
+    const asked = (id: string) => ({ ok: true, cursor: 0, participant_token: tokens[id], peers: [] });
+
+    if (req.method === "POST" && path === "/rooms") {
+      expiresAt = Date.now() + 600_000;
+      const api = (suffix: string) => `${roomUrl()}/${suffix}`;
+      return reply({
+        intro: "intro", next_step: "join", room_id: extendRoomId,
+        room: { name: "extend", purpose: "extend", host_id: "host", max_participants: 8 },
+        join_secret: extendSecret, room_url: roomUrl(),
+        api: { join: api("participants/{id}"), send: roomUrl(), read: roomUrl(), read_all: `${roomUrl()}?view=all`, events: api("events"), board: api("board"), participants: api("participants"), status: api("status"), extend: api("extend"), export: api("export"), leave: api("participants/{id}"), kick: api("participants/{id}"), close: roomUrl() },
+        skill: "skill", expires_at: new Date(expiresAt).toISOString(),
+      });
+    }
+    if (path === `/r/${extendRoomId}/status`) return reply({ room: { room_id: extendRoomId, host_id: statusHostId, expires_at: new Date(expiresAt).toISOString() }, participants: [] });
+    if (path === `/r/${extendRoomId}/extend` && req.method === "POST") {
+      extendBodies.push(body);
+      // The room, not the helper, decides who may extend and by how long a default.
+      if (token !== tokens.host) { res.statusCode = 403; return reply({ error: "only host can extend TTL" }); }
+      const requested = (body as { extend_ms?: unknown })?.extend_ms;
+      const extendMs = typeof requested === "number" && Number.isFinite(requested) ? Math.trunc(requested) : DEFAULT_EXTEND_MS;
+      expiresAt += extendMs;
+      return reply({ ok: true, extended_ms: extendMs, expires_at: new Date(expiresAt).toISOString() });
+    }
+    if (path === `/r/${extendRoomId}/participants`) return reply({ participants: [{ id: "host" }, { id: "peer" }] });
+    if (path.startsWith(`/r/${extendRoomId}/participants/`)) {
+      const id = decodeURIComponent(path.slice(`/r/${extendRoomId}/participants/`.length));
+      if (tokens[id]) return reply(asked(id));
+    }
+    if (path === `/r/${extendRoomId}/board`) return reply({ board: {}, board_schema: null });
+    if (path === `/r/${extendRoomId}/asks`) return reply({ asks: [] });
+    if (path === `/r/${extendRoomId}` && req.method === "POST") return reply({ ok: true, id: "message-1", seq: 1 });
+    if (path === `/r/${extendRoomId}`) return reply({ cursor: 0, messages: [] });
+    res.statusCode = 404;
+    res.end(`not found: ${req.method} ${path}`);
+  };
+
+  beforeAll(async () => {
+    extendServer = createServer((req, res) => { void route(req, res); });
+    await new Promise<void>((done) => extendServer.listen(0, "127.0.0.1", done));
+    extendPort = (extendServer.address() as { port: number }).port;
+    const created = await host("create", `http://127.0.0.1:${extendPort}`, JSON.stringify({ host_id: "host", room_name: "extend" }));
+    expect(created.code, created.stderr).toBe(0);
+    writeFileSync(join(hostDir, "invite.json"), created.stdout);
+    writeFileSync(join(peerDir, "invite.json"), created.stdout);
+    const joinedHost = await host("join", "invite.json", "host");
+    expect(joinedHost.code, joinedHost.stderr).toBe(0);
+    // The participant profile form carries only a token: extend must still authenticate with it.
+    writeFileSync(join(hostDir, "host.j01n.json"), JSON.stringify({ access: roomUrl(), participant_id: "host", participant_token: tokens.host }));
+    const joinedPeer = await peer("join", "invite.json", "peer");
+    expect(joinedPeer.code, joinedPeer.stderr).toBe(0);
+  });
+
+  afterAll(async () => {
+    if (extendServer?.listening) await new Promise<void>((done) => extendServer.close(() => done()));
+  });
+
+  it("extends by the server default when the host gives no minutes", async () => {
+    extendBodies = [];
+    const before = expiresAt;
+    const result = await host("extend");
+    expect(result.code, result.stderr).toBe(0);
+    // The helper invents no number: an empty request makes the room answer with its own DEFAULT_EXTEND_MS.
+    expect(extendBodies).toEqual([{}]);
+    expect(result.json).toEqual({ ok: true, expires_at: new Date(before + DEFAULT_EXTEND_MS).toISOString() });
+  });
+
+  it("turns the minutes argument into the extend_ms the room applies", async () => {
+    extendBodies = [];
+    const before = expiresAt;
+    const result = await host("extend", "12");
+    expect(result.code, result.stderr).toBe(0);
+    expect(extendBodies).toEqual([{ extend_ms: 12 * 60_000 }]);
+    expect(Date.parse(String(result.json.expires_at))).toBe(before + 12 * 60_000);
+  });
+
+  it("takes the active room pointer, the profile and the room link forms", async () => {
+    extendBodies = [];
+    const byProfile = await host("extend", "host.j01n.json", "3");
+    expect(byProfile.code, byProfile.stderr).toBe(0);
+    const byLink = await host("extend", roomLink(), "host", "4");
+    expect(byLink.code, byLink.stderr).toBe(0);
+    expect(extendBodies).toEqual([{ extend_ms: 3 * 60_000 }, { extend_ms: 4 * 60_000 }]);
+  });
+
+  it("refuses a non-host before asking the room to extend", async () => {
+    extendBodies = [];
+    const before = expiresAt;
+    const fromPointer = await peer("extend");
+    expect(fromPointer.code).not.toBe(0);
+    expect(fromPointer.stdout).toBe("");
+    expect(fromPointer.stderr).toMatch(/extend is host only/);
+    const byLink = await peer("extend", roomLink(), "peer", "30");
+    expect(byLink.code).not.toBe(0);
+    expect(byLink.stderr).toMatch(/extend is host only/);
+    expect(extendBodies).toEqual([]);
+    expect(expiresAt).toBe(before);
+  });
+
+  it("fails cleanly when the room itself refuses a stale host view", async () => {
+    extendBodies = [];
+    const before = expiresAt;
+    statusHostId = "peer";
+    try {
+      const result = await peer("extend");
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toMatch(/403.*only host can extend TTL/);
+      expect(extendBodies).toHaveLength(1);
+      expect(expiresAt).toBe(before);
+    } finally { statusHostId = "host"; }
+  });
+
+  it("stops on a bad argument instead of guessing a default", async () => {
+    extendBodies = [];
+    const before = expiresAt;
+    const cases: Array<{ args: string[]; matches: RegExp }> = [
+      { args: ["extend", "abc"], matches: /extend minutes needs a positive number, got "abc"/ },
+      { args: ["extend", "0"], matches: /extend minutes needs a positive number/ },
+      { args: ["extend", "-5"], matches: /extend minutes needs a positive number/ },
+      { args: ["extend", "5", "7"], matches: /extend needs: \[minutes\]/ },
+      { args: ["extend", "--minutes", "5"], matches: /extend needs: \[minutes\]/ },
+    ];
+    for (const { args, matches } of cases) {
+      const failed = await host(...args);
+      expect(failed.code, `${args.join(" ")} -> ${failed.stderr}`).not.toBe(0);
+      expect(failed.stderr).toMatch(matches);
+    }
+    expect(extendBodies).toEqual([]);
+    expect(expiresAt).toBe(before);
+  });
+
+  it("lists extend in the command usage", async () => {
+    const unknown = await host("extend-not-a-command");
+    expect(unknown.code).not.toBe(0);
+    expect(unknown.stderr).toMatch(/Usage: [^\n]*\bextend\b/);
   });
 });

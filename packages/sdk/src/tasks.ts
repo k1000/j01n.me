@@ -7,6 +7,8 @@ export interface Task {
   files: string[];
   depends_on: string[];
   worktree?: string;
+  /** One-line brief from the sprint spec; readable by late joiners through the board. */
+  brief?: string;
   status: "open" | "claimed" | "blocked" | "done";
   owner?: string;
   summary?: string;

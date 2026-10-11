@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Host-side sprint orchestrator: start | status | answer | finish.
-// It owns the canonical host flow so a host never improvises room setup: prune stale room pointers, create and
-// join the room as the host, seed worker identities into their own worktrees, give each worker a Herdr workspace
-// plus pane and an explicit task prompt, hand the raw invite link to the owner as a file body, then rebase the
-// reviewed task branches in dependency order onto main and open a merge request.
+// It owns the canonical host flow so a host never improvises room setup: doctor the toolchain and the directory
+// (git, Herdr socket, free worker names, private keys dir, internal worktree root), prune stale room pointers, create
+// and join the room as the host, seed worker identities into their own worktrees, give each worker a Herdr workspace
+// plus pane and an explicit task prompt carrying its board brief, hand the raw invite link to the owner as a file
+// body, keep the room invite alive while the host runs status, then rebase the reviewed task branches in dependency
+// order onto main and open a merge request.
 // Rules: never print a room credential, never integrate a dirty checkout, persist every step in sprint.json so an
 // interrupted start or finish resumes instead of repeating side effects (no duplicate rooms, panes or invites).
 import { execFileSync } from "node:child_process";
@@ -16,6 +18,15 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const [action, ...args] = process.argv.slice(2);
 const dry = args.includes("--dry-run");
 const PARTICIPANT_ID = /^[a-z][a-z0-9_-]{0,31}$/;
+// git 2.25 is the floor for this flow (`worktree add -b`, `:(exclude)` pathspecs). The script never uses `git init -b`.
+const MIN_GIT_MAJOR = 2;
+const MIN_GIT_MINOR = 25;
+// The 11.10 sprint board died silently: the invite TTL caps at 1h and nobody extended it. A host run of status is the
+// documented duty loop, so it tops the invite up whenever less than this window is left.
+const KEEPALIVE_WINDOW_MS = 15 * 60_000;
+const KEEPALIVE_EXTEND_MINUTES = 30;
+// A prompt carries the board brief inline; the board key is named too so a worker can re-read the full text.
+const MAX_PROMPT_BRIEF = 900;
 // Generated outputs belong to integration, never to a task's files[].
 const GENERATED = ["packages/helper/client/j01n.js", "packages/helper/src/client-script.ts", "apps/web/src/markdown-assets.ts", "packages/skill/src/skill.ts"];
 // Owner delivery target for the raw invite file; J01N_INVITE_TO or --invite-to overrides, "none" skips sending.
@@ -66,6 +77,17 @@ function exec(command, argv, options = {}) {
 function json(command, argv, options = {}) {
   try { return JSON.parse(exec(command, argv, options)); }
   catch (error) { if (error instanceof SyntaxError) fail(`${options.label ?? command} returned no JSON`, error.message); throw error; }
+}
+/** A doctor probe: an answer instead of an exception, and never a side effect. */
+function probe(command, argv, options = {}) {
+  try {
+    return { ok: true, out: execFileSync(command, argv, { cwd: options.cwd ?? process.cwd(), encoding: "utf8", timeout: options.timeout ?? 60_000, stdio: ["ignore", "pipe", "pipe"], env: options.env ?? process.env }).trim() };
+  } catch (error) {
+    // One line of the real complaint, without the Node crash banner a broken wrapper prints around it.
+    const lines = redact(String(error?.stderr || error?.message || "")).split("\n").map((line) => line.trim())
+      .filter((line) => line && !/^Node\.js v/.test(line) && !/^at /.test(line) && !/^[~^]+$/.test(line));
+    return { ok: false, out: "", detail: (lines.at(-1) ?? "").slice(0, 160) };
+  }
 }
 const git = (...argv) => exec("git", argv);
 const gitAt = (cwd, ...argv) => exec("git", argv, { cwd });
@@ -140,21 +162,22 @@ function pointerFiles(dir) {
   if (!existsSync(active)) return [];
   return readdirSync(active).filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).map((name) => join(active, name));
 }
-/** Drop active-room pointers whose room is gone: one stale pointer makes every later CLI call ambiguous. */
-async function prunePointers(dir) {
-  const pruned = [];
+/** Sort the keys directory's pointers: unreadable or gone rooms are safe to drop, everything else owns the directory. */
+async function scanPointers(dir) {
+  const dead = [];
+  const alive = [];
   for (const file of pointerFiles(dir)) {
     let pointer = null;
     try { pointer = JSON.parse(readFileSync(file, "utf8")); } catch { pointer = null; }
-    if (typeof pointer?.room_url !== "string" || typeof pointer?.participant_id !== "string" || !/^https?:/.test(pointer.room_url)) { rmSync(file, { force: true }); pruned.push(basename(file)); continue; }
+    if (typeof pointer?.room_url !== "string" || typeof pointer?.participant_id !== "string" || !/^https?:/.test(pointer.room_url)) { dead.push({ file, label: basename(file) }); continue; }
     const keyFile = join(dir, `.j01n-${safeName(new URL(pointer.room_url).pathname)}-${safeName(pointer.participant_id)}.json`);
     let token;
     try { token = JSON.parse(readFileSync(keyFile, "utf8")).participantToken; } catch { token = undefined; }
-    if (await roomAlive(pointer.room_url, token)) continue;
-    rmSync(file, { force: true });
-    pruned.push(`${pointer.participant_id}@${slug(new URL(pointer.room_url).pathname.split("/").pop() ?? "")}`);
+    // One stale pointer makes every later CLI call ambiguous, so it must go before the sprint starts.
+    if (await roomAlive(pointer.room_url, token)) { alive.push(file); continue; }
+    dead.push({ file, label: `${pointer.participant_id}@${slug(new URL(pointer.room_url).pathname.split("/").pop() ?? "")}` });
   }
-  return pruned;
+  return { dead, alive };
 }
 /** The dev/ plan folder, the untracked worktree roots and sprint.json itself are working material, never input. */
 function assertClean(cwd = process.cwd(), state = loadState()) {
@@ -165,6 +188,74 @@ function assertClean(cwd = process.cwd(), state = loadState()) {
   }
   const pathspec = ["--", ".", ...excluded.map((path) => `:(exclude)${path}`)];
   if (exec("git", ["status", "--porcelain", "--untracked-files=all", ...pathspec], { cwd })) fail(`dirty checkout: ${cwd}; save all work before continuing`);
+}
+
+// ── preflight (doctor) ─────────────────────────────────────────────────────────────────────────
+
+/** An old git breaks worktrees and pathspecs halfway through a start; the doctor wants to hear about it first. */
+function gitProblem() {
+  const answer = probe("git", ["--version"], { timeout: 30_000 });
+  if (!answer.ok) return `"git --version" did not run${answer.detail ? `: ${answer.detail}` : ""}: install git ${MIN_GIT_MAJOR}.${MIN_GIT_MINOR} or newer and put it first on PATH`;
+  const found = /(\d+)\.(\d+)/.exec(answer.out);
+  if (!found) return `cannot read a git version out of "${answer.out.slice(0, 60)}": put a standard git binary first on PATH`;
+  const [major, minor] = [Number(found[1]), Number(found[2])];
+  if (major < MIN_GIT_MAJOR || (major === MIN_GIT_MAJOR && minor < MIN_GIT_MINOR)) {
+    return `git ${found[1]}.${found[2]} is older than ${MIN_GIT_MAJOR}.${MIN_GIT_MINOR}: point PATH at a newer git (the flow needs "worktree add -b", never "git init -b")`;
+  }
+  return null;
+}
+/** A relative or /Volumes worktree root produces worktrees nothing can boot from. */
+function worktreeRootProblem(path) {
+  try { internal(path); return null; }
+  catch (error) { return `the worktree root ${path} is not usable (${error?.message ?? error}): set J01N_WORKTREE_ROOT to an absolute path on internal storage`; }
+}
+/** The socket has to answer, and the pane names this sprint is about to create have to be free. */
+function herdrProblems(names, resuming) {
+  const problems = [];
+  const warnings = [];
+  const status = probe("herdr", ["status"], { timeout: 30_000 });
+  if (!status.ok) problems.push(`"herdr status" did not answer${status.detail ? `: ${status.detail}` : ""}: start the Herdr server on this machine before creating a sprint`);
+  else {
+    const reported = /status:\s*(\S+)/.exec(status.out)?.[1];
+    if (reported && reported !== "running") problems.push(`herdr reports "status: ${reported}": bring the Herdr server up (herdr status) before creating a sprint`);
+  }
+  const listed = probe("herdr", ["agent", "list"], { timeout: 30_000 });
+  if (!listed.ok) problems.push(`"herdr agent list" failed${listed.detail ? `: ${listed.detail}` : ""}: fix the Herdr session so worker pane names can be checked`);
+  else {
+    let live = null;
+    try { live = JSON.parse(listed.out)?.result?.agents; } catch { live = null; }
+    if (!Array.isArray(live)) warnings.push(`"herdr agent list" returned no agent list: skipped the worker-name check`);
+    else {
+      const taken = new Set(live.map((agent) => (typeof agent?.name === "string" ? agent.name : "")).filter(Boolean));
+      // A resumed sprint owns the panes it created, so its own names are live by design and must not clash.
+      const clashes = resuming ? [] : names.filter((name) => taken.has(name));
+      if (clashes.length) problems.push(`worker name(s) ${clashes.join(", ")} already run in a live Herdr workspace: pass --worker-prefix <fresh> or close those workspaces (herdr agent list)`);
+    }
+  }
+  return { problems, warnings };
+}
+/**
+ * Everything that could waste a room, a worktree or a pane, checked before any side effect: an interrupted or
+ * refused start must leave nothing behind. Each problem is one line carrying its own fix.
+ */
+async function preflight({ keys, worktreeRoot, helperPath, names, resuming, roomPointer, dry }) {
+  const found = gitProblem();
+  const problems = found ? [found] : [];
+  const root = worktreeRootProblem(worktreeRoot);
+  if (root) problems.push(root);
+  if (!existsSync(helperPath)) problems.push(`j01n helper not found: ${helperPath}; run node scripts/generate-client-script.mjs or pass --helper <path>`);
+  const herdr = herdrProblems(names, resuming);
+  problems.push(...herdr.problems);
+  const scanned = await scanPointers(keys);
+  if (scanned.dead.length && !dry) {
+    for (const { file } of scanned.dead) rmSync(file, { force: true });
+    console.log(`Pruned ${scanned.dead.length} stale room pointer(s): ${scanned.dead.map(({ label }) => label).join(", ")}`);
+  } else if (scanned.dead.length) {
+    console.log(`Dry run: ${scanned.dead.length} stale room pointer(s) would be pruned: ${scanned.dead.map(({ label }) => label).join(", ")}`);
+  }
+  const foreign = scanned.alive.filter((file) => !(resuming && basename(file) === roomPointer));
+  if (foreign.length) problems.push(`${foreign.length} other room(s) are still active in ${keys}; leave or close them so this sprint owns the directory`);
+  return { problems, warnings: herdr.warnings };
 }
 
 // ── start ──────────────────────────────────────────────────────────────────────────────────────
@@ -181,12 +272,32 @@ function orderedTasks(tasks) {
   for (const task of [...tasks].sort((a, b) => String(a.id).localeCompare(String(b.id)))) visit(task, new Set());
   return out.map((id) => byId.get(id));
 }
+/** The board task value carries the spec brief once the spec parser seeds it; free text, one line. */
+const briefOf = (task) => (typeof task?.brief === "string" ? task.brief.replace(/\s+/g, " ").trim().slice(0, MAX_PROMPT_BRIEF) : "");
+/** A state written before briefs existed still gets them: merge the board values in once, quietly. */
+function refreshBriefsForStart(state) {
+  const tasks = (state.tasks ??= []);
+  if (tasks.length && tasks.every((task) => briefOf(task))) return;
+  let changed = false;
+  for (const task of soft(state, ["tasks"])?.tasks ?? []) {
+    const brief = briefOf(task);
+    if (!brief) continue;
+    const known = tasks.find((entry) => entry.id === task.id);
+    if (known) { if (known.brief !== brief) { known.brief = brief; changed = true; } }
+    else { tasks.push({ id: task.id, title: task.title ?? "", files: task.files ?? [], depends_on: task.depends_on ?? [], brief }); changed = true; }
+  }
+  if (changed) saveState(state);
+}
 function promptFor(state, worker) {
   const task = worker.task;
+  const brief = task ? briefOf((state.tasks ?? []).find((entry) => entry.id === task)) : "";
   return [
     `You are ${worker.id} in the j01n room "${state.name}" (host ${state.host}). The invitation is already in your inbox and the identity file is seeded in this checkout.`,
-    `Run exactly: /j01n listen ${worker.id} --capabilities ${state.capabilities}`,
-    task ? `Then: /j01n tasks, /j01n claim ${task}, and read the sealed BRIEF for ${task} with /j01n read before coding.` : `Then: /j01n tasks and claim one open unblocked task.`,
+    `Open with /j01n tasks: if that answers, this pane already auto-joined at session start and you must NOT run listen (its invite is spent, so listen would only time out); only when no room is joined run exactly: /j01n listen ${worker.id} --capabilities ${state.capabilities}`,
+    // A late joiner cannot read chat sent before it joined, so the brief comes off the room-sealed board, never a message.
+    !task ? `Then: /j01n tasks and claim one open unblocked task.`
+      : brief ? `Then: /j01n tasks, /j01n claim ${task}, and work the board BRIEF for ${task} (board key task.${task}, field "brief"): ${brief}`
+        : `Then: /j01n tasks, /j01n claim ${task}, and read the sealed BRIEF for ${task} with /j01n read before coding.`,
     `Work only in this worktree on task ${task ?? "your claim"} and only the files it lists. Never push or merge, and never put a room link, join secret or token in a file, prompt or commit.`,
     `Before reporting run node scripts/check-contract.mjs --peer. Then commit and immediately: /j01n done ${task ?? "<id>"} --summary <text> --commit <sha> --tests <text> --contract "pnpm check:contract --peer passed".`,
     `If you are blocked or cannot read the brief, ask ${state.host} with --kind question --expect-reply and say what you tried.`,
@@ -229,26 +340,30 @@ async function start() {
   const capabilities = option("--capabilities", process.env.J01N_WORKER_CAPABILITIES || "code,files");
   const inviteTo = option("--invite-to", DEFAULT_INVITE_TO);
   const helperPath = resolve(option("--helper", join(root, "packages/helper/client/j01n.js")));
-  if (!existsSync(helperPath)) fail(`j01n helper not found: ${helperPath}`);
+  const keys = keysDir();
+  const worktreeRoot = process.env.J01N_WORKTREE_ROOT || join(homedir(), "Development", "_worktrees");
+  const base = serverBase();
+  const existing = loadState();
+  const resuming = Boolean(existing?.room_id);
+  if (resuming && !(await roomAlive(existing.room_url, undefined))) fail(`sprint.json tracks ${existing.room_id}, which is closed or expired; move ${stateFile()} aside and start again`);
+  // Doctor first: a refused start must leave no room, no worktree, no pane and no identity behind.
+  const planned = resuming ? (existing.workers ?? []).map((worker) => worker.id) : Array.from({ length: workers }, (unused, index) => `${prefix}-${index + 1}`);
+  const doctor = await preflight({ keys, worktreeRoot, helperPath, names: planned, resuming, roomPointer: existing?.room_pointer, dry });
+  if (doctor.problems.length) {
+    for (const problem of doctor.problems) console.error(`preflight: ${problem}`);
+    fail(`sprint preflight refused with ${doctor.problems.length} problem(s); fix each line above and run start again`);
+  }
+  for (const warning of doctor.warnings) console.log(`preflight: ${warning}`);
   const repoDir = git("rev-parse", "--show-toplevel");
   if (repoDir !== process.cwd()) fail("start must run from the repository root");
   const from = option("--from", "main");
   git("check-ref-format", "--branch", from);
   if (!gitSoft(process.cwd(), "rev-parse", "--verify", "--quiet", `${from}^{commit}`)) fail(`--from ${from} does not name a commit here`);
-  const keys = keysDir();
-  const wtRoot = internal(process.env.J01N_WORKTREE_ROOT || join(homedir(), "Development", "_worktrees"));
-  const base = serverBase();
+  const wtRoot = internal(worktreeRoot);
   if (dry) {
-    console.log(`Plan: prune stale pointers in ${join(keys, ".j01n-rooms")}; create+join "${name}" as ${host} from ${basename(spec)} on ${base}; ${workers} worker(s) ${prefix}-1..${prefix}-${workers} in ${wtRoot}/<room>/<worker> off ${from}, each with its own Herdr workspace + pane prompted with "/j01n listen ${prefix}-N --capabilities ${capabilities}" and its task id; register+invite each worker, seed its identity file into its worktree; deliver the raw invite link as a file via ${inviteTo === "none" ? "(skipped)" : inviteTo}; state in ${stateFile()}. Nothing changed.`);
+    console.log(`Plan: preflight passed (git >= ${MIN_GIT_MAJOR}.${MIN_GIT_MINOR}, herdr socket, free worker names, private keys dir, internal worktree root); prune stale pointers in ${join(keys, ".j01n-rooms")}; create+join "${name}" as ${host} from ${basename(spec)} on ${base}; ${workers} worker(s) ${prefix}-1..${prefix}-${workers} in ${wtRoot}/<room>/<worker> off ${from}, each with its own Herdr workspace + pane carrying BASE_URL/J01N_TASK/J01N_WORKER/J01N_WORKER_CAPABILITIES in its env and prompted to open with /j01n tasks (listen ${prefix}-N --capabilities ${capabilities} only as the fallback when the pane did not auto-join), its task id and its board brief; register+invite each worker, seed its identity file into its worktree; deliver the raw invite link as a file via ${inviteTo === "none" ? "(skipped)" : inviteTo}; status tops the invite up while under ${Math.round(KEEPALIVE_WINDOW_MS / 60_000)} minutes; state in ${stateFile()}. Nothing changed.`);
     return;
   }
-  const existing = loadState();
-  const resuming = Boolean(existing?.room_id);
-  if (resuming && !(await roomAlive(existing.room_url, undefined))) fail(`sprint.json tracks ${existing.room_id}, which is closed or expired; move ${stateFile()} aside and start again`);
-  const pruned = await prunePointers(keys);
-  if (pruned.length) console.log(`Pruned ${pruned.length} stale room pointer(s): ${pruned.join(", ")}`);
-  const foreign = pointerFiles(keys).filter((file) => !(resuming && basename(file) === existing.room_pointer));
-  if (foreign.length) fail(`${foreign.length} other room(s) are still active in ${keys}; leave or close them so this sprint owns the directory`);
   assertClean();
   let state = existing;
   if (!resuming) {
@@ -263,12 +378,17 @@ async function start() {
     state = saveState({
       version: 1, created_at: nowIso(), state_file: stateFile(), host_checkout: repoDir, keys_dir: keys, helper: helperPath, base,
       room_pointer: basename(pointerFiles(keys).at(-1) ?? ""), room_id: roomId, room_url: roomUrl, invite_link: created.invite_link,
+      // The keepalive loop needs the invite deadline the server handed back; a successful extend refreshes it.
+      expires_at: typeof created.expires_at === "string" ? created.expires_at : "",
       host, name, spec, from, remote: option("--remote", "origin"), capabilities, invite_to: inviteTo, worktree_root: wtRoot,
       agent_kind: process.env.J01N_AGENT_KIND || "pi", workers: [], delivered: false,
     });
     const ordered = orderedTasks(helper(state, ["tasks"], { echoError: false }).tasks ?? []);
     if (!ordered.length) fail(`the room has no tasks; ${basename(spec)} needs a "## Tasks" section`);
-    state.tasks = ordered.map((task) => ({ id: task.id, title: task.title, files: task.files ?? [], depends_on: task.depends_on ?? [] }));
+    state.tasks = ordered.map((task) => ({
+      id: task.id, title: task.title, files: task.files ?? [], depends_on: task.depends_on ?? [],
+      ...(briefOf(task) ? { brief: briefOf(task) } : {}),
+    }));
     state.workers = Array.from({ length: workers }, (unused, index) => ({
       id: `${prefix}-${index + 1}`, task: ordered[index]?.id ?? null, branch: `${slug(state.room_id)}/${prefix}-${index + 1}`,
       worktree: join(wtRoot, basename(repoDir), slug(state.room_id), `${prefix}-${index + 1}`),
@@ -282,6 +402,8 @@ async function start() {
   }
   const hostIdentity = join(state.keys_dir, `.j01n-agent-${safeName(state.host)}.json`);
   let acted = !resuming;
+  // Briefs come off the board so a worker never has to read chat it missed; a pre-brief state gets them merged in once.
+  if (state.workers.some((worker) => !worker.prompted)) refreshBriefsForStart(state);
   ensureIdentity(state, state.host, state.workers.map((worker) => worker.id).join(","), `pass --host <fresh id> (the host's room id and its inbox name are the same) or restore ${hostIdentity}`);
   for (const worker of state.workers) {
     const identity = join(state.keys_dir, `.j01n-agent-${safeName(worker.id)}.json`);
@@ -300,8 +422,10 @@ async function start() {
     const seeded = join(worker.worktree, `.j01n-agent-${safeName(worker.id)}.json`);
     if (!existsSync(seeded)) { copyFileSync(identity, seeded); chmodSync(seeded, 0o600); worker.seeded = true; acted = true; saveState(state); }
     if (!worker.workspace_id || !worker.pane_id) {
+      // J01N_WORKER_CAPABILITIES lets the pane's own session-start autojoin announce capabilities, so the worker's
+      // presence is right before its first turn; the listen fallback above carries the same value.
       const made = json("herdr", ["workspace", "create", "--cwd", worker.worktree, "--label", worker.id, "--env", `BASE_URL=${state.base}`,
-        "--env", `J01N_TASK=${worker.task ?? ""}`, "--env", `J01N_WORKER=${worker.id}`, "--no-focus"], { cwd: state.host_checkout, label: `herdr workspace create ${worker.id}`, timeout: 120_000 });
+        "--env", `J01N_TASK=${worker.task ?? ""}`, "--env", `J01N_WORKER=${worker.id}`, "--env", `J01N_WORKER_CAPABILITIES=${state.capabilities}`, "--no-focus"], { cwd: state.host_checkout, label: `herdr workspace create ${worker.id}`, timeout: 120_000 });
       worker.workspace_id = made.result?.workspace?.workspace_id ?? made.result?.workspace_id ?? made.result?.workspace?.id;
       worker.pane_id = made.result?.root_pane?.pane_id ?? made.result?.pane?.pane_id ?? made.result?.pane_id ?? made.result?.pane_id;
       if (!worker.workspace_id || !worker.pane_id) fail("herdr did not return the new workspace and its root pane; inspect the session before retrying");
@@ -356,6 +480,21 @@ function openAsks(messages) {
   });
 }
 const compactAsks = (asks) => (asks.length ? `asks:${asks.length} ${asks.map((ask) => `#${ask.seq ?? String(ask.ask_id).slice(0, 8)} ${ask.from}->${ask.owed_by}${ask.overdue ? " OVERDUE" : ""}`).join(",")}` : "asks:none");
+/**
+ * Host keepalive: the room dies when its invite expires, and only the host can extend it, which is exactly who runs
+ * status in the documented duty loop. Anything older than the window gets topped up and the new deadline is recorded.
+ */
+function keepalive(state) {
+  if (!state?.room_id) return "keepalive:no sprint state";
+  const left = Date.parse(state.expires_at ?? "") - Date.now();
+  if (Number.isFinite(left) && left > KEEPALIVE_WINDOW_MS) return `keepalive:${Math.round(left / 60_000)}m left`;
+  const extended = soft(state, ["extend", String(KEEPALIVE_EXTEND_MINUTES)]);
+  const next = Date.parse(extended?.expires_at ?? "");
+  if (!Number.isFinite(next)) return `keepalive:EXTEND FAILED (invite ${Number.isFinite(left) ? `expires in ${Math.round(left / 60_000)}m` : "has no recorded deadline"}; extend is host-only, so run status as ${state.host ?? "the host"} or extend by hand)`;
+  state.expires_at = extended.expires_at;
+  saveState(state);
+  return `keepalive:extended, ${Math.round((next - Date.now()) / 60_000)}m left`;
+}
 function compactUsage(usage) {
   if (!usage) return "usage:unavailable";
   const rows = usage.rows ?? [];
@@ -371,7 +510,7 @@ async function status() {
   const usage = soft(state, ["usage"]);
   const participants = summary.participants ?? [];
   const owner = participants.some((participant) => participant.role === "owner") ? "owner" : "no owner";
-  console.log(`[${slug(state.room_id ?? "")} ${(state.name ?? "?").trim()}] ${compactTasks(summary.tasks ?? [])} | ${compactAsks(asks)} | ${compactUsage(usage)} | report:${summary.report ? "yes" : "no"} decisions:${(summary.decisions ?? []).length} | ${participants.length} in, ${owner}`);
+  console.log(`[${slug(state.room_id ?? "")} ${(state.name ?? "?").trim()}] ${compactTasks(summary.tasks ?? [])} | ${compactAsks(asks)} | ${compactUsage(usage)} | report:${summary.report ? "yes" : "no"} decisions:${(summary.decisions ?? []).length} | ${participants.length} in, ${owner} | ${keepalive(state)}`);
 }
 
 // ── answer ─────────────────────────────────────────────────────────────────────────────────────

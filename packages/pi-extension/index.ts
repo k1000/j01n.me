@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { splitArgs } from "./args";
-import { runj01n } from "./commands";
+import { autojoinNote, autojoinRoom, runj01n } from "./commands";
 import { registerLive } from "./live";
 import { registerPeerSpawnTool } from "./peer-spawn-tool";
 import { registerRepoInviteTool } from "./repo-invite";
@@ -17,6 +17,9 @@ export default function (pi: ExtensionAPI) {
     if (!ctx.hasUI) return;
     for (const warning of getExtensionDiagnostics().warnings) ctx.ui.notify(`j01n: ${warning}`, "error");
   });
+
+  // Registered before live mode, so the room it joins is delivered live in the same boot.
+  registerAutojoin(pi);
 
   const live = registerLive(pi);
   registerPeerSpawnTool(pi);
@@ -44,6 +47,26 @@ export default function (pi: ExtensionAPI) {
       if (params.args[0] === "live") return toolResult(live.setEnabled(params.args[1] !== "off"), params.args);
       return executeTool(params.args);
     },
+  });
+}
+
+/**
+ * Join without a first model turn: a pane opened in a worktree that holds one room profile, or one seeded
+ * inbox identity, is in its room before the first prompt. A short note is the only room content the model
+ * sees; a stale or ambiguous directory stays silent and the session behaves exactly as it did before.
+ */
+function registerAutojoin(pi: ExtensionAPI): void {
+  let attempted = false;
+  pi.on("session_start", async (_event, ctx) => {
+    if (attempted || !ctx.hasUI) return; // one bounded attempt per process, and only where a session is really running
+    attempted = true;
+    try {
+      const joined = await autojoinRoom();
+      if (!joined) return;
+      pi.sendMessage({ customType: "j01n", content: autojoinNote(joined), display: true, details: { autojoin: joined } });
+    } catch {
+      // never fatal: the room is simply unavailable from this directory
+    }
   });
 }
 

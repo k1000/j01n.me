@@ -4,11 +4,23 @@ Use this for a task-backed sprint. The host coordinates integration; peers commi
 
 ## Operator shortcut (`scripts/sprint.mjs`)
 
-Run `node scripts/sprint.mjs start --spec <spec.md> --name <room> --workers N [--host <id>] [--invite-to <target>] [--dry-run]` from a clean repository root. The script prunes stale room pointers, creates and joins the sprint room as host, seeds worker inbox identities into separate internal-SSD worktrees, starts and prompts their Herdr agents, and delivers the raw owner invitation as a private file via `hermes send` (unless `--invite-to none`). It **does not open a browser tab**. A resumed start checks `sprint.json` and skips delivery once recorded; if delivery fails, inspect the target before retrying, because the file may already have been sent. Never manually send or open a second owner invitation. Check that the owner actually joins. Keys and sprint state belong on private internal storage (`J01N_KEY_DIR`), not exFAT.
-
-Run `node scripts/sprint.mjs status` to inspect tasks, participants and unanswered asks, or `answer <message-id> <text>` to reply. Review each completed task's diff, scope and peer contract evidence. `node scripts/sprint.mjs finish --dry-run` previews integration without changing branches. After review, `finish --reviewed` rebases task branches in dependency order, verifies the full contract, pushes an **integration branch** to the configured remote and opens a GitLab merge request. It records its state for resumption and leaves the room open for owner review. It does **not** deploy, push `main` or clean up worktrees; those are separate, explicitly authorized steps.
-
-The shortcut does **not** replace owner review or authorize merging an MR into `main`, deployment or cleanup. It never prints a room link or token. Do not paste either into Herdr, command arguments, chat, or a commit. Herdr's `agent prompt --wait` may say `agent_prompt_stalled` while Pi is still preparing context; inspect `herdr agent get` and `herdr agent read` before retrying.
+1. Run `node scripts/sprint.mjs start --spec <spec.md> --name <room> --workers N [--host <id>] [--invite-to <target>] [--dry-run]` from a clean repository root.
+2. Let the script prune stale room pointers, create and join the sprint room as host, seed worker inbox identities into separate internal-SSD worktrees, start and prompt their Herdr agents, and deliver the raw owner invitation as a private file via `hermes send` (unless `--invite-to none`).
+3. Do **not** open a browser tab manually; the script does not open one.
+4. On a resumed start, let `sprint.json` skip delivery once recorded; if delivery fails, inspect the target before retrying because the file may already have been sent.
+5. Never manually send or open a second owner invitation.
+6. Check that the owner actually joins.
+7. Keep keys and sprint state on private internal storage (`J01N_KEY_DIR`), not exFAT.
+8. Run `node scripts/sprint.mjs status` to inspect tasks, participants and unanswered asks.
+9. Run `node scripts/sprint.mjs answer <message-id> <text>` to reply.
+10. Review each completed task's diff, scope and peer contract evidence.
+11. Run `node scripts/sprint.mjs finish --dry-run` to preview integration without changing branches.
+12. After review, run `node scripts/sprint.mjs finish --reviewed` to rebase task branches in dependency order, verify the full contract, push an **integration branch** to the configured remote and open a GitLab merge request.
+13. Let the finish command record its state for resumption and leave the room open for owner review.
+14. Do **not** deploy, push `main` or clean up worktrees; those are separate, explicitly authorized steps.
+15. Remember: the shortcut does **not** replace owner review or authorize merging an MR into `main`, deployment or cleanup.
+16. Never paste a room link or token into Herdr, command arguments, chat, or a commit; the shortcut never prints one.
+17. If Herdr's `agent prompt --wait` says `agent_prompt_stalled`, inspect `herdr agent get` and `herdr agent read` before retrying; Pi may still be preparing context.
 
 ## Role-first heterogeneous peer spawning
 

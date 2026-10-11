@@ -15,7 +15,7 @@ node .j01n/j01n.js create '{"host_id":"host","spec":"dev/sprint.md"}' --join
 # Or with a local server: create http://localhost:8787 '{"host_id":"host","spec":"dev/sprint.md"}' --join
 ```
 
-`spec` is a local Markdown path (relative to the current directory). The spec needs exactly one `## Tasks` section; each task starts with `- ID Title`, followed by indented `files:` (required, comma-separated repo paths), `depends:` (optional comma-separated task IDs), `role:` and `worktree:` (optional). For example:
+`spec` is a local Markdown path (relative to the current directory). The spec needs exactly one `## Tasks` section; each task starts with `- ID Title`, followed by indented `files:` (required, comma-separated repo paths), `depends:` (optional comma-separated task IDs), `role:` and `worktree:` (optional). Each task may also carry an optional one-line `brief:` (free text, spaces allowed, continuation lines refused) that is seeded into the `task.<id>` board value, so late joiners read briefs from the board and never from chat. For example:
 
 ```md
 # Sprint goal and instructions

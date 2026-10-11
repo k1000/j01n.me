@@ -1,5 +1,7 @@
 // Sprint orchestrator flow end-to-end: scripts/sprint.mjs start/status/answer/finish against a real room,
 // on throwaway repos, with faked herdr/glab/hermes so no real Herdr session, ~/.hermes or Telegram is touched.
+// Covers the doctor preflight (refusal before any side effect), the board brief in worker prompts and the host
+// keepalive that extends a room whose invite is about to expire.
 // Usage: node scripts/e2e/sprint.mjs <base> [helper]
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -41,7 +43,11 @@ const print=(value)=>console.log(JSON.stringify(value));
 const flag=(name)=>argv[argv.indexOf(name)+1];
 const counter=P.join(process.env.FAKE_STATE,"n");
 const next=()=>{const value=Number(fs.existsSync(counter)?fs.readFileSync(counter,"utf8"):0)+1;fs.writeFileSync(counter,String(value));return value;};
-if(argv[0]==="workspace"&&argv[1]==="create"){
+if(argv[0]==="status"){
+  console.log("client:\\n  version: 0.9.3\\nserver:\\n  status: "+(process.env.FAKE_HERDR_STATUS||"running")+"\\n  socket: /tmp/fake-herdr.sock");
+} else if(argv[0]==="agent"&&argv[1]==="list"){
+  print({id:"cli:agent:list",result:{agents:(process.env.FAKE_AGENTS||"").split(",").filter(Boolean).map((name,index)=>({name,agent:"pi",agent_status:"idle",pane_id:"w9:p"+(index+1),workspace_id:"w9"+(index+1),cwd:"/tmp/"+name}))}});
+} else if(argv[0]==="workspace"&&argv[1]==="create"){
   const id="w9"+next(); const cwd=flag("--cwd");
   print({id:"cli:workspace:create",result:{workspace:{workspace_id:id,label:flag("--label"),cwd},tab:{tab_id:id+":t1"},root_pane:{pane_id:id+":p1",workspace_id:id,cwd}}});
 } else if(argv[0]==="agent"&&argv[1]==="start"){
@@ -60,6 +66,24 @@ console.log("sent");`);
 fake("glab", `const argv=process.argv.slice(2);
 console.log("Creating merge request for "+(argv[argv.indexOf("--source-branch")+1]||"?")+" into "+(argv[argv.indexOf("--target-branch")+1]||"main"));
 console.log("https://gitlab.com/acme/sprint/-/merge_requests/42");`);
+
+// ── helper wrapper: forwards to the real client and stands in for what other task branches own ──
+// `extend` reaches the shipped client only when integration regenerates it, and the board `brief` field belongs to
+// the spec-parser task. Both are answered here so the orchestrator contract (argv, sprint.json and prompts) is
+// checked against this checkout instead of a branch that has not landed yet.
+const briefFor = (id) => `BOARD BRIEF ${id}: change only the files the task lists, then report done with evidence.`;
+const wrapper = join(dir, "helper-wrapper.cjs");
+writeFileSync(wrapper, `const cp=require("child_process"),fs=require("fs");
+const briefFor=${briefFor.toString()};
+const argv=process.argv.slice(2);
+const mask=(value)=>typeof value==="string"&&(value.includes("#")||value.length>60)?"<redacted>":value;
+fs.appendFileSync(process.env.FAKE_LOG,JSON.stringify({bin:"helper",argv:argv.map(mask)})+"\\n");
+if(argv[0]==="extend"){const minutes=Number(argv[1]||5);console.log(JSON.stringify({ok:true,expires_at:new Date(Date.now()+minutes*60000).toISOString()}));process.exit(0);}
+const r=cp.spawnSync(process.execPath,[process.env.E2E_REAL_HELPER,...argv],{encoding:"utf8",env:process.env});
+let text=r.stdout||"";
+if(argv[0]==="tasks"&&process.env.FAKE_TASK_BRIEFS){const ids=process.env.FAKE_TASK_BRIEFS.split(",");try{const parsed=JSON.parse(text);for(const task of parsed.tasks||[])if(ids.includes(task.id))task.brief=briefFor(task.id);text=JSON.stringify(parsed);}catch{}}
+process.stdout.write(text);process.stderr.write(r.stderr||"");process.exit(r.status===null?1:r.status);\n`);
+chmodSync(wrapper, 0o755);
 
 // ── fixture repo: a throwaway checkout with a sprint spec and stubbed checks ───────────────────
 const host = join(dir, "host");
@@ -86,6 +110,8 @@ const env = {
   FAKE_LOG: log,
   FAKE_STATE: fakeState,
   E2E_CONTRACT_LOG: contractLog,
+  E2E_REAL_HELPER: helper,
+  FAKE_TASK_BRIEFS: "t1",
   J01N_KEY_DIR: keys,
   J01N_WORKTREE_ROOT: worktrees,
   BASE_URL: base,
@@ -95,8 +121,43 @@ const env = {
 // Workers keep their keys in their own worktree, exactly like a real seeded peer checkout.
 const { J01N_KEY_DIR: _hostKeys, J01N_WORKTREE_ROOT: _hostWorktrees, ...workerEnv } = env;
 const calls = () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
-const sprint = (...argv) => out(host, [orchestrator, ...argv, "--helper", helper], env);
+const sprint = (...argv) => out(host, [orchestrator, ...argv, "--helper", wrapper], env);
 const state = () => JSON.parse(readFileSync(join(keys, "sprint.json"), "utf8"));
+
+// ── preflight: a refused start leaves no room, no state and no pane behind ─────────────────────
+const badBin = join(dir, "bin-bad");
+mkdirSync(badBin, { recursive: true, mode: 0o700 });
+for (const [name, body] of [
+  ["git", 'if(process.argv[2]==="--version"){console.log("git version 2.17.0");process.exit(0);}console.error("fake ancient git: no other subcommand works here");process.exit(1);'],
+  ["herdr", 'console.error("fake herdr: could not connect to the socket at /tmp/fake-herdr.sock: connection refused");process.exit(1);'],
+]) {
+  const file = join(badBin, name);
+  writeFileSync(file, `#!/usr/bin/env node\nconst fs=require("fs"),P=require("path");\n${body}\n`);
+  chmodSync(file, 0o755);
+}
+const refusals = [];
+// Each case runs a real start against a scratch key directory, so a refusal proves itself by leaving nothing behind.
+const refuse = (label, patterns, patch = {}, prepare) => {
+  const keys2 = join(dir, `refuse-keys-${refusals.length}`);
+  const state2 = join(keys2, "sprint.json");
+  mkdirSync(keys2, { recursive: true, mode: 0o700 });
+  if (prepare) prepare(keys2);
+  const stderr = bad(host, [orchestrator, "start", "--spec", "spec.md", "--name", `refuse ${refusals.length} ${tag}`, "--workers", "1", "--host", `${tag}-refuse-${refusals.length}`, "--worker-prefix", tag, "--invite-to", "none", "--from", "main", "--state", state2, "--helper", wrapper], { ...env, J01N_KEY_DIR: keys2, ...patch });
+  refusals.push({ state2, stderr });
+  check(`${label}: refused before any side effect, one line per fix`, patterns.every((pattern) => pattern.test(stderr)), stderr.split("\n").filter(Boolean)[0] ?? "no refusal message");
+};
+refuse("git 2.17 and a dead herdr socket", [/preflight: git 2\.17 is older than 2\.25/, /preflight: "herdr status" did not answer/, /preflight refused with 3 problem\(s\)/], { PATH: `${badBin}${delimiter}${process.env.PATH}` });
+refuse("a herdr server that is not running", [/preflight: herdr reports "status: stopped"/, /bring the Herdr server up/], { FAKE_HERDR_STATUS: "stopped" });
+refuse("worktrees on /Volumes", [/preflight: the worktree root \/Volumes\/sprints is not usable/, /sprint worktrees cannot live on \/Volumes/, /set J01N_WORKTREE_ROOT to an absolute path on internal storage/], { J01N_WORKTREE_ROOT: "/Volumes/sprints" });
+refuse("worker names already live in a workspace", [/preflight: worker name\(s\) .+-1 already run in a live Herdr workspace/, /--worker-prefix <fresh>/], { FAKE_AGENTS: `${tag}-1` });
+refuse("another live room owns the key directory", [/preflight: 1 other room\(s\) are still active in/, /leave or close them so this sprint owns the directory/], {}, (keys2) => {
+  // An unreachable host reads as "still alive" to the pointer probe, exactly like a room another sprint owns.
+  mkdirSync(join(keys2, ".j01n-rooms"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(keys2, ".j01n-rooms", `${"f".repeat(64)}.json`), JSON.stringify({ room_url: "http://127.0.0.1:1/r/aaaa", participant_id: "other-room" }));
+});
+check("a refused start leaves no state file, no room and no pane behind",
+  refusals.every((entry) => !existsSync(entry.state2)) && !calls().some((call) => call.argv[0] === "create") &&
+  !calls().some((call) => call.bin === "herdr" && call.argv[0] === "workspace"), JSON.stringify(calls().map((call) => `${call.bin}:${call.argv[0]}`)));
 
 // A pointer left over from an earlier wave must not make the new sprint ambiguous.
 mkdirSync(join(keys, ".j01n-rooms"), { recursive: true, mode: 0o700 });
@@ -110,6 +171,9 @@ const first = state();
 const secret = first.invite_link?.split("#")[1] ?? "";
 check("start creates and joins the sprint room as the configured host", first.host === `${tag}-host` && Boolean(first.room_id) && first.workers.length === 2, JSON.stringify({ room: first.room_id?.slice(0, 8), host: first.host }));
 check("start pairs each worker with a task in dependency order", (first.workers ?? []).map((worker) => worker.task).join(",") === "t1,t2", JSON.stringify((first.workers ?? []).map((worker) => [worker.id, worker.task])));
+check("start records the invite deadline the server handed back for the keepalive loop", Date.parse(first.expires_at ?? "") > Date.now(), JSON.stringify(first.expires_at));
+check("start keeps each task's board brief in sprint.json", first.tasks?.find((task) => task.id === "t1")?.brief === briefFor("t1") &&
+  !first.tasks?.find((task) => task.id === "t2")?.brief, JSON.stringify((first.tasks ?? []).map((task) => [task.id, task.brief ?? ""])));
 const roomTasks = jso(host, [helper, "tasks"], env).tasks ?? [];
 check("the sprint template seeded both tasks as open", roomTasks.length === 2 && roomTasks.every((task) => task.status === "open"), JSON.stringify(roomTasks.map((task) => [task.id, task.status])));
 const [one, two] = first.workers;
@@ -123,9 +187,26 @@ const made = herdrCalls().filter((call) => call.argv[0] === "workspace");
 const prompts = herdrCalls().filter((call) => call.argv[0] === "agent" && call.argv[1] === "prompt");
 check("herdr gets one new workspace per worker worktree, unfocused", made.length === 2 && made.every((call) => call.argv.includes("--no-focus")) &&
   made.map((call) => call.argv[call.argv.indexOf("--cwd") + 1]).join(" ") === `${one.worktree} ${two.worktree}`, JSON.stringify(made.map((call) => call.argv.slice(0, 5))));
+// The pane env is what lets the session-start autojoin announce capabilities, so it must be there before turn one.
+const paneEnvs = (call) => call.argv.reduce((acc, value, index) => (value === "--env" ? [...acc, call.argv[index + 1]] : acc), []);
+check("each new workspace env carries the sprint capabilities so an autojoin announces them",
+  made.length === 2 && made.every((call, index) => {
+    const worker = first.workers[index];
+    const values = paneEnvs(call);
+    return values.includes(`J01N_WORKER=${worker.id}`) && values.includes(`J01N_TASK=${worker.task}`) &&
+      values.includes("J01N_WORKER_CAPABILITIES=code,files") && values.some((entry) => entry.startsWith("BASE_URL="));
+  }), JSON.stringify(made.map(paneEnvs)));
 check("herdr starts the agent in each new pane", herdrCalls().filter((call) => call.argv[0] === "agent" && call.argv[1] === "start").length === 2);
 check("each prompt states the exact listen command with capabilities", prompts.length === 2 && prompts[0].argv[3].includes(`/j01n listen ${one.id} --capabilities code,files`) && prompts[1].argv[3].includes(`/j01n listen ${two.id} --capabilities code,files`), prompts[0]?.argv[3]?.slice(0, 80));
+check("the listen step is framed as the fallback after an autojoin, not the first move",
+  prompts.every((call) => /Open with \/j01n tasks/.test(call.argv[3]) && call.argv[3].includes("must NOT run listen") &&
+    /only when no room is joined run exactly: \/j01n listen/.test(call.argv[3])), prompts[0]?.argv[3]?.slice(0, 200));
 check("each prompt carries that worker's task id", prompts.length === 2 && prompts[0].argv[3].includes("claim t1") && prompts[1].argv[3].includes("claim t2"));
+// The board is the only thing a late joiner can read, so a briefed task is prompted from the board, not from chat.
+check("a task with a board brief is prompted with that brief and its board key",
+  prompts[0].argv[3].includes("board BRIEF for t1") && prompts[0].argv[3].includes("task.t1") && prompts[0].argv[3].includes(briefFor("t1")), prompts[0]?.argv[3]?.slice(0, 120));
+check("a task without a brief still gets the sealed-spec reading step", !prompts[1].argv[3].includes(briefFor("t2")) &&
+  /read the sealed BRIEF for t2 with \/j01n read/.test(prompts[1].argv[3]), prompts[1]?.argv[3]?.slice(0, 120));
 check("prompts never carry the room link or join secret", !JSON.stringify(prompts).includes(secret) && !JSON.stringify(prompts).includes(first.room_url));
 const delivered = readFileSync(join(fakeState, "invite.bin"));
 check("the raw invite link is delivered as a byte-exact file body", delivered.equals(Buffer.from(first.invite_link)) && !delivered.toString().includes("\n") &&
@@ -162,6 +243,22 @@ check("finish needs the explicit --reviewed authorization", /--reviewed/.test(ba
 check("answer replies in the ask thread", /answered/.test(sprint("answer", String(ask.seq), "Yes: src/ui.ts only.")));
 check("the ask is closed by that reply in the room history", jso(host, [helper, "inbox"], env).some((message) => message.reply_to === ask.id && message.from === first.host));
 check("status shows no unanswered asks afterwards", /asks:none/.test(sprint("status")));
+
+// ── host keepalive: status extends a room whose invite is about to expire ────────────────────
+const patchState = (patch) => writeFileSync(join(keys, "sprint.json"), JSON.stringify({ ...state(), ...patch }, null, 2), { mode: 0o600 });
+const extendCalls = () => calls().filter((call) => call.bin === "helper" && call.argv[0] === "extend");
+patchState({ expires_at: new Date(Date.now() + 40 * 60_000).toISOString() });
+const healthy = sprint("status").trim();
+check("status leaves a healthy invite alone and reports the time left", /keepalive:40m left/.test(healthy) && extendCalls().length === 0, healthy);
+patchState({ expires_at: new Date(Date.now() + 5 * 60_000).toISOString() });
+const kept = sprint("status").trim();
+check("status extends through the helper while under 15 minutes are left",
+  /keepalive:extended, 30m left/.test(kept) && extendCalls().length === 1 && extendCalls()[0].argv.includes(String(30)), kept);
+check("the new deadline is written back so the next status sees a healthy invite",
+  Date.parse(state().expires_at ?? "") > Date.now() + 25 * 60_000 && !/EXTEND FAILED/.test(sprint("status")) && extendCalls().length === 1, state().expires_at);
+check("keepalive keeps status on one compact line", !kept.includes("\n") && kept.split(" | ").length >= 6, kept);
+patchState({ expires_at: "" });
+check("an unknown deadline is treated as urgent, not silently skipped", /keepalive:/.test(sprint("status")) && extendCalls().length === 2, state().expires_at);
 
 // ── finish ─────────────────────────────────────────────────────────────────────────────────────
 const integration = `sprint/${(first.room_id ?? "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12)}`;

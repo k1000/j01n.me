@@ -487,7 +487,7 @@ function parseSprintSpec(spec) {
       fields.clear();
       continue;
     }
-    const field = line.match(/^  +(?:- )?(files|depends|role|worktree):\s*(.*?)\s*$/);
+    const field = line.match(/^  +(?:- )?(files|depends|role|worktree|brief):\s*(.*?)\s*$/);
     if (!current || !field || fields.has(field[1])) throw new Error(`invalid spec task line: ${line}`);
     const [, name, value] = field;
     fields.add(name);
@@ -496,6 +496,7 @@ function parseSprintSpec(spec) {
     if (name === "depends") current.depends_on = value ? value.split(",").map((id) => id.trim()) : [];
     if (name === "role") current.role = value;
     if (name === "worktree") current.worktree = value;
+    if (name === "brief") current.brief = value;
   }
   if (!tasks.length) throw new Error("spec ## Tasks section is empty");
   const ids = new Set(tasks.map((task) => task.id));
@@ -1789,7 +1790,7 @@ async function main() {
     return;
   }
   const { roomUrl, secret, me, rest, token, joinSecret, positionalSecret } = await resolveRoom();
-  if (!cmd || !roomUrl || !secret || !me) throw Error("usage: j01n <create|join|send|read|team|watch|doctor> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.");
+  if (!cmd || !roomUrl || !secret || !me) throw Error("usage: j01n <create|join|send|read|team|watch|doctor|extend> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.");
   const keyFile = join2(stateDir, `.j01n-${safe(new URL(roomUrl).pathname)}-${safe(me)}.json`);
   let state;
   try {
@@ -2008,7 +2009,20 @@ Usage: ${usageHelp("usage [report]")}`);
     output(await roomCommand(client, cmd, rest));
     return;
   }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|usage|invite-link|note|decide|leave`);
+  if (cmd === "extend") {
+    if (rest.length > 1) throw Error("extend needs: [minutes]");
+    let extendMs;
+    if (rest[0] !== void 0) {
+      const minutes = Number(rest[0]);
+      if (!Number.isFinite(minutes) || minutes <= 0) throw Error(`extend minutes needs a positive number, got "${rest[0]}"`);
+      extendMs = Math.round(minutes * 6e4);
+    }
+    if ((await client.status()).room.host_id !== me) throw Error("extend is host only; ask the host to run it");
+    const extended = await client.extend(extendMs === void 0 ? void 0 : { extendMs });
+    output({ ok: true, expires_at: extended.expires_at });
+    return;
+  }
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|extend|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|usage|invite-link|note|decide|leave`);
 }
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));

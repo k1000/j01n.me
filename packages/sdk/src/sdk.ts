@@ -12,6 +12,46 @@ export type { SprintTask } from "./spec";
 export type { Workspace } from "./crypto";
 export type { AgentIdentity, ReceivedInvite } from "./agents";
 export { buildRoomClient } from "./room-client";
+export {
+  USAGE_KEY_PREFIX,
+  USAGE_STALE_AFTER_MS,
+  MAX_USAGE_DELTA_ACTIVE_MS,
+  MAX_USAGE_DELTA_TOKENS,
+  MAX_USAGE_DELTA_COST_USD,
+  DEFAULT_TOKEN_RATES,
+  MODEL_TOKEN_RATES,
+  usageKey,
+  isUsageKey,
+  participantFromUsageKey,
+  parseUsageDelta,
+  parseUsageSnapshot,
+  coerceUsageSnapshot,
+  emptyUsage,
+  applyUsageDelta,
+  nextUsage,
+  usageDeltaBetween,
+  usageTotals,
+  ratesForModel,
+  estimateCost,
+  usageCost,
+  sealUsage,
+  openUsage,
+  usageRows,
+  roomUsage,
+  formatActiveTime,
+  formatTokens,
+  formatCost,
+  formatUsage,
+  formatUsageRow,
+} from "./metrics";
+export type {
+  UsageDelta,
+  UsageSnapshot,
+  UsageNumbers,
+  UsageTotals,
+  TokenRates,
+  UsageRow,
+} from "./metrics";
 
 import { normalizeInvite, type RoomAccess } from "./invite";
 import { buildRoomClient } from "./room-client";

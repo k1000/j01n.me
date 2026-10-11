@@ -288,6 +288,46 @@ test("other board keys remain visible beside Kanban and reject stale edits", asy
   await expect(page.getByText("Human decision", { exact: true })).toBeVisible();
 });
 
+test("board rows preview values, keep edits secondary and show the warning only in the form", async ({ page }, testInfo) => {
+  const agent = await joinRoom(parseInviteLink(await createRoom(page))!, "worker-agent");
+  await agent.setBoardKey("task.T2", { title: "Polish board rows", status: "claimed", brief: "Not shown in preview" }, { ifVersion: 0 });
+  const longText = "First line\n" + "x".repeat(170);
+  await agent.setBoardKey("notes", longText, { ifVersion: 0 });
+  const objectRow = page.locator('[data-collapse="key:task.T2"]');
+  const textRow = page.locator('[data-collapse="key:notes"]');
+  await expect(objectRow.locator(".board-preview")).toHaveText("Polish board rows");
+  await expect(objectRow.locator(".board-preview-state")).toHaveText("claimed");
+  await expect(textRow.locator(".board-preview")).toHaveText("First line " + "x".repeat(49) + "…");
+  await expect(objectRow.locator(".board-meta")).toContainText("v1 · worker-agent");
+  await expect(objectRow).not.toHaveAttribute("open", "");
+  await expect(page.locator(".room-board > .fineprint")).toHaveCount(0);
+  const edit = page.getByRole("button", { name: "Edit board key task.T2" });
+  await expect(edit).toHaveClass(/button-small/);
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(edit).toBeVisible();
+    const layout = await page.evaluate(() => {
+      const button = document.querySelector('[data-edit-board-key="task.T2"]')!;
+      const state = document.querySelector('[data-collapse="key:task.T2"] .board-preview-state')!;
+      const style = getComputedStyle(button);
+      return { noOverflow: document.documentElement.scrollWidth <= innerWidth, stateVisible: state.getBoundingClientRect().right <= button.getBoundingClientRect().left, height: button.getBoundingClientRect().height, background: style.backgroundColor, color: style.color };
+    });
+    expect(layout.noOverflow).toBe(true);
+    expect(layout.stateVisible).toBe(true);
+    expect(layout.height).toBeGreaterThanOrEqual(44);
+    expect(layout.background).not.toBe("rgb(253, 237, 204)");
+    expect(layout.color).toBe("rgb(253, 237, 204)");
+    await page.screenshot({ path: testInfo.outputPath(`board-${width}.png`), fullPage: true });
+  }
+  await edit.click();
+  await expect(page.locator("[data-board-form] .fineprint")).toHaveText("Shared with room participants, not encrypted. Do not put secrets on the board.");
+  await expect(page.getByLabel("key", { exact: true })).toHaveValue("task.T2");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await objectRow.locator("summary").click();
+  await expect(objectRow).toHaveAttribute("open", "");
+  await expect(objectRow.locator(".board-value")).toContainText("Not shown in preview");
+});
+
 test("re-entering a saved room preserves its token, keys and identity", async ({ page }) => {
   await page.addInitScript(() => {
     const tools = new Map<string, { execute: (args: object) => Promise<string> }>();

@@ -905,11 +905,12 @@
       && typeof tasksVal === 'object' && !Array.isArray(tasksVal) && !('encrypted_payload' in tasksVal);
     const boardEntries = Object.entries(board).filter(([key]) => key !== 'reservations' && (!isKanban || !['columns', 'tasks'].includes(key))).map(([k, entry]) => {
       const meta = `<span class="board-meta" title="${escAttr('updated at ' + entry.updated_at)}">v${esc(entry.version)} · ${esc(entry.updated_by)} · ${esc(shortTime(entry.updated_at))}</span>`;
-      const edit = `<button class="button" type="button" data-edit-board-key="${escAttr(k)}" aria-label="${escAttr('Edit board key ' + k)}">Edit</button>`;
+      const edit = `<button class="button button-small" type="button" data-edit-board-key="${escAttr(k)}" aria-label="${escAttr('Edit board key ' + k)}">Edit</button>`;
       const value = `<div class="board-value">${renderBoardValue(entry.value)}</div>`;
       const plain = extractValue(entry.value);
       if (typeof plain === 'string' && plain.length <= 160) return `<div class="board-entry"><span class="board-key">${esc(k)}</span>${meta}${edit}${value}</div>`;
-      return `<div class="board-entry"><details class="board-entry-details" data-collapse="${escAttr('key:' + k)}"><summary><span class="board-key">${esc(k)}</span>${meta}</summary>${value}</details>${edit}</div>`;
+      const preview = boardPreview(boardDisplayValue(entry.value));
+      return `<div class="board-entry"><details class="board-entry-details" data-collapse="${escAttr('key:' + k)}"><summary><span class="board-entry-heading"><span class="board-key">${esc(k)}</span><span class="board-preview">${esc(preview.text)}</span>${preview.state ? `<span class="board-preview-state">${esc(preview.state)}</span>` : ""}</span>${meta}</summary>${value}</details>${edit}</div>`;
     }).join('');
     const boardHtml = boardKeys.length === 0 ? '<p class="board-empty">No board data yet.</p>' : (isKanban ? renderKanbanBoard(board, columnsVal) : '') + boardEntries;
 
@@ -970,7 +971,7 @@ ${isRepeatedRoomPurpose(room.name, room.purpose) ? "" : `<div><dt>purpose</dt><d
 </dl>
 </header>`,
       report: reportHtml,
-      board: `<section class="room-board"><div class="board-toolbar"><h2>Board</h2><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><form class="board-edit-form" data-board-form><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>`,
+      board: `<section class="room-board"><div class="board-toolbar"><h2>Board</h2><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>`,
       reservations: `<section class="room-reservations" aria-label="File reservations"><h2>File reservations</h2>${reservationsHtml}</section>`,
       help: helpNeededHtml(data),
       participants: `<section class="room-participants"><h2>Participants</h2>${participantsHtml}</section>`,
@@ -1476,6 +1477,15 @@ ${isRepeatedRoomPurpose(room.name, room.purpose) ? "" : `<div><dt>purpose</dt><d
   function boardValueText(value) {
     const displayValue = boardDisplayValue(value);
     return typeof displayValue === "object" ? JSON.stringify(displayValue, null, 2) : String(displayValue ?? "");
+  }
+
+  function boardPreview(value) {
+    if (value && typeof value === "object" && !Array.isArray(value) && typeof value.title === "string" && value.title.trim()) {
+      const state = value.status ?? value.state;
+      return { text: value.title.replace(/\s+/g, " ").trim(), state: typeof state === "string" || typeof state === "number" ? String(state) : "" };
+    }
+    const text = (typeof value === "string" ? value : JSON.stringify(value) ?? String(value)).replace(/\s+/g, " ").trim();
+    return { text: text.length > 60 ? text.slice(0, 60).trimEnd() + "…" : text, state: "" };
   }
 
   function renderBoardValue(value) {

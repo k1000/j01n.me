@@ -319,8 +319,14 @@ function roomPageStyles(): string {
   .task-editor-toggle > summary { font-weight: 700; padding: 0.4rem 0; }
   .task-editor-toggle[open] > summary { margin-bottom: 0.75rem; }
   .board-entry-details { grid-column: 1 / 3; }
+  .board-entry-details > summary { min-height: 44px; }
+  .board-entry-heading { display: inline-flex; align-items: baseline; gap: 0.5rem; width: calc(100% - 1.5rem); min-width: 0; vertical-align: middle; }
+  .board-entry-heading .board-key { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .board-preview { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .board-preview-state { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; }
+  .board-preview-state::before { content: "·"; margin-right: 0.35rem; }
   .board-entry > .button { align-self: start; }
-  .board-entry-details .board-meta { margin-left: 1rem; }
+  .board-entry-details .board-meta { display: block; margin-left: 1.5rem; }
   .board-entry-details[open] > .board-value { margin-top: 0.5rem; }
   .kanban-card-details { margin-top: 0.4rem; font-size: 0.85rem; }
   .kanban-card-details > summary { opacity: 0.72; }

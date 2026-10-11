@@ -197,6 +197,23 @@ async function roomPageDecryptors(joinSecret: string, latest: unknown = null) {
 }
 
 describe("room page", () => {
+  it("previews board titles and states, or truncates escaped plain text without relative time", () => {
+    const start = roomPageScript.indexOf("  function boardPreview(value) {");
+    const end = roomPageScript.indexOf("  function renderBoardValue(value) {", start);
+    expect(start).toBeGreaterThan(0);
+    const preview = new Function(roomPageScript.slice(start, end) + "return boardPreview;")() as (value: unknown) => { text: string; state: string };
+    expect(preview({ title: "Review parser", status: "claimed", updated_at: "2026-01-01" })).toEqual({ text: "Review parser", state: "claimed" });
+    expect(preview({ title: "Fix tests", state: "doing" })).toEqual({ text: "Fix tests", state: "doing" });
+    expect(preview("First line\nsecond line " + "x".repeat(70))).toEqual({ text: "First line second line " + "x".repeat(37) + "…", state: "" });
+    expect(preview({ note: "<script>" })).toEqual({ text: '{"note":"<script>"}', state: "" });
+    expect(roomPageScript).toContain("boardPreview(boardDisplayValue(entry.value))");
+    expect(roomPageScript).toContain('${esc(preview.state)}');
+    expect(roomPageScript).toContain('class="button button-small" type="button" data-edit-board-key=');
+    expect(roomPageScript).toMatch(/<form class="board-edit-form"[^>]*><p class="fineprint">Shared with room participants, not encrypted/);
+    expect(roomPageScript).not.toMatch(/<\/div><p class="fineprint">Shared with room participants, not encrypted/);
+    expect(roomPageHtml("room-1")).toContain('.board-entry-details > summary { min-height: 44px; }');
+  });
+
   function messageBodyHtml(body: string, participants: unknown, workspace: unknown): string {
     const start = roomPageScript.indexOf("  function repoFileBase(");
     const end = roomPageScript.indexOf("  async function renderMessage(", start);

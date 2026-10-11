@@ -62,6 +62,10 @@
 
   if (participantId) startRoom();
   else showJoinForm();
+  setInterval(() => {
+    const expiry = root?.querySelector('.room-summary time[datetime]');
+    if (expiry) expiry.textContent = formatRoomExpiry(expiry.getAttribute('datetime'));
+  }, 60_000);
 
   function showJoinForm(error = "") {
     if (!root) return;
@@ -495,6 +499,28 @@
     }).join("") + '</div>';
   }
 
+  function renderSprintTaskBoard(entries) {
+    const tasks = entries.map(([key, entry]) => ({ key, id: key.slice(5), value: boardDisplayValue(entry.value) }));
+    const done = new Set(tasks.filter(({ value }) => value?.status === "done").map(({ id }) => id));
+    const card = ({ key, id, value }) => {
+      const task = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      const waiting = Array.isArray(task.depends_on) ? task.depends_on.filter(dep => !done.has(dep)) : [];
+      const details = Object.fromEntries(Object.entries(task).filter(([field]) => !["title", "status", "owner"].includes(field)));
+      return '<article class="kanban-card" data-sprint-task-id="' + escAttr(id) + '">' +
+        '<span class="kanban-card-title">' + esc(id) + ' · ' + esc(task.title || id) + '</span>' +
+        (task.owner ? '<span class="kanban-card-owner">Owner: ' + esc(task.owner) + '</span>' : '') +
+        (waiting.length ? '<span class="sprint-task-waiting">waits for ' + esc(waiting.join(', ')) + '</span>' : '') +
+        '<details class="kanban-card-details" data-collapse="' + escAttr('key:' + key) + '"><summary>Details</summary><div class="board-value">' + renderValue(details) + '</div></details>' +
+        '<button class="button button-small" type="button" data-edit-board-key="' + escAttr(key) + '" aria-label="' + escAttr('Edit board key ' + key) + '">Edit</button></article>';
+    };
+    return '<div class="kanban-board sprint-task-board" aria-label="Sprint tasks">' + ["open", "claimed", "blocked", "done"].map(status => {
+      const inColumn = tasks.filter(({ value }) => value?.status === status || (status === "open" && !["open", "claimed", "blocked", "done"].includes(value?.status)));
+      const older = status === "done" ? inColumn.slice(0, -3) : [];
+      const cards = (older.length ? '<details class="kanban-done-more" data-collapse="sprint-done-more"><summary>Show ' + older.length + ' more</summary>' + older.map(card).join('') + '</details>' : '') + inColumn.slice(older.length).map(card).join('');
+      return '<div class="kanban-column"><h3 class="kanban-column-title">' + status[0].toUpperCase() + status.slice(1) + '</h3><div class="kanban-cards">' + cards + '</div></div>';
+    }).join('') + '</div>';
+  }
+
   function extractValue(v) {
     if (v && typeof v === "object" && "encrypted_payload" in v) {
       try {
@@ -903,15 +929,19 @@
     const tasksVal = extractValue(board.tasks?.value) || {};
     const isKanban = columnsVal && typeof columnsVal === "object" && !Array.isArray(columnsVal) && ["todo", "doing", "review", "done"].some((c) => c in columnsVal)
       && typeof tasksVal === 'object' && !Array.isArray(tasksVal) && !('encrypted_payload' in tasksVal);
-    const boardEntries = Object.entries(board).filter(([key]) => key !== 'reservations' && (!isKanban || !['columns', 'tasks'].includes(key))).map(([k, entry]) => {
+    const sprintTasks = Object.entries(board).filter(([key]) => key.startsWith('task.'));
+    // Beside sprint tasks, an empty Kanban is only four empty columns (a full screen on a phone); hide it and its editor.
+    const showKanban = isKanban && !(sprintTasks.length && ["todo", "doing", "review", "done"].every((c) => !columnsVal[c]?.length));
+    const boardEntries = Object.entries(board).filter(([key]) => key !== 'reservations' && !key.startsWith('task.') && (!isKanban || !['columns', 'tasks'].includes(key))).map(([k, entry]) => {
       const meta = `<span class="board-meta" title="${escAttr('updated at ' + entry.updated_at)}">v${esc(entry.version)} · ${esc(entry.updated_by)} · ${esc(shortTime(entry.updated_at))}</span>`;
-      const edit = `<button class="button" type="button" data-edit-board-key="${escAttr(k)}" aria-label="${escAttr('Edit board key ' + k)}">Edit</button>`;
+      const edit = `<button class="button button-small" type="button" data-edit-board-key="${escAttr(k)}" aria-label="${escAttr('Edit board key ' + k)}">Edit</button>`;
       const value = `<div class="board-value">${renderBoardValue(entry.value)}</div>`;
       const plain = extractValue(entry.value);
       if (typeof plain === 'string' && plain.length <= 160) return `<div class="board-entry"><span class="board-key">${esc(k)}</span>${meta}${edit}${value}</div>`;
-      return `<div class="board-entry"><details class="board-entry-details" data-collapse="${escAttr('key:' + k)}"><summary><span class="board-key">${esc(k)}</span>${meta}</summary>${value}</details>${edit}</div>`;
+      const preview = boardPreview(boardDisplayValue(entry.value));
+      return `<div class="board-entry"><details class="board-entry-details" data-collapse="${escAttr('key:' + k)}"><summary><span class="board-entry-heading"><span class="board-key">${esc(k)}</span><span class="board-preview">${esc(preview.text)}</span>${preview.state ? `<span class="board-preview-state">${esc(preview.state)}</span>` : ""}</span>${meta}</summary>${value}</details>${edit}</div>`;
     }).join('');
-    const boardHtml = boardKeys.length === 0 ? '<p class="board-empty">No board data yet.</p>' : (isKanban ? renderKanbanBoard(board, columnsVal) : '') + boardEntries;
+    const boardHtml = boardKeys.length === 0 ? '<p class="board-empty">No board data yet.</p>' : (showKanban ? renderKanbanBoard(board, columnsVal) : '') + (sprintTasks.length ? renderSprintTaskBoard(sprintTasks) : '') + boardEntries;
 
     const pList = Object.values(participants);
     // Where each participant works: sealed with the room key, opened here with the join secret.
@@ -948,6 +978,10 @@
       ? `<p class="board-empty">No messages yet.</p>`
       : (await Promise.all(messages.map((m) => renderMessage(m, messages, participants, workspaces)))).join("");
     const extendControls = isHost ? ` <button class="button button-small" type="button" data-extend-room title="Extend invite by 30 minutes">Extend 30 min</button><p class="room-ttl-status" data-room-ttl-status aria-live="polite"></p>` : "";
+    const expiryDate = new Date(expiresAt);
+    const expiryHtml = expiresAt && Number.isFinite(expiryDate.getTime())
+      ? `<time datetime="${escAttr(expiryDate.toISOString())}" title="${escAttr(expiryDate.toLocaleString())}">${esc(formatRoomExpiry(expiresAt))}</time>`
+      : "—";
 
     // Each section is replaced only when its markup changes, so a new message does not rebuild the board or
     // interrupt typing. The composer is written once; only its recipient list follows the participants.
@@ -959,14 +993,14 @@
 ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(room.first_message) + '</dd>' : ''}
 </dl>
 <dl class="room-summary">
-<div><dt>purpose</dt><dd>${esc(room.purpose || "—")}</dd></div>
+${isRepeatedRoomPurpose(room.name, room.purpose) ? "" : `<div><dt>purpose</dt><dd>${esc(room.purpose || "—")}</dd></div>`}
 <div><dt>host</dt><dd>${esc(room.host_id || "—")}</dd></div>
 <div><dt>phase</dt><dd>${esc(phase || "—")}</dd></div>
-<div><dt>expires</dt><dd>${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}${extendControls}</dd></div>
+<div><dt>expires</dt><dd>${expiryHtml}${extendControls}</dd></div>
 </dl>
 </header>`,
       report: reportHtml,
-      board: `<section class="room-board"><div class="board-toolbar"><h2>Board</h2><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><form class="board-edit-form" data-board-form><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>`,
+      board: `<section class="room-board"><div class="board-toolbar"><h2>Board</h2><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${showKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>`,
       reservations: `<section class="room-reservations" aria-label="File reservations"><h2>File reservations</h2>${reservationsHtml}</section>`,
       help: helpNeededHtml(data),
       participants: `<section class="room-participants"><h2>Participants</h2>${participantsHtml}</section>`,
@@ -1443,6 +1477,20 @@ ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(
     return bytes;
   }
 
+  function formatRoomExpiry(value, now = Date.now()) {
+    const remaining = Date.parse(value) - now;
+    if (!Number.isFinite(remaining)) return "—";
+    if (remaining <= 0) return "expired";
+    const minutes = Math.ceil(remaining / 60000);
+    return minutes < 60 ? `in ${minutes} min` : `in ${Math.round(minutes / 60)} h`;
+  }
+
+  function isRepeatedRoomPurpose(name, purpose) {
+    const roomName = String(name || "").trim().replace(/\s+/g, " ").toLowerCase();
+    const description = String(purpose || "").trim().replace(/\s+/g, " ").toLowerCase();
+    return !!roomName && (description === roomName || description.replace(/^sprint(?:\s+|\s*[:—-]\s*)/, "") === roomName);
+  }
+
   function isExpiredTimestamp(value) {
     if (!value) return false;
     const ms = Date.parse(String(value));
@@ -1458,6 +1506,15 @@ ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(
   function boardValueText(value) {
     const displayValue = boardDisplayValue(value);
     return typeof displayValue === "object" ? JSON.stringify(displayValue, null, 2) : String(displayValue ?? "");
+  }
+
+  function boardPreview(value) {
+    if (value && typeof value === "object" && !Array.isArray(value) && typeof value.title === "string" && value.title.trim()) {
+      const state = value.status ?? value.state;
+      return { text: value.title.replace(/\s+/g, " ").trim(), state: typeof state === "string" || typeof state === "number" ? String(state) : "" };
+    }
+    const text = (typeof value === "string" ? value : JSON.stringify(value) ?? String(value)).replace(/\s+/g, " ").trim();
+    return { text: text.length > 60 ? text.slice(0, 60).trimEnd() + "…" : text, state: "" };
   }
 
   function renderBoardValue(value) {

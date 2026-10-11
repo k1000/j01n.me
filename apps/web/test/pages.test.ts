@@ -197,6 +197,23 @@ async function roomPageDecryptors(joinSecret: string, latest: unknown = null) {
 }
 
 describe("room page", () => {
+  it("previews board titles and states, or truncates escaped plain text without relative time", () => {
+    const start = roomPageScript.indexOf("  function boardPreview(value) {");
+    const end = roomPageScript.indexOf("  function renderBoardValue(value) {", start);
+    expect(start).toBeGreaterThan(0);
+    const preview = new Function(roomPageScript.slice(start, end) + "return boardPreview;")() as (value: unknown) => { text: string; state: string };
+    expect(preview({ title: "Review parser", status: "claimed", updated_at: "2026-01-01" })).toEqual({ text: "Review parser", state: "claimed" });
+    expect(preview({ title: "Fix tests", state: "doing" })).toEqual({ text: "Fix tests", state: "doing" });
+    expect(preview("First line\nsecond line " + "x".repeat(70))).toEqual({ text: "First line second line " + "x".repeat(37) + "…", state: "" });
+    expect(preview({ note: "<script>" })).toEqual({ text: '{"note":"<script>"}', state: "" });
+    expect(roomPageScript).toContain("boardPreview(boardDisplayValue(entry.value))");
+    expect(roomPageScript).toContain('${esc(preview.state)}');
+    expect(roomPageScript).toContain('class="button button-small" type="button" data-edit-board-key=');
+    expect(roomPageScript).toMatch(/<form class="board-edit-form"[^>]*><p class="fineprint">Shared with room participants, not encrypted/);
+    expect(roomPageScript).not.toMatch(/<\/div><p class="fineprint">Shared with room participants, not encrypted/);
+    expect(roomPageHtml("room-1")).toContain('.board-entry-details > summary { min-height: 44px; }');
+  });
+
   function messageBodyHtml(body: string, participants: unknown, workspace: unknown): string {
     const start = roomPageScript.indexOf("  function repoFileBase(");
     const end = roomPageScript.indexOf("  async function renderMessage(", start);
@@ -295,6 +312,15 @@ describe("room page", () => {
     expect(html).toContain('data-extend-room');
   });
 
+  it("groups sprint board keys into reusable Kanban cards without generic duplicate rows", () => {
+    expect(roomPageScript).toContain("function renderSprintTaskBoard(entries)");
+    expect(roomPageScript).toContain("key.startsWith('task.')");
+    expect(roomPageScript).toContain("!key.startsWith('task.')");
+    expect(roomPageScript).toContain("sprintTasks.length ? renderSprintTaskBoard(sprintTasks) : ''");
+    expect(roomPageScript).toContain('data-edit-board-key="');
+    expect(roomPageHtml("room-1")).toContain(".sprint-task-board .kanban-card-details > summary");
+  });
+
   it("keeps the Kanban controls readable and the columns within the board", () => {
     const html = roomPageHtml("room-1");
 
@@ -321,10 +347,40 @@ describe("room page", () => {
   it("spreads room summary fields across one row with narrow-screen wrapping", () => {
     const html = roomPageHtml("room-1");
 
-    expect(roomPageScript).toMatch(/<dl class="room-summary">\s*<div><dt>purpose<\/dt>.*?<div><dt>host<\/dt>.*?<div><dt>phase<\/dt>.*?<div><dt>expires<\/dt>/s);
+    expect(roomPageScript).toContain('isRepeatedRoomPurpose(room.name, room.purpose) ? ""');
+    expect(roomPageScript).toMatch(/<dl class="room-summary">[\s\S]*?<div><dt>host<\/dt>.*?<div><dt>phase<\/dt>.*?<div><dt>expires<\/dt>/s);
     expect(html).toMatch(/\.room-summary\s*\{[^}]*display: flex; flex-wrap: wrap; justify-content: space-between/);
     expect(html).toContain('@media (max-width: 760px) { .room-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } }');
     expect(html).toContain('@media (max-width: 480px) { .room-summary { grid-template-columns: minmax(0, 1fr); } }');
+  });
+
+  it("keeps navigation actions aligned, with a filled live link and outlined arcade button", () => {
+    const html = roomPageHtml("room-1");
+    expect(html).toContain('data-room-view-link href="?view=live">Live view</a>');
+    expect(html).toContain('data-arcade-open aria-controls="room-arcade"');
+    expect(html).toContain('& .room-navigation .button, & .room-navigation .arcade-toggle { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;');
+    expect(html).toContain('& .room-navigation .button { background: var(--console-cream); color: var(--console-ink); }');
+    expect(html).toContain('& .room-navigation .arcade-toggle { background: transparent; color: var(--console-cream); }');
+  });
+
+  it("formats expiry and omits purposes that merely repeat the room name", () => {
+    const start = roomPageScript.indexOf("  function formatRoomExpiry(");
+    const end = roomPageScript.indexOf("  function isExpiredTimestamp(", start);
+    expect(start).toBeGreaterThan(0);
+    const helpers = new Function(roomPageScript.slice(start, end) + "return { formatRoomExpiry, isRepeatedRoomPurpose };")() as {
+      formatRoomExpiry: (value: string, now: number) => string;
+      isRepeatedRoomPurpose: (name: string, purpose: string) => boolean;
+    };
+    const now = Date.parse("2026-10-11T12:00:00Z");
+    expect(helpers.formatRoomExpiry(new Date(now + 42 * 60000).toISOString(), now)).toBe("in 42 min");
+    expect(helpers.formatRoomExpiry(new Date(now + 3 * 3600000).toISOString(), now)).toBe("in 3 h");
+    expect(helpers.formatRoomExpiry(new Date(now - 1).toISOString(), now)).toBe("expired");
+    expect(helpers.formatRoomExpiry("invalid", now)).toBe("—");
+    expect(helpers.isRepeatedRoomPurpose("Onboarding swarm", "Sprint Onboarding swarm")).toBe(true);
+    expect(helpers.isRepeatedRoomPurpose("Onboarding swarm", "  ONBOARDING  swarm ")).toBe(true);
+    expect(helpers.isRepeatedRoomPurpose("Onboarding swarm", "Sprint Onboarding swarm for new agents")).toBe(false);
+    expect(roomPageScript).toContain('title="${escAttr(expiryDate.toLocaleString())}"');
+    expect(roomPageScript).toContain('<time datetime="${escAttr(expiryDate.toISOString())}"');
   });
 
   it("lays out participants as responsive cards in the console theme", () => {

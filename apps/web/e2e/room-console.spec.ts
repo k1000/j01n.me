@@ -11,7 +11,7 @@ function boardValue(entry: { value: unknown }) {
   return typeof value.encrypted_payload === "string" ? JSON.parse(Buffer.from(value.encrypted_payload.slice(3), "base64").toString("utf8")) : entry.value;
 }
 
-async function createRoom(page: Page, name = "human-host") {
+async function createRoom(page: Page, name = "human-host", purpose?: string) {
   // Wrangler's local host reports http://j01n.me; the browser fixture uses its own localhost origin.
   await page.route("**/rooms", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
@@ -28,6 +28,7 @@ async function createRoom(page: Page, name = "human-host") {
   const dialog = page.getByRole("dialog", { name: "Create room", exact: true });
   await dialog.getByLabel("Your name", { exact: true }).fill(name);
   await dialog.getByLabel("Room name", { exact: true }).fill("Planning room");
+  if (purpose) await dialog.getByLabel("Public purpose").fill(purpose);
   await dialog.getByLabel("Kickoff").fill("Start by planning the parser work.");
   await dialog.getByRole("button", { name: "Create room", exact: true }).click();
   await expect(page.getByRole("button", { name: "Copy invitation URL" })).toBeVisible();
@@ -44,6 +45,51 @@ test("create opens the room as host with Kanban and a shareable private link", a
   await expect(link).toHaveAttribute("data-copy-invitation", /\/room\/[^#]+#[A-Za-z0-9_-]+$/);
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("j01n.rooms") || "{}"));
   expect(Object.values(saved)).toEqual([expect.objectContaining({ participant_id: "human-host", participant_token: expect.any(String) })]);
+});
+
+test("navigation aligns and the overview abbreviates expiry and duplicate purpose", async ({ page }, testInfo) => {
+  await page.clock.install();
+  await createRoom(page, "human-host", "Sprint Planning room");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const nav = page.locator(".room-navigation");
+  const live = nav.getByRole("link", { name: "Live view" });
+  const arcade = nav.getByRole("button", { name: "ARCADE" });
+  await expect(arcade).toBeVisible();
+  const styles = await page.evaluate(() => {
+    const live = document.querySelector("[data-room-view-link]")!;
+    const arcade = document.querySelector("[data-arcade-open]")!;
+    const a = live.getBoundingClientRect();
+    const b = arcade.getBoundingClientRect();
+    return {
+      liveHeight: a.height, arcadeHeight: b.height, liveCenter: a.y + a.height / 2, arcadeCenter: b.y + b.height / 2,
+      liveBackground: getComputedStyle(live).backgroundColor, arcadeBackground: getComputedStyle(arcade).backgroundColor,
+      liveAlign: getComputedStyle(live).alignItems, arcadeAlign: getComputedStyle(arcade).alignItems,
+    };
+  });
+  expect(styles.liveHeight).toBeGreaterThanOrEqual(44);
+  expect(styles.liveHeight).toBe(styles.arcadeHeight);
+  expect(styles.liveCenter).toBe(styles.arcadeCenter);
+  expect(styles.liveAlign).toBe("center");
+  expect(styles.arcadeAlign).toBe("center");
+  expect(styles.liveBackground).not.toBe(styles.arcadeBackground);
+  await expect(page.locator(".room-summary dt", { hasText: "purpose" })).toHaveCount(0);
+  const expiry = page.locator(".room-summary time");
+  await expect(expiry).toHaveText(/^in \d+ (min|h)$/);
+  const exact = await expiry.getAttribute("title");
+  expect(exact).toBeTruthy();
+  expect(exact).toBe(new Date((await expiry.getAttribute("datetime"))!).toLocaleString());
+  await page.locator(".room-board").evaluate(el => el.setAttribute("data-marker", "kept"));
+  const initialExpiry = await expiry.textContent();
+  await page.clock.fastForward(120_000);
+  await expect(expiry).not.toHaveText(initialExpiry!);
+  await expect(page.locator('.room-board[data-marker="kept"]')).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Extend 30 min" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("header-1280.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(live).toBeVisible();
+  expect(await live.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath("header-390.png"), fullPage: true });
 });
 
 test("room console and live view follow the homepage palette and responsive border hierarchy", async ({ page }) => {
@@ -232,6 +278,111 @@ test("missing saved keys cannot silently replace an existing identity", async ({
   expect(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith("j01n.hostKey.")))).toEqual([]);
 });
 
+test("sprint board keys render once as editable task cards with folded done work", async ({ page }, testInfo) => {
+  const agent = await joinRoom(parseInviteLink(await createRoom(page))!, "worker-agent");
+  const initial = (await agent.board()).board;
+  await agent.deleteBoardKey("columns", { ifVersion: initial.columns.version });
+  await agent.deleteBoardKey("tasks", { ifVersion: initial.tasks.version });
+  const tasks = [
+    ["T1", { title: "Set up parser", status: "done", files: ["parser.ts"], depends_on: [] }],
+    ["T2", { title: "Ship parser", status: "open", files: ["a/very/long/path/that/can/wrap/parser.ts"], depends_on: ["T1", "T3"], brief: "Handle <empty> input" }],
+    ["T3", { title: "Review parser", status: "claimed", owner: "worker-agent", files: ["review.ts"], depends_on: [] }],
+    ["T4", { title: "Resolve review", status: "blocked", files: [], depends_on: [], blocked_reason: "Needs design" }],
+    ...[5, 6, 7].map(id => [`T${id}`, { title: `Completed ${id}`, status: "done", files: [], depends_on: [], evidence: { tests: "passed" } }]),
+  ] as const;
+  for (const [id, task] of tasks) await agent.setBoardKey(`task.${id}`, task, { ifVersion: 0 });
+  await agent.setBoardKey("decision", "Keep parser small", { ifVersion: 0 });
+  const sprint = page.locator(".sprint-task-board");
+  await expect(sprint.locator(".kanban-column-title")).toHaveText(["Open", "Claimed", "Blocked", "Done"]);
+  await expect(sprint.locator('[data-sprint-task-id="T2"]')).toContainText("waits for T3");
+  await expect(sprint.locator('[data-sprint-task-id="T2"]')).not.toContainText("waits for T1");
+  await expect(page.locator(".board-entry")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Edit board key decision" })).toBeVisible();
+  const card = sprint.locator('[data-sprint-task-id="T2"]');
+  await expect(card.getByText("Handle <empty> input")).toBeHidden();
+  await card.getByText("Details").click();
+  await expect(card.getByText("Handle <empty> input")).toBeVisible();
+  await expect(card.getByText("a/very/long/path/that/can/wrap/parser.ts")).toBeVisible();
+  await expect(sprint.locator('[data-sprint-task-id="T1"]')).toBeHidden();
+  await sprint.getByText("Show 1 more").click();
+  await expect(sprint.locator('[data-sprint-task-id="T1"]')).toBeVisible();
+  const completed = sprint.locator('[data-sprint-task-id="T5"]');
+  await completed.getByText("Details").click();
+  await expect(completed.getByText("passed")).toBeVisible();
+  await card.getByRole("button", { name: "Edit board key task.T2" }).click();
+  await expect(page.getByLabel("key", { exact: true })).toHaveValue("task.T2");
+  await expect(page.getByLabel("value", { exact: true })).toHaveValue(/Ship parser/);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(sprint.locator(".kanban-column")).toHaveCount(4);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: testInfo.outputPath(`sprint-tasks-${width}.png`), fullPage: true });
+  }
+});
+
+test("an empty Kanban is hidden beside sprint tasks but kept once it has cards", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const agent = await joinRoom(parseInviteLink(await createRoom(page))!, "worker-1");
+  await agent.setBoardKey("task.T1", { title: "Sprint task", status: "open", files: ["a.ts"], depends_on: [] }, { ifVersion: 0 });
+  await expect(page.locator(".sprint-task-board")).toBeVisible();
+  await expect(page.locator(".kanban-board:not(.sprint-task-board)")).toHaveCount(0);
+  await expect(page.getByText("New task", { exact: true })).toHaveCount(0);
+  const board = (await agent.board()).board;
+  await agent.patchBoard({ tasks: { k1: { title: "Kanban card", state: "todo" } }, columns: { todo: ["k1"], doing: [], review: [], done: [] } },
+    { ifVersions: { tasks: board.tasks.version!, columns: board.columns.version! } });
+  await expect(page.getByRole("button", { name: "Edit Kanban card", exact: true })).toBeVisible();
+  await expect(page.getByText("New task", { exact: true })).toBeVisible();
+});
+
+test("sprint room actions fit and respond to touch on a phone", async ({ browser }, testInfo) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  try {
+    const invitation = await createRoom(page);
+    const agent = await joinRoom(parseInviteLink(invitation)!, "worker-1");
+    const initial = (await agent.board()).board;
+    await agent.deleteBoardKey("columns", { ifVersion: initial.columns.version });
+    await agent.deleteBoardKey("tasks", { ifVersion: initial.tasks.version });
+    await agent.setBoardKey("task.T1", { title: "Review the long mobile layout", status: "open", files: ["apps/web/src/room-page.js"], depends_on: [], brief: "Check touch targets" }, { ifVersion: 0 });
+    await agent.setBoardKey("task.T2", { title: "Ship the room page", status: "claimed", owner: "worker-1", depends_on: ["T1"] }, { ifVersion: 0 });
+    for (let i = 2; i <= 6; i++) await joinRoom(parseInviteLink(invitation)!, `worker-${i}`);
+    const board = page.locator(".sprint-task-board");
+    await expect(board.locator(".kanban-column")).toHaveCount(4);
+    await expect(page.locator(".participant-card")).toHaveCount(7);
+    const actions = [
+      page.getByRole("link", { name: "Live view" }),
+      page.getByRole("button", { name: "Copy URL", exact: true }),
+      page.getByRole("button", { name: "Extend 30 min" }),
+      page.getByRole("button", { name: "Add board key" }),
+      board.locator('[data-sprint-task-id="T1"] summary'),
+      board.getByRole("button", { name: "Edit board key task.T1" }),
+      page.getByRole("button", { name: "Send", exact: true }),
+    ];
+    for (const action of actions) {
+      await expect(action).toBeVisible();
+      expect(await action.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    await board.locator('[data-sprint-task-id="T1"] summary').tap();
+    await expect(board.getByText("Check touch targets")).toBeVisible();
+    await board.getByRole("button", { name: "Edit board key task.T1" }).tap();
+    await expect(page.getByLabel("key", { exact: true })).toHaveValue("task.T1");
+    await page.getByRole("button", { name: "Cancel", exact: true }).tap();
+    await page.getByRole("button", { name: "Add board key" }).tap();
+    await expect(page.getByLabel("key", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Cancel", exact: true }).tap();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    await page.screenshot({ path: testInfo.outputPath("sprint-touch-390.png"), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1280);
+    await page.screenshot({ path: testInfo.outputPath("sprint-touch-1280.png"), fullPage: true });
+    await page.getByRole("button", { name: "ARCADE" }).tap();
+    await expect(page.getByRole("img", { name: "Room arcade" })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("sprint-arcade-1280.png") });
+  } finally { await context.close(); }
+});
+
 test("other board keys remain visible beside Kanban and reject stale edits", async ({ page }) => {
   const agent = await joinRoom(parseInviteLink(await createRoom(page))!, "worker-agent");
   await agent.setBoardKey("decision", "Initial decision", { ifVersion: 0 });
@@ -246,6 +397,46 @@ test("other board keys remain visible beside Kanban and reject stale edits", asy
   await expect(page.getByLabel("value", { exact: true })).toHaveValue("Human decision");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Human decision", { exact: true })).toBeVisible();
+});
+
+test("board rows preview values, keep edits secondary and show the warning only in the form", async ({ page }, testInfo) => {
+  const agent = await joinRoom(parseInviteLink(await createRoom(page))!, "worker-agent");
+  await agent.setBoardKey("feature.T2", { title: "Polish board rows", status: "claimed", brief: "Not shown in preview" }, { ifVersion: 0 });
+  const longText = "First line\n" + "x".repeat(170);
+  await agent.setBoardKey("notes", longText, { ifVersion: 0 });
+  const objectRow = page.locator('[data-collapse="key:feature.T2"]');
+  const textRow = page.locator('[data-collapse="key:notes"]');
+  await expect(objectRow.locator(".board-preview")).toHaveText("Polish board rows");
+  await expect(objectRow.locator(".board-preview-state")).toHaveText("claimed");
+  await expect(textRow.locator(".board-preview")).toHaveText("First line " + "x".repeat(49) + "…");
+  await expect(objectRow.locator(".board-meta")).toContainText("v1 · worker-agent");
+  await expect(objectRow).not.toHaveAttribute("open", "");
+  await expect(page.locator(".room-board > .fineprint")).toHaveCount(0);
+  const edit = page.getByRole("button", { name: "Edit board key feature.T2" });
+  await expect(edit).toHaveClass(/button-small/);
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(edit).toBeVisible();
+    const layout = await page.evaluate(() => {
+      const button = document.querySelector('[data-edit-board-key="feature.T2"]')!;
+      const state = document.querySelector('[data-collapse="key:feature.T2"] .board-preview-state')!;
+      const style = getComputedStyle(button);
+      return { noOverflow: document.documentElement.scrollWidth <= innerWidth, stateVisible: state.getBoundingClientRect().right <= button.getBoundingClientRect().left, height: button.getBoundingClientRect().height, background: style.backgroundColor, color: style.color };
+    });
+    expect(layout.noOverflow).toBe(true);
+    expect(layout.stateVisible).toBe(true);
+    expect(layout.height).toBeGreaterThanOrEqual(44);
+    expect(layout.background).not.toBe("rgb(253, 237, 204)");
+    expect(layout.color).toBe("rgb(253, 237, 204)");
+    await page.screenshot({ path: testInfo.outputPath(`board-${width}.png`), fullPage: true });
+  }
+  await edit.click();
+  await expect(page.locator("[data-board-form] .fineprint")).toHaveText("Shared with room participants, not encrypted. Do not put secrets on the board.");
+  await expect(page.getByLabel("key", { exact: true })).toHaveValue("feature.T2");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await objectRow.locator("summary").click();
+  await expect(objectRow).toHaveAttribute("open", "");
+  await expect(objectRow.locator(".board-value")).toContainText("Not shown in preview");
 });
 
 test("re-entering a saved room preserves its token, keys and identity", async ({ page }) => {

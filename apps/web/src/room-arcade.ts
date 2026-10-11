@@ -112,6 +112,24 @@ const ARCADE_JS = String.raw`
   function clean(s) { return String(s == null ? "" : s).normalize("NFD").replace(/[^ -~]/g, "").toUpperCase(); }
   function textW(s) { return s.length ? s.length * 6 - 1 : 0; }
   function fit(s, w) { const n = Math.floor((w + 1) / 6); return s.length > n ? s.slice(0, Math.max(0, n - 1)) + "." : s; }
+  function seatLabels(ids) {
+    const names = ids.map(clean);
+    const initial = names.map((name) => fit(name, 41));
+    const counts = new Map();
+    for (const label of initial) counts.set(label, (counts.get(label) || 0) + 1);
+    const used = new Set(initial.filter((label) => counts.get(label) === 1));
+    return initial.map((label, i) => {
+      if (counts.get(label) === 1) return label;
+      const numbered = names[i].match(/[-_](\d{1,2})$/);
+      let candidate = numbered ? names[i].slice(0, 3) + "-" + numbered[1] : names[i].slice(-6);
+      for (let n = 1; used.has(candidate); n++) {
+        const suffix = "-" + n;
+        candidate = names[i].slice(-(6 - suffix.length)) + suffix;
+      }
+      used.add(candidate);
+      return candidate;
+    });
+  }
   function text(s, x, y, shade) {
     for (const ch of s) {
       const g = FONT[ch];
@@ -192,7 +210,7 @@ const ARCADE_JS = String.raw`
   }
 
   // A seat is 42px wide; k is the sprite scale (2 while everyone fits one row, 1 for two rows).
-  function drawSeat(p, x, y, t, k) {
+  function drawSeat(p, x, y, t, k, label) {
     const ox = x + 21 - 9 * k;   // cabinet left edge; the 14px character sits 2 sprite pixels in
     const cx = ox + 2 * k;
     const nameY = y + 39 * k + 4;
@@ -235,7 +253,7 @@ const ARCADE_JS = String.raw`
       sprite(ZED, cx + 13 * k, y + (4 - lift) * k, 1, null, k);
       sprite(ZED, cx + 17 * k, y - lift * k, 0, null, k);
     }
-    textC(fit(clean(p.id), 41), x + 21, nameY, busy ? 4 : stale ? 2 : 3);
+    textC(label, x + 21, nameY, busy ? 4 : stale ? 2 : 3);
   }
 
   function drawPlayers(t) {
@@ -250,6 +268,7 @@ const ARCADE_JS = String.raw`
     const perRow = Math.max(5, Math.floor((area - 4) / 42));
     const max = perRow * 2;
     const seats = list.length > max ? list.slice(0, max - 1) : list;
+    const labels = seatLabels(seats.map((p) => p.id));
     const count = seats.length + (list.length > max ? 1 : 0);
     const rows = count > perRow ? 2 : 1;
     const k = rows === 1 ? 2 : 1;
@@ -260,7 +279,7 @@ const ARCADE_JS = String.raw`
       const inRow = row === 0 ? Math.min(perRow, count) : count - perRow;
       const x = Math.floor((area - inRow * 42) / 2) + (i - row * perRow) * 42;
       const y = top + row * (seatH + 2);
-      if (i < seats.length) drawSeat(seats[i], x, y, t, k);
+      if (i < seats.length) drawSeat(seats[i], x, y, t, k, labels[i]);
       else textC("+" + (list.length - max + 1), x + 21, y + 20 * k, 3);
     }
   }

@@ -295,6 +295,10 @@ function roomPageStyles(): string {
   .kanban-card { background: Canvas; color: CanvasText; padding: 0.5rem 0.75rem; border: 1px solid color-mix(in srgb, currentColor 22%, transparent); }
   .kanban-card-title { display: block; font-weight: 700; font-size: 0.95rem; }
   .kanban-card-owner { display: block; font-size: 0.85rem; opacity: 0.6; margin-top: 0.15rem; }
+  .sprint-task-board { margin-bottom: 1rem; }
+  .sprint-task-waiting { display: block; margin-top: 0.35rem; font-size: 0.85rem; }
+  .sprint-task-board .kanban-card-details > summary, .sprint-task-board .kanban-done-more > summary { min-height: 44px; display: flex; align-items: center; }
+  .sprint-task-board .kanban-card > .button { margin-top: 0.35rem; }
   .kanban-card-priority { display: block; width: fit-content; margin-top: 0.3rem; padding: 0 0.35rem; border: 1px solid currentColor; font-size: 0.75rem; opacity: 0.8; }
   .kanban-card-priority[data-priority="low"] { opacity: 0.55; }
   .kanban-done-more > summary { cursor: pointer; font-size: 0.85rem; opacity: 0.72; padding: 0.25rem 0; }
@@ -319,8 +323,14 @@ function roomPageStyles(): string {
   .task-editor-toggle > summary { font-weight: 700; padding: 0.4rem 0; }
   .task-editor-toggle[open] > summary { margin-bottom: 0.75rem; }
   .board-entry-details { grid-column: 1 / 3; }
+  .board-entry-details > summary { min-height: 44px; }
+  .board-entry-heading { display: inline-flex; align-items: baseline; gap: 0.5rem; width: calc(100% - 1.5rem); min-width: 0; vertical-align: middle; }
+  .board-entry-heading .board-key { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .board-preview { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .board-preview-state { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; }
+  .board-preview-state::before { content: "·"; margin-right: 0.35rem; }
   .board-entry > .button { align-self: start; }
-  .board-entry-details .board-meta { margin-left: 1rem; }
+  .board-entry-details .board-meta { display: block; margin-left: 1.5rem; }
   .board-entry-details[open] > .board-value { margin-top: 0.5rem; }
   .kanban-card-details { margin-top: 0.4rem; font-size: 0.85rem; }
   .kanban-card-details > summary { opacity: 0.72; }

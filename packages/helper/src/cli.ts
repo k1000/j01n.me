@@ -8,7 +8,8 @@ import {
   buildMinimalInvite, getClientUpdateNotice, inviteLink, joinRoom, resumeRoom, parseInviteLink,
   registerAgent, setAcceptFrom, inviteAgent, waitForInvites, deleteInvite,
   sealForRoom, SDK_CLIENT_PROTOCOL, normalizeInvite, parseSprintSpec,
-  type AgentIdentity, type RoomAccess,
+  formatUsage, formatUsageRow, parseUsageDelta,
+  type AgentIdentity, type RoomAccess, type UsageDelta,
 } from "@j01n/sdk";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { RoomApiError } from "@j01n/sdk/errors";
@@ -37,6 +38,55 @@ const modelProfile = (rest: string[]) => {
   const flag = (name: string) => { const i = rest.indexOf(name); return i >= 0 && rest[i + 1] && !rest[i + 1].startsWith("--") ? rest[i + 1] : undefined; };
   return { ...(flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL ? { model: flag("--model") || process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL } : {}), ...(flag("--provider") || process.env.J01N_PROVIDER ? { provider: flag("--provider") || process.env.J01N_PROVIDER } : {}) };
 };
+// Usage reporting flags map onto the SDK's UsageDelta fields, so one validation rule (parseUsageDelta) covers CLI and SDK.
+// The short spellings the host approved (--active minutes, --cost usd) fill the same fields as the key-named ones.
+const USAGE_REPORT_FLAGS: Record<string, { field: keyof UsageDelta; number?: boolean; scale?: number }> = {
+  "--active": { field: "active_ms", number: true, scale: 60_000 },
+  "--active-ms": { field: "active_ms", number: true },
+  "--active-minutes": { field: "active_ms", number: true, scale: 60_000 },
+  "--input-tokens": { field: "input_tokens", number: true },
+  "--output-tokens": { field: "output_tokens", number: true },
+  "--cost": { field: "cost_usd", number: true },
+  "--cost-usd": { field: "cost_usd", number: true },
+  "--model": { field: "model" },
+  "--provider": { field: "provider" },
+  "--at": { field: "at" },
+};
+const usageHelp = (command: string) => `${command} [--active <minutes> | --active-ms N | --active-minutes N] [--tokens <in,out> | --input-tokens N --output-tokens N] [--cost <usd> | --cost-usd X] [--model M] [--provider P] [--at ISO]`;
+
+/** Parse `--flag value` pairs into a validated UsageDelta; numbers and bounds are checked by parseUsageDelta. */
+function usageDeltaFromFlags(args: string[]): UsageDelta {
+  const delta: Record<string, unknown> = {};
+  const put = (name: string, field: keyof UsageDelta, value: number | string) => {
+    if (delta[field] !== undefined) throw Error(`usage report ${name} conflicts with another ${field.replace(/_/g, "-")} flag`);
+    delta[field] = value;
+  };
+  const number = (name: string, raw: string, scale = 1) => {
+    const parsed = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(parsed)) throw Error(`usage report ${name} needs a number, got "${raw}"`);
+    return scale === 1 ? parsed : Math.round(parsed * scale);
+  };
+  for (let i = 0; i < args.length; i++) {
+    const name = args[i];
+    if (!name.startsWith("--")) throw Error(`usage report takes "<flag> <value>" pairs only, got the argument "${name}"`);
+    const value = args[++i];
+    if (value === undefined || value.startsWith("--")) throw Error(`usage report ${name} needs a value`);
+    if (name === "--tokens") {
+      // Always an "in,out" pair: a bare number is ambiguous between total and input tokens.
+      const parts = value.split(",");
+      if (parts.length !== 2 || parts.some((part) => part.trim() === "")) throw Error(`usage report --tokens needs "<in,out>", got "${value}"`);
+      put(name, "input_tokens", number(name, parts[0]));
+      put(name, "output_tokens", number(name, parts[1]));
+      continue;
+    }
+    const spec = USAGE_REPORT_FLAGS[name];
+    if (!spec) throw Error(`unknown usage flag: ${name}\nUsage: ${usageHelp("usage report")}`);
+    put(name, spec.field, spec.number ? number(name, value, spec.scale) : value);
+  }
+  if (!Object.keys(delta).length) throw Error(`usage report needs at least one flag\nUsage: ${usageHelp("usage report")}`);
+  return parseUsageDelta(delta);
+}
+
 const roomCommand = (client: RoomClient, command: string, rest: string[], beforeSend?: () => Promise<void>) => runRoomCommand(client, command, rest, { prefix: "node .j01n/j01n.js", readAll: true, waitDefault: 50, parseWaitFallback: true, trimWaitFrom: true, webhookResult: "helper", beforeSend, repo: repo().id, conflicts: (branch) => checkConflicts(client, repo().root, branch) });
 
 async function isRoomRef(ref?: string) {
@@ -281,8 +331,25 @@ async function main() {
       repo: id, path: (path) => relative(root, resolve(path)) || ".", requirePaths: true, releaseReasonDelimiter: true,
     })); return;
   }
+  if (cmd === "usage") {
+    // Usage snapshots are room-sealed like the kickoff, workspaces and reservations: the join secret is the key,
+    // so a profile or env that only carries a participant token must still seal with the stored join secret.
+    const sealSecret = state.joinSecret || (roomSecret === "resume-only" ? "" : roomSecret);
+    if (!sealSecret) throw Error("usage needs the room link or invitation (usage is sealed with the room key): usage <room link> <me> [report ...]");
+    const usageClient = sealSecret === roomSecret ? client : await resumeRoom(buildMinimalInvite(roomUrl, sealSecret), me, session);
+    const [sub, ...args] = rest;
+    if (sub === "report") {
+      const row = await usageClient.reportUsage(usageDeltaFromFlags(args));
+      output({ ok: true, participant: row.participant, key: row.key, version: row.version, snapshot: row.snapshot, line: formatUsageRow(row) });
+      return;
+    }
+    if (sub !== undefined) throw Error(`unknown usage command: ${sub}; expected "report" or nothing\nUsage: ${usageHelp("usage [report]")}`);
+    const { rows, totals, reported, stale } = await usageClient.usageReport();
+    output({ rows, totals, reported, stale, lines: [...rows.map((row) => formatUsageRow(row)), formatUsage(totals, "room")] });
+    return;
+  }
   if (cmd === "leave") { await client.leave({ release: rest.includes("--release") }); await fs.rm(activePath(roomUrl, me), { force: true }); output({ ok: true, left: true }); return; }
   if (cmd === "host") { output(await roomCommand(client, cmd, rest)); return; }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|invite-link|note|decide|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|usage|invite-link|note|decide|leave`);
 }
 main().catch((error: unknown) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

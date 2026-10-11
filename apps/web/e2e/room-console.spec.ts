@@ -11,7 +11,7 @@ function boardValue(entry: { value: unknown }) {
   return typeof value.encrypted_payload === "string" ? JSON.parse(Buffer.from(value.encrypted_payload.slice(3), "base64").toString("utf8")) : entry.value;
 }
 
-async function createRoom(page: Page, name = "human-host") {
+async function createRoom(page: Page, name = "human-host", purpose?: string) {
   // Wrangler's local host reports http://j01n.me; the browser fixture uses its own localhost origin.
   await page.route("**/rooms", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
@@ -28,6 +28,7 @@ async function createRoom(page: Page, name = "human-host") {
   const dialog = page.getByRole("dialog", { name: "Create room", exact: true });
   await dialog.getByLabel("Your name", { exact: true }).fill(name);
   await dialog.getByLabel("Room name", { exact: true }).fill("Planning room");
+  if (purpose) await dialog.getByLabel("Public purpose").fill(purpose);
   await dialog.getByLabel("Kickoff").fill("Start by planning the parser work.");
   await dialog.getByRole("button", { name: "Create room", exact: true }).click();
   await expect(page.getByRole("button", { name: "Copy invitation URL" })).toBeVisible();
@@ -44,6 +45,45 @@ test("create opens the room as host with Kanban and a shareable private link", a
   await expect(link).toHaveAttribute("data-copy-invitation", /\/room\/[^#]+#[A-Za-z0-9_-]+$/);
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("j01n.rooms") || "{}"));
   expect(Object.values(saved)).toEqual([expect.objectContaining({ participant_id: "human-host", participant_token: expect.any(String) })]);
+});
+
+test("navigation aligns and the overview abbreviates expiry and duplicate purpose", async ({ page }, testInfo) => {
+  await createRoom(page, "human-host", "Sprint Planning room");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const nav = page.locator(".room-navigation");
+  const live = nav.getByRole("link", { name: "Live view" });
+  const arcade = nav.getByRole("button", { name: "ARCADE" });
+  await expect(arcade).toBeVisible();
+  const styles = await page.evaluate(() => {
+    const live = document.querySelector("[data-room-view-link]")!;
+    const arcade = document.querySelector("[data-arcade-open]")!;
+    const a = live.getBoundingClientRect();
+    const b = arcade.getBoundingClientRect();
+    return {
+      liveHeight: a.height, arcadeHeight: b.height, liveCenter: a.y + a.height / 2, arcadeCenter: b.y + b.height / 2,
+      liveBackground: getComputedStyle(live).backgroundColor, arcadeBackground: getComputedStyle(arcade).backgroundColor,
+      liveAlign: getComputedStyle(live).alignItems, arcadeAlign: getComputedStyle(arcade).alignItems,
+    };
+  });
+  expect(styles.liveHeight).toBeGreaterThanOrEqual(44);
+  expect(styles.liveHeight).toBe(styles.arcadeHeight);
+  expect(styles.liveCenter).toBe(styles.arcadeCenter);
+  expect(styles.liveAlign).toBe("center");
+  expect(styles.arcadeAlign).toBe("center");
+  expect(styles.liveBackground).not.toBe(styles.arcadeBackground);
+  await expect(page.locator(".room-summary dt", { hasText: "purpose" })).toHaveCount(0);
+  const expiry = page.locator(".room-summary time");
+  await expect(expiry).toHaveText(/^expires in \d+ (min|h)$/);
+  const exact = await expiry.getAttribute("title");
+  expect(exact).toBeTruthy();
+  expect(exact).toBe(new Date((await expiry.getAttribute("datetime"))!).toLocaleString());
+  await expect(page.getByRole("button", { name: "Extend 30 min" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("header-1280.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(live).toBeVisible();
+  expect(await live.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath("header-390.png"), fullPage: true });
 });
 
 test("room console and live view follow the homepage palette and responsive border hierarchy", async ({ page }) => {

@@ -321,10 +321,40 @@ describe("room page", () => {
   it("spreads room summary fields across one row with narrow-screen wrapping", () => {
     const html = roomPageHtml("room-1");
 
-    expect(roomPageScript).toMatch(/<dl class="room-summary">\s*<div><dt>purpose<\/dt>.*?<div><dt>host<\/dt>.*?<div><dt>phase<\/dt>.*?<div><dt>expires<\/dt>/s);
+    expect(roomPageScript).toContain('isRepeatedRoomPurpose(room.name, room.purpose) ? ""');
+    expect(roomPageScript).toMatch(/<dl class="room-summary">[\s\S]*?<div><dt>host<\/dt>.*?<div><dt>phase<\/dt>.*?<div><dt>expires<\/dt>/s);
     expect(html).toMatch(/\.room-summary\s*\{[^}]*display: flex; flex-wrap: wrap; justify-content: space-between/);
     expect(html).toContain('@media (max-width: 760px) { .room-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } }');
     expect(html).toContain('@media (max-width: 480px) { .room-summary { grid-template-columns: minmax(0, 1fr); } }');
+  });
+
+  it("keeps navigation actions aligned, with a filled live link and outlined arcade button", () => {
+    const html = roomPageHtml("room-1");
+    expect(html).toContain('data-room-view-link href="?view=live">Live view</a>');
+    expect(html).toContain('data-arcade-open aria-controls="room-arcade"');
+    expect(html).toContain('& .room-navigation .button, & .room-navigation .arcade-toggle { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;');
+    expect(html).toContain('& .room-navigation .button { background: var(--console-cream); color: var(--console-ink); }');
+    expect(html).toContain('& .room-navigation .arcade-toggle { background: transparent; color: var(--console-cream); }');
+  });
+
+  it("formats expiry and omits purposes that merely repeat the room name", () => {
+    const start = roomPageScript.indexOf("  function formatRoomExpiry(");
+    const end = roomPageScript.indexOf("  function isExpiredTimestamp(", start);
+    expect(start).toBeGreaterThan(0);
+    const helpers = new Function(roomPageScript.slice(start, end) + "return { formatRoomExpiry, isRepeatedRoomPurpose };")() as {
+      formatRoomExpiry: (value: string, now: number) => string;
+      isRepeatedRoomPurpose: (name: string, purpose: string) => boolean;
+    };
+    const now = Date.parse("2026-10-11T12:00:00Z");
+    expect(helpers.formatRoomExpiry(new Date(now + 42 * 60000).toISOString(), now)).toBe("expires in 42 min");
+    expect(helpers.formatRoomExpiry(new Date(now + 3 * 3600000).toISOString(), now)).toBe("expires in 3 h");
+    expect(helpers.formatRoomExpiry(new Date(now - 1).toISOString(), now)).toBe("expired");
+    expect(helpers.formatRoomExpiry("invalid", now)).toBe("—");
+    expect(helpers.isRepeatedRoomPurpose("Onboarding swarm", "Sprint Onboarding swarm")).toBe(true);
+    expect(helpers.isRepeatedRoomPurpose("Onboarding swarm", "  ONBOARDING  swarm ")).toBe(true);
+    expect(helpers.isRepeatedRoomPurpose("Onboarding swarm", "Sprint Onboarding swarm for new agents")).toBe(false);
+    expect(roomPageScript).toContain('title="${escAttr(expiryDate.toLocaleString())}"');
+    expect(roomPageScript).toContain('<time datetime="${escAttr(expiryDate.toISOString())}"');
   });
 
   it("lays out participants as responsive cards in the console theme", () => {

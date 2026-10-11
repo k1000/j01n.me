@@ -33,8 +33,11 @@ ${HOME_PALETTE}
 
     & .room-navigation { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.75rem 1.25rem; padding-bottom: 1rem; border-bottom: 1px dashed var(--console-rule); }
     & .room-navigation > a:first-child { margin-right: auto; font-size: 1.25rem; font-weight: 700; text-decoration: none; letter-spacing: -0.02em; }
-    & .room-navigation .button, & .arcade-toggle { margin: 0; padding: 0.7rem 1rem; min-height: 44px; border: 1px solid var(--console-cream); background: transparent; color: var(--console-cream); font: 700 0.8125rem/1.4 "Fira Code", ui-monospace, monospace; text-decoration: none; cursor: pointer; }
-    & .room-navigation .button:hover, & .arcade-toggle:hover, & .arcade-toggle[aria-expanded="true"] { background: var(--console-cream); color: var(--console-ink); }
+    & .room-navigation .button, & .room-navigation .arcade-toggle { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; margin: 0; padding: 0.7rem 1rem; min-height: 44px; border: 1px solid var(--console-cream); font: 700 0.8125rem/1.4 "Fira Code", ui-monospace, monospace; text-decoration: none; cursor: pointer; }
+    & .room-navigation .button { background: var(--console-cream); color: var(--console-ink); }
+    & .room-navigation .arcade-toggle { background: transparent; color: var(--console-cream); }
+    & .room-navigation .button:hover { filter: brightness(1.07); }
+    & .room-navigation .arcade-toggle:hover, & .room-navigation .arcade-toggle[aria-expanded="true"] { background: var(--console-cream); color: var(--console-ink); }
 
     & .room-overview { border: 2px solid var(--console-cream); background: var(--console-panel); padding: clamp(1rem, 3vw, 1.75rem); min-width: 0; }
     & .room-overview h1 { margin: 0 0 1.5rem; font-size: clamp(2rem, 5vw, 3.25rem); letter-spacing: -0.04em; line-height: 1.15; overflow-wrap: anywhere; }

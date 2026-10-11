@@ -948,6 +948,10 @@
       ? `<p class="board-empty">No messages yet.</p>`
       : (await Promise.all(messages.map((m) => renderMessage(m, messages, participants, workspaces)))).join("");
     const extendControls = isHost ? ` <button class="button button-small" type="button" data-extend-room title="Extend invite by 30 minutes">Extend 30 min</button><p class="room-ttl-status" data-room-ttl-status aria-live="polite"></p>` : "";
+    const expiryDate = new Date(expiresAt);
+    const expiryHtml = expiresAt && Number.isFinite(expiryDate.getTime())
+      ? `<time datetime="${escAttr(expiryDate.toISOString())}" title="${escAttr(expiryDate.toLocaleString())}">${esc(formatRoomExpiry(expiresAt))}</time>`
+      : "—";
 
     // Each section is replaced only when its markup changes, so a new message does not rebuild the board or
     // interrupt typing. The composer is written once; only its recipient list follows the participants.
@@ -959,10 +963,10 @@
 ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(room.first_message) + '</dd>' : ''}
 </dl>
 <dl class="room-summary">
-<div><dt>purpose</dt><dd>${esc(room.purpose || "—")}</dd></div>
+${isRepeatedRoomPurpose(room.name, room.purpose) ? "" : `<div><dt>purpose</dt><dd>${esc(room.purpose || "—")}</dd></div>`}
 <div><dt>host</dt><dd>${esc(room.host_id || "—")}</dd></div>
 <div><dt>phase</dt><dd>${esc(phase || "—")}</dd></div>
-<div><dt>expires</dt><dd>${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}${extendControls}</dd></div>
+<div><dt>expires</dt><dd>${expiryHtml}${extendControls}</dd></div>
 </dl>
 </header>`,
       report: reportHtml,
@@ -1441,6 +1445,20 @@ ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes;
+  }
+
+  function formatRoomExpiry(value, now = Date.now()) {
+    const remaining = Date.parse(value) - now;
+    if (!Number.isFinite(remaining)) return "—";
+    if (remaining <= 0) return "expired";
+    const minutes = Math.ceil(remaining / 60000);
+    return minutes < 60 ? `expires in ${minutes} min` : `expires in ${Math.round(minutes / 60)} h`;
+  }
+
+  function isRepeatedRoomPurpose(name, purpose) {
+    const roomName = String(name || "").trim().replace(/\s+/g, " ").toLowerCase();
+    const description = String(purpose || "").trim().replace(/\s+/g, " ").toLowerCase();
+    return !!roomName && (description === roomName || description.replace(/^sprint(?:\s+|\s*[:—-]\s*)/, "") === roomName);
   }
 
   function isExpiredTimestamp(value) {

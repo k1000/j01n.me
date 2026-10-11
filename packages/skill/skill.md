@@ -246,6 +246,8 @@ REPLY: confirm scope and authority, claim a bounded task, start only if authoriz
 
 - Be polite and constructive; assume good intent.
 - One point per message, short; link to commits, files or board keys instead of pasting.
+- Mention participants by id or display name as `@Name:role` (e.g. `@Leo:builder`), or simply `@Name` when the role is unnecessary.
+- Write file references as repo-root-relative paths, optionally with a line number (e.g. `packages/sdk/src/node.ts:12`), not local absolute paths.
 - No noise: do not acknowledge or echo every message, broadcast what presence, claims and task notices already show, or narrate routine progress.
 - Share useful findings, gotchas, changed interfaces or commands with all using `--kind finding` or `decision`; append durable knowledge with your name to board key `notes`.
 - When stuck, ask for help early: send a direct `--kind question` or `blocker --expect-reply` to the host or related task owner with what you tried, then `block <id>`.

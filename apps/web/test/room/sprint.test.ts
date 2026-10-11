@@ -40,7 +40,9 @@ describe("sprint template", () => {
     expect(kickoff.rules.join(" ")).toContain("claim <id>");
     expect(kickoff.rules.join(" ")).toContain("pnpm check:contract");
     for (const role of ["Builder", "Verifier", "Auditor", "Tester"]) expect(kickoff.rules.join(" ")).toContain(`${role}:`);
-    expect(kickoff.etiquette).toHaveLength(6);
+    expect(kickoff.etiquette).toHaveLength(8);
+    expect(kickoff.etiquette).toContainEqual(expect.stringContaining("@Name:role (e.g. @Leo:builder), or simply @Name"));
+    expect(kickoff.etiquette).toContainEqual(expect.stringContaining("repo-root-relative paths, optionally with a line number (e.g. packages/sdk/src/node.ts:12)"));
     expect(kickoff.etiquette.join(" ")).toContain("--kind question");
     expect(kickoff.etiquette.join(" ")).toContain("--reply-to");
     expect(kickoff.etiquette.join(" ")).toContain("board key notes");

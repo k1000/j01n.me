@@ -1357,6 +1357,7 @@ async function main() {
     let specText;
     if (options.spec !== void 0) {
       if (typeof options.spec !== "string" || !options.spec) throw Error("create spec needs a Markdown file path");
+      if (typeof options.host_id !== "string" || !options.host_id) throw Error("create spec needs host_id (the host joins to post the sealed spec)");
       if (options.tasks !== void 0 || options.template !== void 0 && options.template !== "sprint") throw Error("create spec cannot override tasks or sprint template");
       specText = await fs.readFile(options.spec, "utf8");
       options.tasks = parseSprintSpec(specText);
@@ -1368,7 +1369,7 @@ async function main() {
     if (!response.ok) throw Error(text);
     if (specText !== void 0) {
       const invite2 = normalizeInvite(JSON.parse(text));
-      const me2 = invite2.room.host_id;
+      const me2 = options.host_id;
       const session2 = await createSdkCryptoSession(me2);
       const client2 = await joinRoom(invite2, me2, {}, session2);
       const keyFile2 = join2(stateDir, `.j01n-${safe(new URL(invite2.room_url).pathname)}-${safe(me2)}.json`);

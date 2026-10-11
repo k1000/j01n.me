@@ -135,7 +135,7 @@ async function start() {
   run("herdr", ["pane", "rename", pane, name]);
   run("herdr", ["agent", "start", name, "--kind", "pi", "--pane", pane]);
   const copied = spec.startsWith(dev + sep) ? relative(repo, spec) : basename(spec);
-  run("herdr", ["agent", "prompt", pane, `Host this sprint from ${copied}. Create the sprint with {"spec":${JSON.stringify(copied)}}; confirm the owner joins, invite repo agents, spawn one peer per task, coordinate review. Follow docs/SPAWN-RUNBOOK.md. Never paste room credentials into Herdr.`]);
+  run("herdr", ["agent", "prompt", pane, `Host this sprint from ${copied}. Create the sprint with {"host_id":${JSON.stringify(name)},"spec":${JSON.stringify(copied)}}; confirm the owner joins, invite repo agents, spawn one peer per task, coordinate review. Follow docs/SPAWN-RUNBOOK.md. Never paste room credentials into Herdr.`]);
   const roomDir = join(process.env.J01N_KEY_DIR || target, ".j01n-rooms");
   let joined = false;
   for (let i = 0; i < 180; i++) {

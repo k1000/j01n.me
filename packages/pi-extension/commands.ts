@@ -196,6 +196,7 @@ async function handleCreate(parsed: ParsedArgs): Promise<string> {
   let specText: string | undefined;
   if (options.spec !== undefined) {
     if (typeof options.spec !== "string" || !options.spec) throw new Error("create spec needs a Markdown file path");
+    if (typeof options.host_id !== "string" || !options.host_id) throw new Error("create spec needs host_id (the host joins to post the sealed spec)");
     if (options.tasks !== undefined || (options.template !== undefined && options.template !== "sprint")) throw new Error("create spec cannot override tasks or sprint template");
     specText = readFileSync(options.spec, "utf8");
   }
@@ -211,7 +212,8 @@ async function handleCreate(parsed: ParsedArgs): Promise<string> {
     tasks: specText !== undefined ? parseSprintSpec(specText) : options.tasks,
   });
   if (specText !== undefined) {
-    const host = invite.room.host_id;
+    // The create response carries no room.host_id; join as the requested host.
+    const host = options.host_id;
     const client = await openSession(invite, host);
     rememberRoom(invite, host);
     await client.send("all", { encrypted_payload: await sealForRoom(specText, invite.join_secret, invite.room_id) }, { intent: "kickoff", plain: true });

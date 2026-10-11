@@ -209,7 +209,8 @@ describe("pi-extension sessions", () => {
       }
       if (!String(url).endsWith("/rooms")) return originalFetch(url, init);
       calls.push({ method: init?.method ?? "GET", url: String(url), auth: null, body: String(init?.body) });
-      return Promise.resolve(Response.json({ intro: "intro", next_step: "join", room_id: "room-1", room: { name: "sprint", purpose: "sprint", host_id: "nora", max_participants: 8 }, join_secret: "secret", room_url: ROOM, api: {}, skill: "skill", expires_at: new Date(Date.now() + 60_000).toISOString() }));
+      // The real POST /rooms shape: access + join_secret + host_id, no room_id or room object.
+      return Promise.resolve(Response.json({ access: ROOM, join_secret: "secret", invite_link: `${ROOM}#secret`, host_id: "nora", expires_at: new Date(Date.now() + 60_000).toISOString() }));
     });
     const { runj01n } = await import("../commands");
     await runj01n(["create", JSON.stringify({ host_id: "nora", spec: "sprint.md" })]);
@@ -230,7 +231,7 @@ describe("pi-extension sessions", () => {
   it("refuses invalid specs before posting a room", async () => {
     writeFileSync("invalid.md", "## Tasks\n- T1 Build\n");
     const { runj01n } = await import("../commands");
-    await expect(runj01n(["create", JSON.stringify({ spec: "invalid.md" })])).rejects.toThrow("valid files");
+    await expect(runj01n(["create", JSON.stringify({ host_id: "nora", spec: "invalid.md" })])).rejects.toThrow("valid files");
     expect(calls.some((c) => c.url.endsWith("/rooms"))).toBe(false);
   });
 

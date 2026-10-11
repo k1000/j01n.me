@@ -308,6 +308,18 @@ function roomPageStyles(): string {
   /* Board values outside the editor: objects as key/value rows, arrays as lists, strings as wrapped text. */
   .board-entry .board-value { grid-column: 1 / -1; }
   .board-value { min-width: 0; overflow-wrap: anywhere; }
+  /* Secondary board detail sits behind toggles: the task editor, task descriptions and structured board keys. */
+  .task-editor-toggle, .board-entry-details, .kanban-card-details { min-width: 0; }
+  .task-editor-toggle > summary, .board-entry-details > summary, .kanban-card-details > summary { cursor: pointer; }
+  .task-editor-toggle { margin: 0 0 1rem; }
+  .task-editor-toggle > summary { font-weight: 700; padding: 0.4rem 0; }
+  .task-editor-toggle[open] > summary { margin-bottom: 0.75rem; }
+  .board-entry-details { grid-column: 1 / 3; }
+  .board-entry > .button { align-self: start; }
+  .board-entry-details .board-meta { margin-left: 1rem; }
+  .board-entry-details[open] > .board-value { margin-top: 0.5rem; }
+  .kanban-card-details { margin-top: 0.4rem; font-size: 0.85rem; }
+  .kanban-card-details > summary { opacity: 0.72; }
   .json-object { display: grid; gap: 0.4rem; margin: 0; }
   .json-object > div { display: grid; grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr); gap: 0.15rem 1rem; }
   .json-object dt { font-weight: 700; opacity: 0.72; }

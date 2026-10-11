@@ -480,8 +480,9 @@
         return '<div class="kanban-card" data-task-id="' + escAttr(id) + '">' +
           '<span class="kanban-card-title">' + esc(title) + '</span>' +
           (owner ? '<span class="kanban-card-owner">Owner: ' + owner + '</span>' : '') +
-          (task?.description ? '<p>' + esc(task.description) + '</p>' : '') +
-          (taskExtras(task) ? '<div class="board-value">' + renderValue(taskExtras(task)) + '</div>' : '') +
+          (task?.description || taskExtras(task) ? '<details class="kanban-card-details" data-collapse="' + escAttr('task:' + id) + '"><summary>Details</summary>' +
+            (task?.description ? '<p>' + esc(task.description) + '</p>' : '') +
+            (taskExtras(task) ? '<div class="board-value">' + renderValue(taskExtras(task)) + '</div>' : '') + '</details>' : '') +
           (!liveView ? '<button class="button" type="button" data-edit-task="' + escAttr(id) + '" aria-label="' + escAttr('Edit ' + title) + '">Edit</button>' : '') +
         '</div>';
       }).join("");
@@ -537,6 +538,7 @@
     const activityHtml = liveActivity.map(item => '<li><span>' + esc(item.text) + '</span><time>' + esc(item.time) + '</time></li>').join("");
     const expanded = new Set(Array.from(root.querySelectorAll("[data-message-id][open]")).map(el => el.dataset.messageId));
     const focusedMessage = document.activeElement?.closest("[data-message-id]")?.dataset.messageId;
+    const opened = openedToggles();
     const usage = await collectRoomUsage(data);
     root.innerHTML = '<header class="live-header"><div><span class="live-eyebrow">j01n.me / live coordination</span><h1>' + esc(room.name || "Room") + '</h1><p>' + esc(room.purpose || "A shared space for agents, ideas, and progress.") + '</p></div><div class="live-connection"><span data-connection-status role="status" aria-live="polite"></span><small>Snapshot ' + esc(new Date().toLocaleTimeString()) + '</small></div></header>' +
       '<dl class="live-stats"><div><dt>Active participants</dt><dd>' + active.length + '</dd></div><div><dt>Busy right now</dt><dd>' + active.filter(p => p.state === "busy").length + '</dd></div><div><dt>Visible messages</dt><dd>' + messages.length + '</dd></div><div><dt>Room phase</dt><dd>' + esc(data.phase || "Open") + '</dd></div>' +
@@ -550,7 +552,17 @@
       if (expanded.has(el.dataset.messageId)) el.open = true;
       if (el.dataset.messageId === focusedMessage) el.querySelector("summary")?.focus({ preventScroll: true });
     });
+    reopenToggles(opened);
     updateConnectionStatus(connectionState);
+  }
+
+  // Board toggles (task editor, task details, long board keys) stay as the reader left them when the room re-renders.
+  function openedToggles() {
+    return new Set(Array.from(root.querySelectorAll("details[data-collapse][open]")).map(el => el.dataset.collapse));
+  }
+
+  function reopenToggles(opened) {
+    root.querySelectorAll("details[data-collapse]").forEach(el => { if (opened.has(el.dataset.collapse)) el.open = true; });
   }
 
 
@@ -652,14 +664,14 @@
 
   function renderTaskEditor(board, participants) {
     const owners = '<option value="">Unassigned</option>' + Object.values(participants).filter(p => !p.left_at).map(p => '<option value="' + escAttr(p.id) + '">' + esc(p.id) + '</option>').join('');
-    return '<form class="task-editor" data-kanban-add-task>' +
+    return '<details class="task-editor-toggle" data-collapse="task-editor"><summary>New task</summary><form class="task-editor" data-kanban-add-task>' +
       '<input type="hidden" name="task_id" /><input type="hidden" name="tasks_version" value="' + (board.tasks?.version || 0) + '" /><input type="hidden" name="columns_version" value="' + (board.columns?.version || 0) + '" />' +
       '<label class="task-wide">Task title<input name="task_title" required maxlength="240" placeholder="What needs to be done?" /></label>' +
       '<label class="task-wide">Description and acceptance criteria<textarea name="task_description" placeholder="Context, expected result and how to verify it"></textarea></label>' +
       '<label>Owner<select name="task_owner">' + owners + '</select></label>' +
       '<label>Column<select name="task_column"><option value="todo">To Do</option><option value="doing">Doing</option><option value="review">Review</option><option value="done">Done</option></select></label>' +
       '<label>Priority<select name="task_priority"><option value="normal">Normal</option><option value="high">High</option><option value="low">Low</option></select></label>' +
-      '<div class="task-wide"><button class="button" type="submit">Save task</button> <button class="button" type="button" data-task-cancel>Clear editor</button></div><p class="task-wide" data-task-status role="status"></p></form>';
+      '<div class="task-wide"><button class="button" type="submit">Save task</button> <button class="button" type="button" data-task-cancel>Clear editor</button></div><p class="task-wide" data-task-status role="status"></p></form></details>';
   }
 
   function restoreTaskOwner(select, value) {
@@ -685,6 +697,7 @@
       form.elements.tasks_version.value = board.tasks?.version || 0;
       form.elements.columns_version.value = board.columns?.version || 0;
       form.querySelector('[data-task-status]').textContent = 'Editing ' + id;
+      form.closest('details').open = true;
       form.elements.task_title.focus();
     }));
     form.querySelector('[data-task-cancel]').addEventListener('click', () => { form.reset(); form.elements.task_id.value = ''; form.querySelector('[data-task-status]').textContent = ''; });
@@ -881,7 +894,12 @@
     const isKanban = columnsVal && typeof columnsVal === "object" && !Array.isArray(columnsVal) && ["todo", "doing", "review", "done"].some((c) => c in columnsVal)
       && typeof tasksVal === 'object' && !Array.isArray(tasksVal) && !('encrypted_payload' in tasksVal);
     const boardEntries = Object.entries(board).filter(([key]) => key !== 'reservations' && (!isKanban || !['columns', 'tasks'].includes(key))).map(([k, entry]) => {
-      return `<div class="board-entry"><span class="board-key">${esc(k)}</span><span class="board-meta">v${esc(entry.version)} · updated by ${esc(entry.updated_by)} at ${esc(entry.updated_at)}</span><button class="button" type="button" data-edit-board-key="${escAttr(k)}" aria-label="${escAttr('Edit board key ' + k)}">Edit</button><div class="board-value">${renderBoardValue(entry.value)}</div></div>`;
+      const meta = `<span class="board-meta" title="${escAttr('updated at ' + entry.updated_at)}">v${esc(entry.version)} · ${esc(entry.updated_by)}</span>`;
+      const edit = `<button class="button" type="button" data-edit-board-key="${escAttr(k)}" aria-label="${escAttr('Edit board key ' + k)}">Edit</button>`;
+      const value = `<div class="board-value">${renderBoardValue(entry.value)}</div>`;
+      const plain = extractValue(entry.value);
+      if (typeof plain === 'string' && plain.length <= 160) return `<div class="board-entry"><span class="board-key">${esc(k)}</span>${meta}${edit}${value}</div>`;
+      return `<div class="board-entry"><details class="board-entry-details" data-collapse="${escAttr('key:' + k)}"><summary><span class="board-key">${esc(k)}</span>${meta}</summary>${value}</details>${edit}</div>`;
     }).join('');
     const boardHtml = boardKeys.length === 0 ? '<p class="board-empty">No board data yet.</p>' : (isKanban ? renderKanbanBoard(board, columnsVal) : '') + boardEntries;
 
@@ -919,6 +937,7 @@
     const extendControls = isHost ? ` <button class="button button-small" type="button" data-extend-room title="Extend invite by 30 minutes">Extend 30 min</button><p class="room-ttl-status" data-room-ttl-status aria-live="polite"></p>` : "";
 
     const drafts = captureConsoleDrafts();
+    const opened = openedToggles();
     // Keep the reader's place in the message list across re-renders; stay pinned to the newest when at the bottom.
     const oldList = root.querySelector("[data-message-list]");
     const stickToBottom = !oldList || oldList.scrollHeight - oldList.scrollTop - oldList.clientHeight < 24;
@@ -959,6 +978,7 @@ ${helpNeededHtml(data)}
     wireTaskEditor(board);
     wireMessageComposer();
     showMessageArrivals(root.querySelector("[data-message-list]"), stickToBottom, oldScrollTop);
+    reopenToggles(opened);
     restoreConsoleDrafts(drafts);
     updateReplyStatus();
   }

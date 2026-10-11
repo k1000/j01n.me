@@ -48,6 +48,8 @@ test("create opens the room as host with Kanban and a shareable private link", a
 
 test("room console and live view follow the homepage palette and responsive border hierarchy", async ({ page }) => {
   await createRoom(page);
+  // Open without a mouse click so the later keyboard-focus outline check still applies.
+  await page.locator(".task-editor-toggle").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   const theme = await page.evaluate(() => {
     const body = getComputedStyle(document.body);
     const overview = getComputedStyle(document.querySelector(".room-overview")!);
@@ -108,6 +110,7 @@ test("a private link asks for your own name and saved room access survives a new
 test("humans create, assign and move tasks that an SDK agent can read", async ({ page }) => {
   const invitation = await createRoom(page);
   const agent = await joinRoom(parseInviteLink(invitation)!, "worker-agent");
+  await page.getByText("New task", { exact: true }).click();
   await page.getByRole("combobox", { name: "Owner", exact: true }).selectOption("worker-agent");
   await page.getByLabel("Task title", { exact: true }).fill("Fix parser");
   await page.getByLabel("Description and acceptance criteria").fill("Handle empty input; parser tests pass.");
@@ -152,6 +155,7 @@ test("an SDK agent's encrypted question can be answered with a linked reply", as
 
 test("live updates keep drafts and conflicting board writes require an explicit retry", async ({ page }) => {
   const agent = await joinRoom(parseInviteLink(await createRoom(page))!, "worker-agent");
+  await page.getByText("New task", { exact: true }).click();
   const title = page.getByLabel("Task title", { exact: true });
   await title.fill("Human task");
   await title.focus();
@@ -342,6 +346,7 @@ test("a committed message with a lost receipt is checked instead of immediately 
 
 test("console and Live view fit mobile screens and pass accessibility checks", async ({ page }, testInfo) => {
   await createRoom(page);
+  await page.getByText("New task", { exact: true }).click();
   await page.getByLabel("Task title", { exact: true }).fill("Review the parser changes");
   await page.getByRole("button", { name: "Save task", exact: true }).click();
   await expect(page.getByRole("button", { name: "Edit Review the parser changes", exact: true })).toBeVisible();
@@ -361,5 +366,5 @@ test("console and Live view fit mobile screens and pass accessibility checks", a
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   expect((await new AxeBuilder({ page }).analyze()).violations.map(v => v.id)).toEqual([]);
   await page.getByRole("link", { name: "Room console", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Save task", exact: true })).toBeVisible();
+  await expect(page.getByText("New task", { exact: true })).toBeVisible();
 });

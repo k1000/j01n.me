@@ -284,11 +284,10 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
   } catch {
     kickoffError = "Could not load kickoff; use /j01n board to retry";
   }
-  if (kickoff === null) {
-    // Otherwise the sealed kickoff message, which the SDK opens with this invitation's join secret.
-    const sealed = (await client.read({ all: true, includeSelf: true }).catch(() => [])).find((m) => m.intent === "kickoff" && !m.decrypt_error);
-    if (sealed) kickoff = sealed.body;
-  }
+  // Sprint rules stay in the board kickoff; expose the sealed Markdown spec separately on join.
+  const sealedKickoff = (await client.read({ all: true, includeSelf: true }).catch(() => []))
+    .find((m) => m.intent === "kickoff" && !m.decrypt_error)?.body;
+  if (kickoff === null) kickoff = sealedKickoff ?? null;
   const extension = getExtensionDiagnostics();
   return JSON.stringify({
     ok: true,
@@ -297,6 +296,7 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
     room_url: invite.room_url,
     cursor: client.cursor,
     kickoff,
+    ...(typeof sealedKickoff === "string" ? { spec: sealedKickoff } : {}),
     ...(kickoffError ? { kickoff_error: kickoffError } : {}),
     // The whole board: every key with value, version, updated_by and updated_at.
     board,

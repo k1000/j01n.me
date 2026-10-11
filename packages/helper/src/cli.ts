@@ -191,8 +191,11 @@ async function main() {
     let board: Awaited<ReturnType<RoomClient["board"]>>["board"] | null = null;
     try { board = (await client.board()).board; } catch { /* join still succeeded */ }
     let kickoff: unknown = board?.kickoff?.value ?? null;
-    if (kickoff === null) kickoff = (await client.read({ all: true, includeSelf: true })).find((m) => m.intent === "kickoff")?.body ?? null;
-    output({ ...profile, kickoff, board, ...notesAndDecisions(board ?? {}), questions: await client.openQuestions(), team: await client.team() });
+    const messages = await client.read({ all: true, includeSelf: true }).catch(() => []);
+    const sealedKickoff = messages.find((m) => m.intent === "kickoff" && !m.decrypt_error)?.body;
+    if (kickoff === null) kickoff = sealedKickoff ?? null;
+    const spec = typeof sealedKickoff === "string" ? { spec: sealedKickoff } : {};
+    output({ ...profile, kickoff, ...spec, board, ...notesAndDecisions(board ?? {}), questions: await client.openQuestions(), team: await client.team() });
     return;
   }
   if (cmd === "invite-link") {

@@ -15,9 +15,18 @@ const server = createServer(async (req, res) => {
   if (req.url === "/rooms") {
     calls.push(body);
     res.end(JSON.stringify({ intro: "intro", next_step: "join", room_id: "room-1", room: { name: "sprint", purpose: "sprint", host_id: "host", max_participants: 8 }, join_secret: "secret", room_url: `http://127.0.0.1:${port}/r/room-1`, api: {}, skill: "skill", expires_at: new Date(Date.now() + 60_000).toISOString() }));
-  } else if (req.url === "/r/room-1/participants/host") {
+  } else if (req.url === "/r/room-1/participants/host" || req.url === "/r/room-1/participants/peer") {
     res.end(JSON.stringify({ ok: true, cursor: 0, participant_token: "token" }));
-  } else if (req.url === "/r/room-1") {
+  } else if (req.url === "/r/room-1/participants") {
+    res.end(JSON.stringify({ participants: [] }));
+  } else if (req.url === "/r/room-1/asks") {
+    res.end(JSON.stringify({ asks: [] }));
+  } else if (req.url === "/r/room-1/board") {
+    res.end(JSON.stringify({ board: { kickoff: { value: { rules: ["claim before editing"] }, version: 1 } }, board_schema: null }));
+  } else if (req.url?.startsWith("/r/room-1/?") && req.method === "GET") {
+    const kickoff = calls.find((call) => call.intent === "kickoff");
+    res.end(JSON.stringify({ cursor: 1, messages: kickoff ? [{ id: "kickoff", seq: 1, from: "host", to: "all", intent: "kickoff", body: kickoff.body }] : [] }));
+  } else if (req.url === "/r/room-1" && req.method === "POST") {
     calls.push(body);
     res.end(JSON.stringify({ ok: true, id: "kickoff", seq: 1 }));
   } else { res.statusCode = 404; res.end("not found"); }
@@ -42,4 +51,7 @@ it("CLI create --spec sends only tasks in plaintext and seals the complete kicko
   expect(message.intent).toBe("kickoff");
   expect(await openRoomSeal(message.body.encrypted_payload, "secret", "room-1")).toBe(spec);
   expect(readFileSync(join(dir, ".j01n-_r_room-1-host.json"), "utf8")).not.toContain(spec);
+  writeFileSync(join(dir, "invite.json"), stdout);
+  const joined = await exec(process.execPath, [tsx, cli, "join", "invite.json", "peer"], { cwd: dir, env: { ...process.env, J01N_KEY_DIR: dir } });
+  expect(JSON.parse(joined.stdout)).toMatchObject({ kickoff: { rules: ["claim before editing"] }, spec });
 });

@@ -5,10 +5,12 @@
 // and join the room as the host, seed worker identities into their own worktrees, give each worker a Herdr workspace
 // plus pane and an explicit task prompt carrying its board brief, hand the raw invite link to the owner as a file
 // body, keep the room invite alive while the host runs status, then rebase the reviewed task branches in dependency
-// order onto main and open a merge request.
+// order onto main and open a merge request. With --ui-tester the room also gets one non-git participant: an inbox
+// identity, a private room profile in the keys dir and one Herdr pane polling the room in the ui-tester role.
 // Rules: never print a room credential, never integrate a dirty checkout, persist every step in sprint.json so an
 // interrupted start or finish resumes instead of repeating side effects (no duplicate rooms, panes or invites).
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -31,7 +33,15 @@ const MAX_PROMPT_BRIEF = 900;
 const GENERATED = ["packages/helper/client/j01n.js", "packages/helper/src/client-script.ts", "apps/web/src/markdown-assets.ts", "packages/skill/src/skill.ts"];
 // Owner delivery target for the raw invite file; J01N_INVITE_TO or --invite-to overrides, "none" skips sending.
 const DEFAULT_INVITE_TO = process.env.J01N_INVITE_TO || "telegram:5199310384";
-const VALUED_FLAGS = ["--spec", "--name", "--workers", "--host", "--worker-prefix", "--from", "--remote", "--invite-to", "--capabilities", "--server", "--state", "--helper", "--title", "--kind"];
+// The ui-tester role: a python participant that watches the room for UI-verifying handoffs and posts the verdict. It is
+// not a git peer, so it gets an inbox identity, a room profile in the keys dir and one Herdr pane running the tester.
+// Only the profile *path* crosses into the pane, so no room credential is ever a pane argument; the pane reads its keys
+// from J01N_KEY_DIR. J01N_UI_TESTER_{SCRIPT,CWD,INTERVAL} move the host install for a check run against fakes.
+const UI_TESTER_ROLE = "ui-tester";
+const UI_TESTER_SCRIPT = "/home/ubuntu/.hermes/scripts/j01n_ui_tester.py";
+const UI_TESTER_CWD = "/home/ubuntu/.hermes/j01n";
+const UI_TESTER_INTERVAL = 20;
+const VALUED_FLAGS = ["--spec", "--name", "--workers", "--host", "--worker-prefix", "--from", "--remote", "--invite-to", "--capabilities", "--server", "--state", "--helper", "--title", "--kind", "--ui-tester-name"];
 const secrets = new Set();
 function fail(message, detail) { const error = new Error(message); if (detail) error.detail = detail; throw error; }
 /** Remember a value so it can be scrubbed even when another program echoes it back in an error. */
@@ -179,10 +189,11 @@ async function scanPointers(dir) {
   }
   return { dead, alive };
 }
-/** The dev/ plan folder, the untracked worktree roots and sprint.json itself are working material, never input. */
+/** The dev/ plan folder, the untracked worktree roots, sprint.json and the tester profile are working material, never input. */
 function assertClean(cwd = process.cwd(), state = loadState()) {
   const excluded = ["dev"];
-  for (const path of state ? [stateFile(state), state.worktree_root] : [stateFile()]) {
+  const working = state ? [stateFile(state), state.worktree_root, ...(state.workers ?? []).map((worker) => worker.profile)] : [stateFile()];
+  for (const path of working.filter(Boolean)) {
     const inside = relative(cwd, path);
     if (inside && !inside.startsWith("..") && !isAbsolute(inside)) excluded.push(inside);
   }
@@ -238,12 +249,19 @@ function herdrProblems(names, resuming) {
  * Everything that could waste a room, a worktree or a pane, checked before any side effect: an interrupted or
  * refused start must leave nothing behind. Each problem is one line carrying its own fix.
  */
-async function preflight({ keys, worktreeRoot, helperPath, names, resuming, roomPointer, dry }) {
+async function preflight({ keys, worktreeRoot, helperPath, names, resuming, roomPointer, uiTester, dry }) {
   const found = gitProblem();
   const problems = found ? [found] : [];
   const root = worktreeRootProblem(worktreeRoot);
   if (root) problems.push(root);
   if (!existsSync(helperPath)) problems.push(`j01n helper not found: ${helperPath}; run node scripts/generate-client-script.mjs or pass --helper <path>`);
+  if (uiTester) {
+    // The tester pane boots straight into this script and cwd, so a missing one must refuse before the room exists.
+    if (!existsSync(uiTester.script)) problems.push(`ui-tester script not found: ${uiTester.script}; install the tester or point J01N_UI_TESTER_SCRIPT at it`);
+    if (!existsSync(uiTester.cwd) || !statSync(uiTester.cwd).isDirectory()) problems.push(`the ui-tester pane cwd ${uiTester.cwd} is not a directory: create it or point J01N_UI_TESTER_CWD at the tester's home`);
+    const python = probe("python3", ["--version"], { timeout: 30_000 });
+    if (!python.ok) problems.push(`"python3 --version" did not run${python.detail ? `: ${python.detail}` : ""}: the ui-tester pane starts python3`);
+  }
   const herdr = herdrProblems(names, resuming);
   problems.push(...herdr.problems);
   const scanned = await scanPointers(keys);
@@ -314,6 +332,68 @@ function ensureIdentity(state, name, acceptFrom, hint) {
     throw error;
   }
 }
+/** Workers read as `id=task`; a role peer (the ui-tester) owns no task, so it reads as `id:role`. */
+const roster = (state) => (state.workers ?? []).map((worker) => (worker.role ? `${worker.id}:${worker.role}` : `${worker.id}=${worker.task ?? "?"}`)).join(" ");
+/** The role peers only: status gets this segment when a sprint runs with --ui-tester, and nothing otherwise. */
+const roleRoster = (state) => (state.workers ?? []).filter((worker) => worker.role).map((worker) => `${worker.role}=${worker.id}${worker.started ? "" : "(pending pane)"}`).join(",");
+/**
+ * The ui-tester wiring, run after the workers and recorded step by step so a resume repeats none of it: register the
+ * inbox identity into the keys dir, invite it, join the room *on its behalf* (only the host holds the invitation, so
+ * only it can hand out a participant token) and write the snake_case profile the python pane reads by path, then open
+ * one Herdr pane running the tester against that profile.
+ */
+function wireUiTester(state, plan) {
+  let acted = false;
+  let record = state.workers.find((worker) => worker.role === UI_TESTER_ROLE);
+  if (!record) {
+    record = { id: plan.name, role: UI_TESTER_ROLE, task: null, pane_cwd: plan.cwd, profile: join(state.keys_dir, `${safeName(plan.name)}-profile.json`) };
+    state.workers.push(record);
+    saveState(state);
+    acted = true;
+  } else if (record.id !== plan.name) fail(`sprint.json already records the ui-tester as ${record.id}; --ui-tester-name ${plan.name} does not match it (pass the recorded name or start a fresh room)`);
+  const identity = join(state.keys_dir, `.j01n-agent-${safeName(record.id)}.json`);
+  ensureIdentity(state, record.id, state.host, `pass --ui-tester-name <fresh> for this sprint or restore ${identity}`);
+  if (!record.invited) {
+    helper(state, ["invite", state.host, record.id, state.invite_link], { redactArgs: [3], quiet: false, label: `j01n invite ${record.id}` });
+    record.invited = true;
+    acted = true;
+    saveState(state);
+  }
+  if (!record.joined || !existsSync(record.profile)) {
+    const joined = helper(state, ["join", state.invite_link, record.id, "--no-workspace", "--role", UI_TESTER_ROLE], { redactArgs: [1], quiet: false, label: `j01n join ${record.id}` });
+    if (!joined?.access || !joined?.participant_token) fail(`j01n join ${record.id} returned no participant profile; the tester pane needs ${record.profile}`);
+    track(joined.participant_token);
+    // snake_case keys on purpose: this file is a room profile the helper and the tester read as-is, never a sprint field.
+    writeFileSync(record.profile, JSON.stringify({ access: joined.access, participant_token: joined.participant_token, participant_id: joined.participant_id ?? record.id }, null, 2), { mode: 0o600 });
+    chmodSync(record.profile, 0o600);
+    // Joining also records an active-room pointer for the tester. The host's own bare helper calls need exactly one
+    // pointer in this directory, and the pane addresses its room through the profile path, so the extra one goes.
+    rmSync(join(state.keys_dir, ".j01n-rooms", `${createHash("sha256").update(`${joined.access}\0${record.id}`).digest("hex")}.json`), { force: true });
+    record.joined = true;
+    acted = true;
+    saveState(state);
+    console.log(`${record.id}: joined ${slug(state.room_id)} as ${UI_TESTER_ROLE}, profile ${record.profile}`);
+  }
+  if (!record.workspace_id || !record.pane_id) {
+    // The pane needs the keys directory and the client it polls with, not a checkout: it works the room, not the repo.
+    const made = json("herdr", ["workspace", "create", "--cwd", record.pane_cwd, "--label", record.id, "--env", `BASE_URL=${state.base}`,
+      "--env", `J01N_KEY_DIR=${state.keys_dir}`, "--env", `J01N_HELPER=${state.helper}`, "--no-focus"], { cwd: state.host_checkout, label: `herdr workspace create ${record.id}`, timeout: 120_000 });
+    record.workspace_id = made.result?.workspace?.workspace_id ?? made.result?.workspace_id ?? made.result?.workspace?.id;
+    record.pane_id = made.result?.root_pane?.pane_id ?? made.result?.pane?.pane_id ?? made.result?.pane_id;
+    if (!record.workspace_id || !record.pane_id) fail("herdr did not return the new ui-tester workspace and its pane; inspect the session before retrying");
+    acted = true;
+    saveState(state);
+  }
+  if (!record.started) {
+    exec("herdr", ["pane", "run", record.pane_id, "python3", plan.script, "--profile", record.profile, "--interval", String(plan.interval)],
+      { cwd: state.host_checkout, label: `herdr pane run ${record.id}`, timeout: 60_000 });
+    record.started = true;
+    acted = true;
+    saveState(state);
+  }
+  console.log(`${record.id}: ${UI_TESTER_ROLE} pane ${record.pane_id} polling every ${plan.interval}s from ${record.pane_cwd}`);
+  return acted;
+}
 /** Workers need their own installed checkout; a fixture repo without a manifest needs none. */
 function installDeps(worktree) {
   if (!existsSync(join(worktree, "package.json"))) return;
@@ -323,7 +403,7 @@ function installDeps(worktree) {
   finally { if (before && (!existsSync(manifest) || !readFileSync(manifest).equals(before))) writeFileSync(manifest, before); }
 }
 async function start() {
-  checkFlags(["--spec", "--name", "--workers", "--host", "--worker-prefix", "--from", "--remote", "--invite-to", "--capabilities", "--server", "--state", "--helper", "--dry-run"]);
+  checkFlags(["--spec", "--name", "--workers", "--host", "--worker-prefix", "--from", "--remote", "--invite-to", "--capabilities", "--server", "--state", "--helper", "--dry-run", "--ui-tester", "--ui-tester-name"]);
   if (positional().length) fail("start takes flags only; see the usage line");
   const specArg = option("--spec", "");
   const name = option("--name", "").trim();
@@ -338,6 +418,17 @@ async function start() {
   const prefix = option("--worker-prefix", "worker");
   if (!PARTICIPANT_ID.test(`${prefix}-1`)) fail("--worker-prefix must produce valid participant ids");
   const capabilities = option("--capabilities", process.env.J01N_WORKER_CAPABILITIES || "code,files");
+  const uiTesterFlag = args.includes("--ui-tester");
+  const uiTesterName = option("--ui-tester-name", UI_TESTER_ROLE).trim();
+  if (!uiTesterFlag && args.includes("--ui-tester-name")) fail("--ui-tester-name needs --ui-tester");
+  if (uiTesterFlag && !PARTICIPANT_ID.test(uiTesterName)) fail("--ui-tester-name must be a valid room participant id");
+  const uiTester = uiTesterFlag ? {
+    name: uiTesterName,
+    script: process.env.J01N_UI_TESTER_SCRIPT || UI_TESTER_SCRIPT,
+    cwd: process.env.J01N_UI_TESTER_CWD || UI_TESTER_CWD,
+    interval: Number(process.env.J01N_UI_TESTER_INTERVAL || UI_TESTER_INTERVAL),
+  } : null;
+  if (uiTester && (!Number.isInteger(uiTester.interval) || uiTester.interval < 1)) fail("J01N_UI_TESTER_INTERVAL must be a positive whole number of seconds");
   const inviteTo = option("--invite-to", DEFAULT_INVITE_TO);
   const helperPath = resolve(option("--helper", join(root, "packages/helper/client/j01n.js")));
   const keys = keysDir();
@@ -348,7 +439,14 @@ async function start() {
   if (resuming && !(await roomAlive(existing.room_url, undefined))) fail(`sprint.json tracks ${existing.room_id}, which is closed or expired; move ${stateFile()} aside and start again`);
   // Doctor first: a refused start must leave no room, no worktree, no pane and no identity behind.
   const planned = resuming ? (existing.workers ?? []).map((worker) => worker.id) : Array.from({ length: workers }, (unused, index) => `${prefix}-${index + 1}`);
-  const doctor = await preflight({ keys, worktreeRoot, helperPath, names: planned, resuming, roomPointer: existing?.room_pointer, dry });
+  // Task worker names are the ones the tester name may not collide with: on a resume the recorded ui-tester is planned too.
+  const taskNames = resuming ? (existing.workers ?? []).filter((worker) => !worker.role).map((worker) => worker.id) : planned;
+  if (uiTester) {
+    if (uiTester.name === host) fail(`--ui-tester-name must differ from --host ${host}`);
+    if (taskNames.includes(uiTester.name)) fail(`--ui-tester-name ${uiTester.name} is also a worker name; pass --ui-tester-name <fresh> or --worker-prefix <fresh>`);
+    if (!planned.includes(uiTester.name)) planned.push(uiTester.name);
+  }
+  const doctor = await preflight({ keys, worktreeRoot, helperPath, names: planned, resuming, roomPointer: existing?.room_pointer, uiTester, dry });
   if (doctor.problems.length) {
     for (const problem of doctor.problems) console.error(`preflight: ${problem}`);
     fail(`sprint preflight refused with ${doctor.problems.length} problem(s); fix each line above and run start again`);
@@ -361,7 +459,7 @@ async function start() {
   if (!gitSoft(process.cwd(), "rev-parse", "--verify", "--quiet", `${from}^{commit}`)) fail(`--from ${from} does not name a commit here`);
   const wtRoot = internal(worktreeRoot);
   if (dry) {
-    console.log(`Plan: preflight passed (git >= ${MIN_GIT_MAJOR}.${MIN_GIT_MINOR}, herdr socket, free worker names, private keys dir, internal worktree root); prune stale pointers in ${join(keys, ".j01n-rooms")}; create+join "${name}" as ${host} from ${basename(spec)} on ${base}; ${workers} worker(s) ${prefix}-1..${prefix}-${workers} in ${wtRoot}/<room>/<worker> off ${from}, each with its own Herdr workspace + pane carrying BASE_URL/J01N_TASK/J01N_WORKER/J01N_WORKER_CAPABILITIES in its env and prompted to open with /j01n tasks (listen ${prefix}-N --capabilities ${capabilities} only as the fallback when the pane did not auto-join), its task id and its board brief; register+invite each worker, seed its identity file into its worktree; deliver the raw invite link as a file via ${inviteTo === "none" ? "(skipped)" : inviteTo}; status tops the invite up while under ${Math.round(KEEPALIVE_WINDOW_MS / 60_000)} minutes; state in ${stateFile()}. Nothing changed.`);
+    console.log(`Plan: preflight passed (git >= ${MIN_GIT_MAJOR}.${MIN_GIT_MINOR}, herdr socket, free worker names, private keys dir, internal worktree root); prune stale pointers in ${join(keys, ".j01n-rooms")}; create+join "${name}" as ${host} from ${basename(spec)} on ${base}; ${workers} worker(s) ${prefix}-1..${prefix}-${workers} in ${wtRoot}/<room>/<worker> off ${from}, each with its own Herdr workspace + pane carrying BASE_URL/J01N_TASK/J01N_WORKER/J01N_WORKER_CAPABILITIES in its env and prompted to open with /j01n tasks (listen ${prefix}-N --capabilities ${capabilities} only as the fallback when the pane did not auto-join), its task id and its board brief; register+invite each worker, seed its identity file into its worktree${uiTester ? `; then register+invite ${uiTester.name} as the ${UI_TESTER_ROLE}, join it on its own behalf into a private profile at ${join(keys, `${safeName(uiTester.name)}-profile.json`)} and start one more Herdr pane (cwd ${uiTester.cwd}) running python3 ${uiTester.script} --profile <that file> --interval ${uiTester.interval}, recorded in workers with role ${UI_TESTER_ROLE} so status shows it` : ""}; deliver the raw invite link as a file via ${inviteTo === "none" ? "(skipped)" : inviteTo}; status tops the invite up while under ${Math.round(KEEPALIVE_WINDOW_MS / 60_000)} minutes; state in ${stateFile()}. Nothing changed.`);
     return;
   }
   assertClean();
@@ -402,10 +500,12 @@ async function start() {
   }
   const hostIdentity = join(state.keys_dir, `.j01n-agent-${safeName(state.host)}.json`);
   let acted = !resuming;
+  // Role peers (the ui-tester) are wired after this loop: they own no task, no branch and no git worktree.
+  const builders = state.workers.filter((worker) => !worker.role);
   // Briefs come off the board so a worker never has to read chat it missed; a pre-brief state gets them merged in once.
-  if (state.workers.some((worker) => !worker.prompted)) refreshBriefsForStart(state);
+  if (builders.some((worker) => !worker.prompted)) refreshBriefsForStart(state);
   ensureIdentity(state, state.host, state.workers.map((worker) => worker.id).join(","), `pass --host <fresh id> (the host's room id and its inbox name are the same) or restore ${hostIdentity}`);
-  for (const worker of state.workers) {
+  for (const worker of builders) {
     const identity = join(state.keys_dir, `.j01n-agent-${safeName(worker.id)}.json`);
     const wasPrompted = Boolean(worker.prompted);
     ensureIdentity(state, worker.id, state.host, `pass --worker-prefix <fresh> for this sprint or restore ${identity}`);
@@ -446,6 +546,8 @@ async function start() {
     }
     console.log(`${worker.id}: task ${worker.task ?? "(any open task)"} branch ${worker.branch} pane ${worker.pane_id}${wasPrompted ? " (already prompted)" : ""}`);
   }
+  // The room needs a pair of eyes on the running UI: one extra participant, one extra pane, no task and no worktree.
+  if (uiTester && wireUiTester(state, uiTester)) acted = true;
   if (!state.delivered && state.invite_to && state.invite_to !== "none") {
     const dir = mkdtempSync(join(tmpdir(), "j01n-sprint-"));
     chmodSync(dir, 0o700);
@@ -457,7 +559,8 @@ async function start() {
     console.log(`Invite link sent to ${state.invite_to} as a raw file; confirm with status that the owner actually joins.`);
   }
   // Room announcements are noise on a no-op resume, so only speak when this run actually did something.
-  if (acted) announce(state, `Sprint ${state.name} started: ${state.workers.map((worker) => `${worker.id}=${worker.task ?? "?"}`).join(" ")}; branches ${state.workers.map((worker) => worker.branch).join(" ")} off ${state.from}.`);
+  const branches = state.workers.filter((worker) => !worker.role).map((worker) => worker.branch).join(" ");
+  if (acted) announce(state, `Sprint ${state.name} started: ${roster(state)}; branches ${branches} off ${state.from}.`);
   console.log(`Next: status, answer <msg-id> <text>, finish --dry-run.`);
 }
 
@@ -510,7 +613,8 @@ async function status() {
   const usage = soft(state, ["usage"]);
   const participants = summary.participants ?? [];
   const owner = participants.some((participant) => participant.role === "owner") ? "owner" : "no owner";
-  console.log(`[${slug(state.room_id ?? "")} ${(state.name ?? "?").trim()}] ${compactTasks(summary.tasks ?? [])} | ${compactAsks(asks)} | ${compactUsage(usage)} | report:${summary.report ? "yes" : "no"} decisions:${(summary.decisions ?? []).length} | ${participants.length} in, ${owner} | ${keepalive(state)}`);
+  const roles = roleRoster(state);
+  console.log(`[${slug(state.room_id ?? "")} ${(state.name ?? "?").trim()}] ${compactTasks(summary.tasks ?? [])} | ${compactAsks(asks)} | ${compactUsage(usage)} | report:${summary.report ? "yes" : "no"} decisions:${(summary.decisions ?? []).length} | ${participants.length} in, ${owner}${roles ? ` | roles:${roles}` : ""} | ${keepalive(state)}`);
 }
 
 // ── answer ─────────────────────────────────────────────────────────────────────────────────────
@@ -640,7 +744,7 @@ async function finish() {
       ...ordered.map((task) => `- ${task.id} ${task.title} (${task.owner}, ${task.evidence.commits.map((c) => c.slice(0, 7)).join(",")}): ${task.summary}`),
       "",
       "Every task reported an explicit passed peer contract; this branch passed the full node scripts/check-contract.mjs.",
-      `Workers: ${state.workers.map((worker) => `${worker.id}=${worker.task ?? "?"}`).join(" ")}.`,
+      `Workers: ${roster(state)}.`,
     ].join("\n");
     const out = exec("glab", ["mr", "create", "--source-branch", integration, "--target-branch", state.from, "--title", option("--title", `Sprint ${state.name}`), "--description", description, "--yes"],
       { label: `glab mr create ${integration} -> ${state.from}`, timeout: 120_000 });
@@ -664,7 +768,7 @@ try {
   else if (action === "status") await status();
   else if (action === "answer") await answer();
   else if (action === "finish") await finish();
-  else fail("Usage: node scripts/sprint.mjs start --spec <spec.md> --name <room> --workers N [--host hermes-bot] [--worker-prefix worker] [--from main] [--remote origin] [--invite-to telegram:chat|none] [--capabilities code,files] [--server url] [--state sprint.json] [--helper j01n.js] [--dry-run] | status | answer <msg-id|seq> <text> [--kind finding] | finish [--reviewed] [--title <text>] [--dry-run]");
+  else fail("Usage: node scripts/sprint.mjs start --spec <spec.md> --name <room> --workers N [--host hermes-bot] [--worker-prefix worker] [--from main] [--remote origin] [--invite-to telegram:chat|none] [--capabilities code,files] [--ui-tester [--ui-tester-name ui-tester]] [--server url] [--state sprint.json] [--helper j01n.js] [--dry-run] | status | answer <msg-id|seq> <text> [--kind finding] | finish [--reviewed] [--title <text>] [--dry-run]");
 } catch (error) {
   // SPRINT_DEBUG=1 keeps the stack for operators; the normal message stays one line.
   console.error(redact(process.env.SPRINT_DEBUG && error instanceof Error && error.stack ? error.stack : error?.message ?? String(error)));

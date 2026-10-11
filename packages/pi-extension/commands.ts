@@ -12,6 +12,7 @@ import { detectWorkspace, localStateDir } from "@j01n/sdk/node";
 import { checkConflicts } from "@j01n/sdk/conflicts-node";
 import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
+import { reportSessionUsage, startUsageTimer, stopAllUsageTimers, stopUsageTimer } from "./usage";
 import { listHerdrPeers, notifyHerdrPeer } from "./herdr";
 import { removeMergedPeerWorktrees, requirePrivateIdentityDir } from "./spawn-herdr";
 import { getExtensionDiagnostics } from "./version";
@@ -396,18 +397,22 @@ function isUndecrypted(message: Awaited<ReturnType<RoomClient["read"]>>[number])
 
 async function handleLeave(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
+  stopUsageTimer(client);
   // --release: also release your file reservations (leaving while holding some is refused).
   await client.leave({ release: parsed.rest.includes("--release") });
   sessions.delete(`${client.invite.room_url}:${client.participantId}`);
   forgetRoom(client.invite, client.participantId);
+  if (!activeRooms().length) stopAllUsageTimers();
   return JSON.stringify({ ok: true, left: true });
 }
 
 async function handleClose(parsed: ParsedArgs): Promise<string> {
   const client = await getClient(parsed);
+  stopUsageTimer(client);
   const result = await client.close();
   sessions.delete(`${client.invite.room_url}:${client.participantId}`);
   forgetRoom(client.invite, client.participantId);
+  if (!activeRooms().length) stopAllUsageTimers();
   return JSON.stringify(result, null, 2);
 }
 
@@ -568,6 +573,44 @@ async function handleListen(parsed: ParsedArgs): Promise<string> {
   return JSON.stringify({ invited_by: invite.from, ...joined }, null, 2);
 }
 
+/** A task this participant still owns and has not finished; false stops the usage heartbeat. */
+function claimedTask(client: RoomClient, taskId: string): () => Promise<boolean> {
+  return async () => {
+    if (!/^[a-zA-Z0-9_-]+$/.test(taskId)) return false;
+    const entry = (await client.board()).board[`task.${taskId}`];
+    const value = entry?.value as { status?: unknown; owner?: unknown } | undefined;
+    return value?.status === "claimed" && value?.owner === client.participantId;
+  };
+}
+
+/** `/j01n claim <id>`: after the board says the task is ours, keep its usage row fresh every ~2 minutes. */
+async function handleClaim(parsed: ParsedArgs): Promise<string> {
+  const output = await sharedCommand(parsed);
+  const taskId = parsed.rest[0];
+  if (!taskId) return output;
+  const client = await getClient(parsed);
+  startUsageTimer(client, { stillClaimed: claimedTask(client, taskId) });
+  return output;
+}
+
+/** `/j01n done ...`: finish the task, then report the usage delta that covers the last stretch of work. */
+async function handleDone(parsed: ParsedArgs): Promise<string> {
+  const output = await sharedCommand(parsed);
+  const client = await getClient(parsed);
+  stopUsageTimer(client);
+  const outcome = await reportSessionUsage(client).catch(() => ({ reported: false, note: "usage: report failed; run the helper usage command to retry" }));
+  return withUsageNote(output, outcome.note);
+}
+
+/** Add the one-line usage note to a command's JSON answer, without ever carrying a path or a session id. */
+function withUsageNote(output: string, note: string): string {
+  try {
+    const value = JSON.parse(output) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return output;
+    return JSON.stringify({ ...(value as Record<string, unknown>), usage: note }, null, 2);
+  } catch { return output; }
+}
+
 const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   worktrees: async (parsed) => {
     if (parsed.rest.length !== 1 || parsed.rest[0] !== "--remove-merged") throw new Error("usage: /j01n worktrees --remove-merged");
@@ -595,8 +638,8 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   decide: sharedCommand,
   "invite-link": handleInviteLink,
   conflicts: sharedCommand,
-  claim: sharedCommand,
-  done: sharedCommand,
+  claim: handleClaim,
+  done: handleDone,
   block: sharedCommand,
   unblock: sharedCommand,
   board_set: sharedCommand,

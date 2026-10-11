@@ -1009,7 +1009,7 @@ ${helpNeededHtml(data)}
   }
 
   function repoFileBase(workspace) {
-    if (typeof workspace?.repo !== "string" || typeof workspace?.branch !== "string" || !workspace.branch) return "";
+    if (typeof workspace?.repo !== "string" || typeof workspace?.branch !== "string" || !workspace.branch || workspace.branch.split("/").some(part => part === "." || part === "..")) return "";
     let remote = workspace.repo;
     const ssh = /^git@(github\.com|gitlab\.com):(.+)$/i.exec(remote);
     if (ssh) remote = `https://${ssh[1]}/${ssh[2]}`;
@@ -1026,7 +1026,7 @@ ${helpNeededHtml(data)}
   function renderMessageBody(body, participants, workspace) {
     const base = repoFileBase(workspace);
     const people = Object.values(participants || {});
-    const token = /(^|[\s([{"'`])(@[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?|[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+(?::[1-9]\d*)?)(?=$|[\s)\]},;!?."'`])/g;
+    const token = /(^|[\s([{"'`,;])(@[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?|[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+(?::[1-9]\d*)?)(?=$|[\s)\]},;!?."'`])/g;
     let output = "";
     let offset = 0;
     for (const match of body.matchAll(token)) {

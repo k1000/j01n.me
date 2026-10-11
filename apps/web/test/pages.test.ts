@@ -208,12 +208,14 @@ describe("room page", () => {
 
   it("highlights known mentions by display name or id, preserving unknown mentions as escaped text", () => {
     const people = { zara: { id: "zara", display_name: "Zara", role: "builder" }, peer_2: { id: "peer_2", display_name: "Leo" } };
-    const html = messageBodyHtml('@ZARA:host, @leo @PEER_2:builder @other:builder <img src=x> & @zara', people, null);
+    const html = messageBodyHtml('Hi,@ZARA:host;@leo @PEER_2:builder @other:builder me@Zara x@leo <img src=x> & @zara', people, null);
     expect(html).toContain('<span class="message-mention">@ZARA:host</span>');
     expect(html).toContain('<span class="message-mention">@leo</span>');
     expect(html).toContain('<span class="message-mention">@PEER_2:builder</span>');
     expect(html).toContain('@other:builder');
     expect(html).not.toContain('<span class="message-mention">@other');
+    expect(html).toContain('me@Zara x@leo');
+    expect(html).not.toContain('me<span class="message-mention">');
     expect(html).toContain('&lt;img src=x&gt; &amp;');
     expect(html).not.toContain('<img');
     expect(roomPageHtml("room-1")).toContain('.message-body .message-mention');
@@ -245,6 +247,9 @@ describe("room page", () => {
     expect(html.match(/<a /g)).toHaveLength(1);
     expect(html).toContain('src/readme');
     expect(messageBodyHtml("src/file.ts", {}, null)).not.toContain('<a ');
+    for (const branch of [".", "..", "feature/../main", "feature/./main"]) {
+      expect(messageBodyHtml("src/file.ts", {}, { repo: "https://github.com/group/repo.git", branch })).toBe("src/file.ts");
+    }
     expect(roomPageScript).toContain('renderMessage(m, messages, data.participants, workspaces)');
     expect(roomPageScript).toContain('renderMessage(m, messages, participants, workspaces)');
   });

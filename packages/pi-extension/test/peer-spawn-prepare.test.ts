@@ -52,6 +52,19 @@ describe("agent-led room peer preparation", () => {
     expect(requests.filter((r) => r.endsWith("/agents"))).toHaveLength(1);
   });
 
+  it("rejects known room credentials and invite links in task or role", async () => {
+    const { runj01n, prepareRoomPeerSpawn } = await import("../commands");
+    await runj01n(["join", link, "host", "--no-workspace"]);
+    const ready = await prepareRoomPeerSpawn({ task: "Review docs" });
+    const values = [ready.client.invite.join_secret, ready.client.invite.participant_token, ready.sender.agentToken];
+    for (const value of values) {
+      if (!value) continue;
+      await expect(prepareRoomPeerSpawn({ task: `Review ${value}` })).rejects.toThrow("room credentials");
+      await expect(prepareRoomPeerSpawn({ task: "Review docs", role: `reviewer ${value}` })).rejects.toThrow("room credentials");
+    }
+    await expect(prepareRoomPeerSpawn({ task: "Review https://j01n.me/room/other#not-the-current-room" })).rejects.toThrow("invitation links");
+  });
+
   it("uses J01N_HOST_INBOX as a stable sender address when configured", async () => {
     vi.stubEnv("J01N_HOST_INBOX", "host-stable-inbox");
     const { runj01n, prepareRoomPeerSpawn } = await import("../commands");

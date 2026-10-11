@@ -71,6 +71,21 @@ describe("spawn Herdr Pi and invite", () => {
     expect(splitHerdrPane).not.toHaveBeenCalled();
   });
 
+  it("rejects known credentials and foreign invite links before opening or prompting a pane", async () => {
+    const invite = { ...client.invite, join_secret: "fixture-room-key", participant_token: "fixture-member-token" };
+    client = { ...client, invite };
+    const values = [invite.join_secret, invite.participant_token, sender.agentToken];
+    for (const value of values) {
+      await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", `role ${value}`, dir)).rejects.toThrow("room credentials");
+      await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "builder", dir,
+        undefined, undefined, undefined, `Task ${value}`)).rejects.toThrow("room credentials");
+    }
+    await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "builder", dir,
+      undefined, undefined, undefined, "Review https://j01n.me/room/other#foreign-key")).rejects.toThrow("invitation links");
+    expect(splitHerdrPane).not.toHaveBeenCalled();
+    expect(promptHerdrAgent).not.toHaveBeenCalled();
+  });
+
   it("refuses a friendly name that joined after preparation", async () => {
     client.status = vi.fn(async () => ({ ...hostStatus, participants: [...hostStatus.participants, participant("maya")] }));
     await expect(spawnAndInviteHerdr(client, sender, link, "reviewer", "builder", dir, undefined, undefined, "Maya")).rejects.toThrow("friendly name is already in the room");

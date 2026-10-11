@@ -121,6 +121,15 @@ export function requirePrivateIdentityDir(identityDir: string): void {
   }
 }
 
+/** Task and role are typed into Herdr; reject credentials before preparing any prompt. */
+export function assertSafePeerPromptText(invite: Pick<RoomClient["invite"], "join_secret" | "participant_token">, agentToken: string | undefined, task: string, role: string): void {
+  const text = `${task} ${role}`;
+  const known = [invite.join_secret, invite.participant_token, agentToken].filter((value): value is string => !!value && value !== "resume-only");
+  if (known.some((value) => text.includes(value)) || /https?:\/\/[^\s/#]+\/(?:room|r)\/[^\s#?]+#[^\s]+/i.test(text)) {
+    throw new Error("peer task and role must not contain room credentials or invitation links");
+  }
+}
+
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** Spawn a local Pi or Claude peer only for an authenticated host; never hand the room link to Herdr. */
@@ -143,6 +152,7 @@ export async function spawnAndInviteHerdr(
   if (new URL(sender.base).origin !== new URL(parsed.access).origin) throw new Error("sender identity belongs to a different service");
   if (!/^[a-z][a-z0-9_-]{0,31}$/.test(agentName) || agentName === sender.name || !role.trim()) throw new Error("provide a new Herdr agent name and role");
   requirePrivateIdentityDir(identityDir);
+  assertSafePeerPromptText(client.invite, sender.agentToken, task ?? "", role);
   const startup = configuredStartup ?? resolvePeerSelection(role, harness).startup;
   if (startup.harness && startup.harness !== harness) throw new Error("selected peer loadout harness does not match the spawn");
   if (!startup.skillNames?.length || !startup.skillNames.every((name) => /^[a-z][a-z0-9_-]*$/.test(name))) throw new Error("selected peer loadout needs validated skill names");

@@ -14,7 +14,7 @@ import type { Invite, RoomClient } from "@j01n/sdk";
 import { parseArgs, type ParsedArgs } from "./args";
 import { reportSessionUsage, startUsageTimer, stopAllUsageTimers, stopUsageTimer } from "./usage";
 import { listHerdrPeers, notifyHerdrPeer } from "./herdr";
-import { removeMergedPeerWorktrees, requirePrivateIdentityDir } from "./spawn-herdr";
+import { assertSafePeerPromptText, removeMergedPeerWorktrees, requirePrivateIdentityDir } from "./spawn-herdr";
 import { getExtensionDiagnostics } from "./version";
 
 const sessions = new Map<string, RoomClient>();
@@ -557,7 +557,7 @@ export async function prepareRoomPeerSpawn(options: { task: string; role?: strin
   if (candidates.length !== 1) throw new Error(candidates.length ? "multiple hosted rooms; provide roomId" : "no hosted room joined in this directory");
   const client = candidates[0];
   if (!client.invite.join_secret || client.invite.join_secret === "resume-only") throw new Error("room secret unavailable; rejoin this room using its invitation");
-  if (`${task} ${options.role ?? ""}`.includes(client.invite.join_secret)) throw new Error("peer task and role must not contain the room secret");
+  assertSafePeerPromptText(client.invite, undefined, task, options.role ?? "");
   const identityDir = process.env.J01N_AGENT_DIR || join(homedir(), ".local", "share", "j01n", "agents");
   mkdirSync(identityDir, { recursive: true, mode: 0o700 });
   requirePrivateIdentityDir(identityDir);
@@ -581,6 +581,7 @@ export async function prepareRoomPeerSpawn(options: { task: string; role?: strin
     writeFileSync(join(identityDir, `.j01n-agent-${sender.name}.json`), JSON.stringify(sender, null, 2), { flag: "wx", mode: 0o600 });
     if (sender.name !== preferredName) writeFileSync(aliasFile, JSON.stringify({ name: sender.name }), { flag: "wx", mode: 0o600 });
   }
+  assertSafePeerPromptText(client.invite, sender.agentToken, task, options.role ?? "");
   const namesInRoom = new Set((await client.status()).participants
     .flatMap((p) => [p.id, (p as typeof p & { display_name?: string }).display_name])
     .filter((name): name is string => !!name)

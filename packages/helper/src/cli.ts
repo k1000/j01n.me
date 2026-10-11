@@ -110,33 +110,51 @@ async function remember(url: string, me: string) {
   await fs.writeFile(`${path}.${process.pid}.tmp`, JSON.stringify({ room_url: url, participant_id: me }), { mode: 0o600 });
   await fs.rename(`${path}.${process.pid}.tmp`, path);
 }
-type Resolved = { roomUrl: string; secret: string; me: string; rest: string[]; token?: string };
+/**
+ * How a command authenticated, plus the room key it carries.
+ * `secret`/`token` are request credentials. `joinSecret` is set only by the forms that name the room key outright
+ * (room link, invitation `join_secret`, JOIN_SECRET); `positionalSecret` is the `<access> <secret> <me>` slot,
+ * which documents the room key but doubles as the request credential, so it counts only as a last resort. A
+ * participant token never seals room data: commands that need the room key read these fields, not `secret`.
+ */
+type Resolved = { roomUrl: string; secret: string; me: string; rest: string[]; token?: string; joinSecret?: string; positionalSecret?: string };
 async function resolveRoom(): Promise<Resolved> {
   const env = process.env;
   const envRoom = env.ROOM_URL && (env.PARTICIPANT_TOKEN || env.JOIN_SECRET) && env.ME;
-  if (envRoom && ((cmd === "send" && args.length <= 3) || (["join", "read", "team", "inbox", "watch", "doctor"].includes(cmd || "") && args.length === 1))) return { roomUrl: env.ROOM_URL!, secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET!, token: env.PARTICIPANT_TOKEN, me: env.ME!, rest: args.slice(1) };
+  if (envRoom && ((cmd === "send" && args.length <= 3) || (["join", "read", "team", "inbox", "watch", "doctor"].includes(cmd || "") && args.length === 1))) return { roomUrl: env.ROOM_URL!, secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET!, token: env.PARTICIPANT_TOKEN, joinSecret: env.JOIN_SECRET, me: env.ME!, rest: args.slice(1) };
   const link = parseInviteLink(args[1] || "");
-  if (link) return { roomUrl: link.access!, secret: link.join_secret!, me: args[2], rest: args.slice(3) };
-  if (isUrl(args[1])) return { roomUrl: args[1], secret: args[2], token: cmd === "join" ? undefined : args[2], me: args[3], rest: args.slice(4) };
+  if (link) return { roomUrl: link.access!, secret: link.join_secret!, joinSecret: link.join_secret!, me: args[2], rest: args.slice(3) };
+  if (isUrl(args[1])) return { roomUrl: args[1], secret: args[2], token: cmd === "join" ? undefined : args[2], positionalSecret: args[2], me: args[3], rest: args.slice(4) };
   if (await isRoomRef(args[1])) {
     const ref = args[1].trim().startsWith("{") ? args[1] : await fs.readFile(args[1], "utf8");
     const invite = JSON.parse(ref) as RoomAccess & { participant_id?: string; me?: string };
     const roomUrl = invite.access || invite.follow || invite.room_url;
     if (!roomUrl) throw Error("profile must include access");
-    if (invite.participant_token) return { roomUrl, secret: invite.participant_token, token: invite.participant_token, me: invite.participant_id || invite.me!, rest: args.slice(2) };
+    if (invite.participant_token) {
+      const me = invite.participant_id || invite.me!;
+      // A profile names itself, but the documented "<profile> <me>" spelling is accepted too.
+      return { roomUrl, secret: invite.participant_token, token: invite.participant_token, joinSecret: invite.join_secret, me, rest: args.slice(args[2] === me ? 3 : 2) };
+    }
     if (!invite.join_secret) throw Error("invite must include access and join_secret");
-    return { roomUrl, secret: invite.join_secret, me: args[2], rest: args.slice(3) };
+    return { roomUrl, secret: invite.join_secret, joinSecret: invite.join_secret, me: args[2], rest: args.slice(3) };
   }
   const rooms = await activeRooms();
   if (rooms.length > 1) throw Error("several rooms are active in this directory; pass the room link or participant profile");
   if (rooms.length) return { roomUrl: rooms[0].room_url, secret: "resume-only", me: rooms[0].participant_id, rest: args.slice(1) };
   if (args[1]) throw Error(`ENOENT: cannot read invitation ${args[1]}`);
-  return { roomUrl: env.ROOM_URL || "", secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET || "", token: env.PARTICIPANT_TOKEN, me: env.ME || "", rest: args.slice(1) };
+  return { roomUrl: env.ROOM_URL || "", secret: env.PARTICIPANT_TOKEN || env.JOIN_SECRET || "", token: env.PARTICIPANT_TOKEN, joinSecret: env.JOIN_SECRET, me: env.ME || "", rest: args.slice(1) };
 }
 
 async function agents() {
-  const me = args[1]; const rest = args.slice(2);
-  if (!me) throw Error("usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]");
+  let me = args[1]; const rest = args.slice(me ? 2 : 1);
+  if (!me) {
+    // A pane seeded with exactly one agent identity can start `listen` without repeating its name.
+    const seeds = (await fs.readdir(stateDir).catch(() => []))
+      .filter((n) => /^\.j01n-agent-[a-z0-9_-]+\.json$/.test(n))
+      .map((n) => n.slice(".j01n-agent-".length, -".json".length));
+    if (seeds.length !== 1) throw Error("usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]" + (seeds.length > 1 ? ` (several seeded identities: ${seeds.join(", ")})` : " (no seeded identity in this directory)"));
+    me = seeds[0];
+  }
   const file = join(stateDir, `.j01n-agent-${safe(me)}.json`);
   if (cmd === "register") {
     const identity = await registerAgent(base, me, names(rest[0]));
@@ -201,7 +219,7 @@ async function main() {
     console.log(text); return;
   }
   if (["register", "allow", "invite", "invites", "listen"].includes(cmd || "")) { await agents(); return; }
-  const { roomUrl, secret, me, rest, token } = await resolveRoom();
+  const { roomUrl, secret, me, rest, token, joinSecret, positionalSecret } = await resolveRoom();
   if (!cmd || !roomUrl || !secret || !me) throw Error("usage: j01n <create|join|send|read|team|watch|doctor> [invitation.json me | participant.j01n.json | access token me] [to] [json_body]\nTip: after join, use the participant .j01n.json profile or set ROOM_URL, PARTICIPANT_TOKEN, and ME.");
   const keyFile = join(stateDir, `.j01n-${safe(new URL(roomUrl).pathname)}-${safe(me)}.json`);
   let state: any;
@@ -332,11 +350,15 @@ async function main() {
     })); return;
   }
   if (cmd === "usage") {
-    // Usage snapshots are room-sealed like the kickoff, workspaces and reservations: the join secret is the key,
-    // so a profile or env that only carries a participant token must still seal with the stored join secret.
-    const sealSecret = state.joinSecret || (roomSecret === "resume-only" ? "" : roomSecret);
-    if (!sealSecret) throw Error("usage needs the room link or invitation (usage is sealed with the room key): usage <room link> <me> [report ...]");
-    const usageClient = sealSecret === roomSecret ? client : await resumeRoom(buildMinimalInvite(roomUrl, sealSecret), me, session);
+    // Usage snapshots are room-sealed like the kickoff, workspaces and reservations: the key is always the room
+    // join secret. Whatever a command authenticated with (participant profile, env, active room), take the room key
+    // from the auth form itself or from the join secret saved in the key file - sealing with a participant token
+    // writes a row nobody holding the room link can open, and the room cannot hand that key back to a token.
+    const sealSecret = [joinSecret, state.joinSecret, positionalSecret].find((value) => value && value !== "resume-only") || "";
+    if (!sealSecret) throw Error("usage needs the room link or invitation (usage is sealed with the room key, and a participant token is not one): usage <room link> <me> [report ...], or run it in the directory that joined the room");
+    const sealInvite = buildMinimalInvite(roomUrl, sealSecret);
+    sealInvite.participant_token = token || state.participantToken;
+    const usageClient = sealSecret === client.invite.join_secret ? client : await resumeRoom(sealInvite, me, session);
     const [sub, ...args] = rest;
     if (sub === "report") {
       const row = await usageClient.reportUsage(usageDeltaFromFlags(args));

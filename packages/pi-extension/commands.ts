@@ -624,6 +624,89 @@ async function handleListen(parsed: ParsedArgs): Promise<string> {
   return JSON.stringify({ invited_by: invite.from, ...joined }, null, 2);
 }
 
+// ── Auto-join at session start: a pane with a seeded identity must not need a first model turn ──
+
+/** One bounded inbox wait at boot: long enough for a host inviting while the pane opens, short enough to sit out. */
+export const AUTOJOIN_LISTEN_SECONDS = 10;
+
+export interface AutojoinResult {
+  /** `resume` reuses the room identity joined in this directory; `listen` opened a seeded inbox invite. */
+  via: "resume" | "listen";
+  room_id: string;
+  participant_id: string;
+  open_questions: number;
+}
+
+/** Agent identity seeds we could read an inbox from (same directory rules as loadAgent). */
+export function agentSeedNames(dir = process.env.J01N_AGENT_DIR || localStateDir()): string[] {
+  try {
+    return readdirSync(dir)
+      .map((name) => /^\.j01n-agent-([a-z][a-z0-9_-]{0,31})\.json$/.exec(name)?.[1])
+      .filter((name): name is string => !!name);
+  } catch {
+    return []; // no inbox directory here
+  }
+}
+
+/** Room identities this directory can resume; a spawned peer only ever sees its own process identity. */
+function resumableProfiles(): ActiveRoom[] {
+  let rooms: ActiveRoom[];
+  try {
+    rooms = activeRooms();
+  } catch {
+    return [];
+  }
+  const peer = process.env.J01N_PEER_PARTICIPANT_ID;
+  if (!peer) return rooms;
+  const roomId = process.env.J01N_PEER_ROOM_ID;
+  return rooms.filter((room) => room.participant_id === peer && (!roomId || room.room_url.split("/").pop() === roomId));
+}
+
+const questionCount = (value: unknown): number =>
+  typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : Array.isArray(value) ? value.length : 0;
+
+/** Capabilities the runner asked this worker to announce, if it exported them (never an arbitrary flag). */
+function declaredCapabilities(): string[] {
+  return (process.env.J01N_WORKER_CAPABILITIES ?? "").split(",").map((name) => name.trim()).filter((name) => /^[a-z0-9_-]{1,32}$/.test(name));
+}
+
+/**
+ * Join the room of this directory when a Pi session starts, without involving the model: resume the one
+ * saved room profile, or open the one seeded inbox with a single bounded listen. Anything ambiguous,
+ * stale or absent answers undefined, and the session then behaves exactly as it did before.
+ */
+export async function autojoinRoom(): Promise<AutojoinResult | undefined> {
+  if (process.env.J01N_AUTOJOIN === "off") return undefined;
+  const profiles = resumableProfiles();
+  if (profiles.length > 1) return undefined; // several rooms are active here: never guess whose
+  if (profiles.length === 1) {
+    // doctor resumes the saved identity and confirms this participant is still in that room.
+    try {
+      const checked = JSON.parse(await runj01n(["doctor", profiles[0].room_url, "resume-only", profiles[0].participant_id])) as Record<string, unknown>;
+      if (checked.joined !== true || typeof checked.room_id !== "string" || typeof checked.participant_id !== "string") return undefined;
+      return { via: "resume", room_id: checked.room_id, participant_id: checked.participant_id, open_questions: questionCount(checked.open_questions) };
+    } catch {
+      return undefined; // left, expired or a profile of another room: silent, and the rest of the session is unchanged
+    }
+  }
+  const seeds = agentSeedNames();
+  if (seeds.length !== 1) return undefined;
+  const capabilities = declaredCapabilities();
+  try {
+    const listened = JSON.parse(await runj01n(["listen", seeds[0], String(AUTOJOIN_LISTEN_SECONDS),
+      ...(capabilities.length ? ["--capabilities", capabilities.join(",")] : [])])) as Record<string, unknown>;
+    if (listened.timeout === true || typeof listened.room_id !== "string" || typeof listened.participant_id !== "string") return undefined;
+    return { via: "listen", room_id: listened.room_id, participant_id: listened.participant_id, open_questions: questionCount(listened.questions) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The only room content a boot shows the model: one short line, no room link, no secret, no messages. */
+export function autojoinNote(result: AutojoinResult): string {
+  return `j01n: joined ${result.room_id} as ${result.participant_id}; ${result.open_questions} open question${result.open_questions === 1 ? "" : "s"}`;
+}
+
 /** A task this participant still owns and has not finished; false stops the usage heartbeat. */
 function claimedTask(client: RoomClient, taskId: string): () => Promise<boolean> {
   return async () => {

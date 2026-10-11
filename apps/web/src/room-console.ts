@@ -28,7 +28,7 @@ ${HOME_PALETTE}
     & h3::before { color: var(--console-cream); }
     & [data-room-root] { display: grid; gap: 1.25rem; margin-top: 2.5rem; }
     & [data-room-root] h2 { margin: 0 0 0.8rem; font-size: 1.5rem; line-height: 1.2; }
-    & [data-room-root] h2::before { content: "## "; color: var(--console-cream); }
+    & [data-room-root] h2::before { content: "## " / ""; color: var(--console-cream); }
 
     & .room-navigation { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.75rem 1.25rem; padding-bottom: 1rem; border-bottom: 1px dashed var(--console-rule); }
     & .room-navigation > a:first-child { margin-right: auto; font-size: 1.25rem; font-weight: 700; text-decoration: none; letter-spacing: -0.02em; }
@@ -37,7 +37,7 @@ ${HOME_PALETTE}
 
     & .room-overview { border: 2px solid var(--console-cream); background: var(--console-panel); padding: clamp(1rem, 3vw, 1.75rem); min-width: 0; }
     & .room-overview h1 { margin: 0 0 1.5rem; font-size: clamp(2rem, 5vw, 3.25rem); letter-spacing: -0.04em; line-height: 1.15; overflow-wrap: anywhere; }
-    & .room-overview h1::before { content: "# "; color: var(--console-cream); }
+    & .room-overview h1::before { content: "# " / ""; color: var(--console-cream); }
     & .connection-status { display: inline-flex; align-items: center; gap: 0.5rem; margin-left: 0.5rem; padding: 0.25rem 0.55rem; border: 1px solid var(--console-rule); vertical-align: middle; font-size: 0.7rem; font-weight: 500; letter-spacing: 0.05em; color: var(--console-cream); }
     & .connection-status.connected { color: var(--console-ok); }
     & .connection-status.disconnected { color: #f0aa9c; }

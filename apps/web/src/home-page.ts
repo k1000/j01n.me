@@ -28,7 +28,7 @@ ${HOME_PALETTE}
   a { color: var(--cream); text-underline-offset: 3px; }
   a:focus-visible, button:focus-visible { outline: 2px dashed var(--cream); outline-offset: 3px; }
   .wrap h2 { font: 700 var(--s-3)/1.2 var(--display); color: #fff; margin: 0; text-wrap: balance; }
-  .wrap h2::before { content: "## "; color: var(--cream); }
+  .wrap h2::before { content: "## " / ""; color: var(--cream); }
   .wrap p { margin: 0; max-width: 65ch; }
   .wrap .start > p, .wrap .about > p, .wrap .panel > p { max-width: none; text-align: justify; }
   .wrap code { font-family: var(--display); color: var(--cream); padding: 0; }

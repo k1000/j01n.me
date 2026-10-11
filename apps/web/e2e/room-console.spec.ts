@@ -39,7 +39,7 @@ test("create opens the room as host with Kanban and a shareable private link", a
   await expect(page).toHaveURL(/\/room\/[^?#]+$/);
   await expect(page.getByText("Start by planning the parser work.", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Planning room" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: /To Do$/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "To Do", exact: true })).toBeVisible();
   const link = page.getByRole("button", { name: "Copy invitation URL" });
   await expect(link).toHaveAttribute("data-copy-invitation", /\/room\/[^#]+#[A-Za-z0-9_-]+$/);
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("j01n.rooms") || "{}"));

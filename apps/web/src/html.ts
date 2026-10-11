@@ -255,7 +255,7 @@ function roomPageStyles(): string {
   .room-expiry .room-ttl-status { flex-basis: 100%; }
   .room-share { padding-top: 1rem; }
   .room-share h2 { margin: 0 0 0.65rem; font-size: 1rem; }
-  .room-share h2::before { content: "## "; color: var(--highlight); }
+  .room-share h2::before { content: "## " / ""; color: var(--highlight); }
   .room-invite { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px dashed color-mix(in srgb, currentColor 22%, transparent); }
   .room-invite summary { cursor: pointer; color: var(--highlight); font-weight: 700; }
   .room-invite .snippet { margin-top: 0.75rem; }

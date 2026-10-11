@@ -12,8 +12,8 @@ const SHARED_STYLES = `
     color: color-mix(in srgb, CanvasText 78%, Canvas 22%);
   }
   h1 { color: CanvasText; font-weight: 700; font-size: clamp(2.5rem, 8vw, 4.5rem); line-height: 1; margin: 0 0 1rem; }
-  body > h1::before { content: "# "; color: var(--highlight); }
-  h3::before { content: "### "; color: var(--highlight); }
+  body > h1::before { content: "# " / ""; color: var(--highlight); }
+  h3::before { content: "### " / ""; color: var(--highlight); }
   body > header hgroup { display: grid; grid-template-columns: minmax(0, max-content) minmax(16rem, 1fr); align-items: end; gap: 2rem; margin: 0 0 1rem; }
   body > header h1 { color: var(--highlight); font-size: clamp(3rem, 10vw, 6rem); margin: 0; }
   body > header h1 b { color: CanvasText; font: inherit; }

@@ -2,10 +2,13 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { exportPublicKey } from "@j01n/sdk/crypto";
 import { inviteAgent, parseInviteLink } from "@j01n/sdk";
 import type { AgentIdentity, RoomClient } from "@j01n/sdk";
 import { labelHerdrPane, listHerdrPeers, promptHerdrAgent, splitHerdrPane, startHerdrAgent } from "./herdr";
+import { resolvePeerSelection } from "./peer-roles";
+import type { PeerStartup } from "./herdr";
 
 const OUTCOME_TIMEOUT_MS = 180_000;
 
@@ -103,7 +106,9 @@ export function requirePrivateIdentityDir(identityDir: string): void {
   }
 }
 
-/** Spawn a local Pi peer only for an authenticated host; never hand the room link to Herdr. */
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
+/** Spawn a local Pi or Claude peer only for an authenticated host; never hand the room link to Herdr. */
 export async function spawnAndInviteHerdr(
   client: Pick<RoomClient, "invite" | "participantId" | "status">,
   sender: AgentIdentity,
@@ -115,12 +120,17 @@ export async function spawnAndInviteHerdr(
   branch?: string,
   displayName?: string,
   task?: string,
+  harness: "pi" | "claude" = "pi",
+  configuredStartup?: PeerStartup,
 ) {
   const parsed = parseInviteLink(link);
   if (!parsed || parsed.access !== client.invite.room_url || !/^https:\/\//.test(parsed.access)) throw new Error("provide the current room's HTTPS invitation link");
   if (new URL(sender.base).origin !== new URL(parsed.access).origin) throw new Error("sender identity belongs to a different service");
   if (!/^[a-z][a-z0-9_-]{0,31}$/.test(agentName) || agentName === sender.name || !role.trim()) throw new Error("provide a new Herdr agent name and role");
   requirePrivateIdentityDir(identityDir);
+  const startup = configuredStartup ?? resolvePeerSelection(role, harness).startup;
+  if (startup.harness && startup.harness !== harness) throw new Error("selected peer loadout harness does not match the spawn");
+  if (!startup.skillNames?.length || !startup.skillNames.every((name) => /^[a-z][a-z0-9_-]*$/.test(name))) throw new Error("selected peer loadout needs validated skill names");
   if (branch && directory) throw new Error("choose branch or directory, not both");
   if (directory !== undefined && (!isAbsolute(directory) || !existsSync(directory) || !statSync(directory).isDirectory())) throw new Error("directory must be an existing absolute directory (e.g. the peer's own git worktree)");
   const status = await client.status();
@@ -130,22 +140,27 @@ export async function spawnAndInviteHerdr(
   if (status.participants.length >= status.room.max_participants) throw new Error("room is at capacity");
   if (listHerdrPeers().some((peer) => peer.agent === agentName)) throw new Error("agent name is already in the Herdr workspace");
 
-  const targetFile = join(identityDir, `.j01n-agent-${agentName}.json`);
+  const targetDir = harness === "claude" ? join(identityDir, agentName) : identityDir;
+  if (harness === "claude" && existsSync(targetDir)) throw new Error("target peer key directory already exists; choose a fresh name");
+  const targetFile = join(targetDir, `.j01n-agent-${agentName}.json`);
   if (existsSync(targetFile)) throw new Error("target agent identity already exists; choose a fresh name");
   const addressUrl = `${sender.base}/a/${encodeURIComponent(agentName)}`;
   const address = await fetch(addressUrl);
   if (address.status !== 404) throw new Error(address.ok ? "target address is already registered" : `agent address lookup failed (${address.status})`);
 
   const peerDirectory = branch ? createPeerWorktree(branch) : directory;
+  const helperPath = fileURLToPath(new URL("../helper/client/j01n.js", import.meta.url));
+  if (harness === "claude" && !existsSync(helperPath)) throw new Error("Claude peer requires the bundled j01n CLI helper");
   let paneId: string | undefined;
   let step = "spawn";
   let invited = false;
   try {
-    paneId = peerDirectory ? splitHerdrPane(identityDir, sender.base, undefined, undefined, peerDirectory) : splitHerdrPane(identityDir, sender.base);
-    startHerdrAgent(paneId, agentName);
+    paneId = splitHerdrPane(identityDir, sender.base, undefined, undefined, peerDirectory ?? process.cwd(), { role, roomId: client.invite.room_id, participantId: displayName?.toLowerCase() || agentName, skillNames: startup.skillNames, harness, model: startup.model, provider: startup.provider, ...(harness === "claude" ? { inbox: agentName } : {}) });
+    startHerdrAgent(paneId, agentName, harness === "claude" ? { ...startup, helperDir: dirname(helperPath), helperCommand: `node ${shellQuote(helperPath)}` } : startup);
     if (displayName) labelHerdrPane(paneId, displayName);
     step = "registration";
-    promptHerdrAgent(paneId, `Register yourself with j01n.me as ${agentName}, accepting invitations only from ${sender.name}. Use /j01n register ${agentName} ${sender.name}. Do not share your key or token. Reply when registered.`);
+    const command = harness === "claude" ? `node ${shellQuote(helperPath)} ` : "/j01n ";
+    promptHerdrAgent(paneId, `Register yourself with j01n.me as ${agentName}, accepting invitations only from ${sender.name}. Run ${command}register ${agentName} ${sender.name}. Do not share your key or token. Reply when registered.`);
     if (!await waitFor(() => existsSync(targetFile))) throw new Error("new agent did not register its identity");
     const local = JSON.parse(readFileSync(targetFile, "utf8")) as AgentIdentity;
     if (local.name !== agentName || local.base !== sender.base || !local.publicJwk) throw new Error("new agent identity does not match the requested address");
@@ -162,7 +177,7 @@ export async function spawnAndInviteHerdr(
     // Let the registration turn finish first, so the join prompt is not typed into a working agent.
     await waitFor(() => listHerdrPeers().find((peer) => peer.pane_id === paneId)?.agent_status !== "working", 60_000);
     const profileFlags = displayName ? ` --as ${displayName.toLowerCase()} --display-name ${displayName} --role ${JSON.stringify(role)}` : "";
-    promptHerdrAgent(paneId, `A sealed invitation from ${sender.name} is waiting for ${agentName}. Run /j01n listen ${agentName} --capabilities code,shell,files${profileFlags} to join. Your role: ${role}.${task ? ` Task: ${task}.` : ""} Do not paste room credentials into Herdr.`);
+    promptHerdrAgent(paneId, `A sealed invitation from ${sender.name} is waiting for ${agentName}. Run ${command}listen ${agentName} --capabilities code,shell,files --skills ${startup.skillNames?.join(",") ?? ""}${profileFlags} to join. Your role: ${role}.${task ? ` Task: ${task}.` : ""} Do not paste room credentials into Herdr.`);
     const participantId = displayName?.toLowerCase() || agentName;
     if (await waitFor(async () => (await client.status()).participants.some((p) => p.id === participantId))) return { ok: true, pane_id: paneId, invited, joined: true, ...(peerDirectory ? { directory: peerDirectory } : {}) };
     throw new Error("join not confirmed; check the spawned agent's pane and room status");

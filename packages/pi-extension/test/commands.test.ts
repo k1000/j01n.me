@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SDK_CLIENT_PROTOCOL, type RoomClient } from "@j01n/sdk";
 import { runRoomCommand } from "@j01n/sdk/room-commands";
+import { writePeerConfig } from "./peer-config-fixture";
 
 const ROOM = "https://j01n.me/r/room-1";
 const calls: Array<{ method: string; url: string; auth: string | null; body?: string }> = [];
@@ -18,6 +19,7 @@ describe("pi-extension sessions", () => {
     boardResponse = undefined;
     teamParticipants = undefined;
     process.chdir(mkdtempSync(join(tmpdir(), "j01n-pi-")));
+    vi.stubEnv("J01N_PEER_CONFIG", writePeerConfig(process.cwd()));
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       calls.push({ method, url: String(url), auth: new Headers(init?.headers).get("authorization"), ...(init?.body ? { body: String(init.body) } : {}) });
@@ -32,6 +34,7 @@ describe("pi-extension sessions", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     vi.resetModules();
     process.chdir(originalCwd);
   });
@@ -82,9 +85,11 @@ describe("pi-extension sessions", () => {
     await runj01n(["join", ROOM, "secret", "pi-agent", "--capabilities", "code,shell,vision"]);
     const profile = JSON.parse(calls.find((c) => c.method === "PATCH")!.body!);
     expect(profile.capabilities).toEqual(["code", "shell", "vision"]);
+    expect(profile.harness).toBe("pi");
     expect(profile.workspace).toMatch(/^jsk1:/);
     expect(JSON.stringify(calls)).not.toContain(process.cwd());
 
+    teamParticipants = [{ id: "pi-agent", harness: "pi" }];
     calls.length = 0;
     await runj01n(["join", ROOM, "secret", "pi-agent", "--no-workspace"]);
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
@@ -98,10 +103,19 @@ describe("pi-extension sessions", () => {
     expect(profile.provider).toBe("anthropic");
 
     // The room row already carries the same model/provider: dedupe skips the write.
-    teamParticipants = [{ id: "pi-agent", state: "free", status: "s", last_seen_at: new Date().toISOString(), model: "claude-sonnet-4-5", provider: "anthropic" }];
+    teamParticipants = [{ id: "pi-agent", state: "free", status: "s", last_seen_at: new Date().toISOString(), model: "claude-sonnet-4-5", provider: "anthropic", harness: "pi" }];
     calls.length = 0;
     await runj01n(["join", ROOM, "secret", "pi-agent", "--model", "claude-sonnet-4-5", "--provider", "anthropic", "--no-workspace"]);
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+  });
+
+  it("announces the loaded role skill when joining", async () => {
+    const { runj01n, activeRoomClients } = await import("../commands");
+    await runj01n(["join", ROOM, "secret", "builder", "--no-workspace"]);
+    const [client] = await activeRoomClients();
+    const profile = vi.spyOn(client, "setProfile").mockResolvedValue({ ok: true, participant: {} as never });
+    await runj01n(["join", ROOM, "secret", "builder", "--no-workspace", "--skills", "j01n-builder"]);
+    expect(profile).toHaveBeenCalledWith(expect.objectContaining({ skills: ["j01n-builder"] }));
   });
 
   it("passes friendly display name and role to the SDK profile boundary on join", async () => {
@@ -119,6 +133,9 @@ describe("pi-extension sessions", () => {
     calls.length = 0;
     await runj01n(["profile", "--capabilities", "code,browser"]);
     expect(JSON.parse(calls.find((c) => c.method === "PATCH")!.body!)).toEqual({ capabilities: ["code", "browser"] });
+    calls.length = 0;
+    await runj01n(["profile", "--harness", "pi"]);
+    expect(JSON.parse(calls.find((c) => c.method === "PATCH")!.body!)).toEqual({ harness: "pi" });
 
     calls.length = 0;
     await runj01n(["profile", "--no-workspace"]);
@@ -166,7 +183,7 @@ describe("pi-extension sessions", () => {
     const sealed = await sealForRoom(detected.workspace, "secret", "room-1");
     const base = globalThis.fetch;
     vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url).endsWith("/participants")
-      ? Promise.resolve(Response.json({ participants: [{ id: "pi-agent", workspace: sealed, checkout: detected.checkout }] }))
+      ? Promise.resolve(Response.json({ participants: [{ id: "pi-agent", workspace: sealed, checkout: detected.checkout, harness: "pi" }] }))
       : base(url, init));
     const { runj01n } = await import("../commands");
     await runj01n(["join", ROOM, "secret", "pi-agent"]);
@@ -434,13 +451,17 @@ describe("pi-extension agent inbox", () => {
 
     await runj01n(["invite", "claude-code", "pi-agent", "https://j01n.me/room/room-1#very-secret-join-secret"]);
     expect(JSON.stringify(invites)).not.toContain("very-secret-join-secret");
-    const result = JSON.parse(await runj01n(["listen", "pi-agent", "1", "--capabilities", "code,shell", "--no-workspace", "--as", "maya", "--display-name", "Maya", "--role", "builder"]));
+    vi.stubEnv("J01N_PEER_ROLE", "builder");
+    vi.stubEnv("J01N_PEER_SKILLS", "custom-build");
+    vi.stubEnv("J01N_PEER_PARTICIPANT_ID", "maya");
+    const result = JSON.parse(await runj01n(["listen", "pi-agent", "1", "--capabilities", "code,shell", "--no-workspace", "--as", "intruder", "--display-name", "Maya", "--role", "planner", "--skills", "wrong-skill", "--model", "wrong", "--provider", "wrong"]));
     expect(result).toMatchObject({ invited_by: "claude-code", ok: true, participant_id: "maya" });
     expect(seen).toContain("DELETE /a/pi-agent/invites/inv-1");
     expect(seen).toContain("PUT /r/room-1/participants/maya");
     // The global inbox remains pi-agent; the room identity and profile use its friendly name.
     expect(seen).toContain("PATCH /r/room-1/participants/maya");
     // SDK serialization of display_name/role belongs to T6; T4 verifies the join flags above.
-    expect(profiles).toContainEqual(expect.objectContaining({ capabilities: ["code", "shell"] }));
+    expect(profiles).toContainEqual(expect.objectContaining({ capabilities: ["code", "shell"], role: "builder", skills: ["custom-build"] }));
+    expect(profiles.some((profile) => profile.model === "wrong" || profile.provider === "wrong")).toBe(false);
   });
 });

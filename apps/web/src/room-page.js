@@ -710,6 +710,7 @@
     const stickToBottom = !oldList || oldList.scrollHeight - oldList.scrollTop - oldList.clientHeight < 24;
     const oldScrollTop = oldList ? oldList.scrollTop : 0;
     root.innerHTML = `
+<header class="room-overview">
 <h1>${esc(room.name || "Room")} <span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></h1>
 <dl class="room-meta">
 <dt>room URL</dt><dd><code>${esc("https://j01n.me/r/" + rid)}</code> <button class="button button-small" type="button" data-copy-room-url title="Copy room URL">Copy URL</button></dd>
@@ -722,6 +723,7 @@ ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(
 <div><dt>phase</dt><dd>${esc(phase || "—")}</dd></div>
 <div><dt>expires</dt><dd>${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}${extendControls}</dd></div>
 </dl>
+</header>
 ${reportHtml}
 <section class="room-board"><h2>Board</h2><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><div class="board-toolbar"><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><form class="board-edit-form" data-board-form><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>
 <section class="room-reservations" aria-label="File reservations"><h2>File reservations</h2>${reservationsHtml}</section>

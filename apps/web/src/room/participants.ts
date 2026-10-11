@@ -17,6 +17,7 @@ interface ParticipantProfile {
   status?: string;
   model?: string;
   provider?: string;
+  harness?: string | null;
   skills?: string[];
   capabilities?: string[];
   /** Sealed workspace; null clears it. */
@@ -65,6 +66,8 @@ export function parseParticipantProfile(body: Record<string, unknown>): Particip
   if (model instanceof Response) return model;
   const provider = normalizeProvider(body.provider);
   if (provider instanceof Response) return provider;
+  const harness = normalizeHarness(body.harness);
+  if (harness instanceof Response) return harness;
   const skills = normalizeSkills(body.skills);
   if (skills instanceof Response) return skills;
   const capabilities = normalizeCapabilities(body.capabilities);
@@ -82,7 +85,15 @@ export function parseParticipantProfile(body: Record<string, unknown>): Particip
   }
   const webhook_url = normalizeWebhookUrl(body.webhook_url);
   if (webhook_url instanceof Response) return webhook_url;
-  return { state, status, model, provider, skills, capabilities, workspace, public_key, display_name, role, checkout, webhook_url };
+  return { state, status, model, provider, harness, skills, capabilities, workspace, public_key, display_name, role, checkout, webhook_url };
+}
+
+function normalizeHarness(value: unknown): string | null | undefined | Response {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(value)) {
+    return json({ error: "harness must be a lowercase name (a-z, 0-9, _ or -) of at most 64 characters, or null to clear" }, 400);
+  }
+  return value;
 }
 
 function normalizeLabel(value: unknown, field: string, max: number): string | null | undefined | Response {
@@ -126,6 +137,7 @@ export function createJoinedParticipant(participantId: string, profile: Particip
     status_updated_at: now,
     ...(profile.model ? { model: profile.model } : {}),
     ...(profile.provider ? { provider: profile.provider } : {}),
+    ...(profile.harness ? { harness: profile.harness } : {}),
     ...(profile.skills ? { skills: profile.skills } : {}),
     ...(profile.capabilities ? { capabilities: profile.capabilities } : {}),
     ...(profile.workspace ? { workspace: profile.workspace } : {}),
@@ -154,12 +166,13 @@ export function withTokenIndex(invite: InviteState, tokenOnlyHash: string | unde
 
 function updateParticipantProfile(participant: Participant, profile: ParticipantProfile): Participant {
   const now = new Date().toISOString();
-  const { webhook_url: currentWebhookUrl, workspace: currentWorkspace, display_name: currentName, role: currentRole, checkout: currentCheckout, ...rest } = participant;
+  const { webhook_url: currentWebhookUrl, workspace: currentWorkspace, display_name: currentName, role: currentRole, checkout: currentCheckout, harness: currentHarness, ...rest } = participant;
   const webhook_url = profile.webhook_url === undefined ? currentWebhookUrl : profile.webhook_url ?? undefined;
   const workspace = profile.workspace === undefined ? currentWorkspace : profile.workspace ?? undefined;
   const display_name = profile.display_name === undefined ? currentName : profile.display_name ?? undefined;
   const role = profile.role === undefined ? currentRole : profile.role ?? undefined;
   const checkout = profile.checkout === undefined ? currentCheckout : profile.checkout ?? undefined;
+  const harness = profile.harness === undefined ? currentHarness : profile.harness ?? undefined;
   return {
     ...rest,
     ...(webhook_url ? { webhook_url } : {}),
@@ -167,6 +180,7 @@ function updateParticipantProfile(participant: Participant, profile: Participant
     ...(display_name ? { display_name } : {}),
     ...(role ? { role } : {}),
     ...(checkout ? { checkout } : {}),
+    ...(harness ? { harness } : {}),
     state: profile.state ?? participant.state ?? "free",
     status: profile.status ?? participant.status ?? "joined",
     status_updated_at: now,

@@ -88,10 +88,14 @@ describe("hosted MCP handler", () => {
 
   it("lists tools", async () => {
     const response = await handleMcpRequest(rpc("tools/list"));
-    const body = await response.json() as { result: { tools: Array<{ name: string }> } };
+    const body = await response.json() as { result: { tools: Array<{ name: string; inputSchema: { properties: Record<string, unknown> } }> } };
 
     expect(body.result.tools.map((tool) => tool.name)).toContain("create_room");
     expect(body.result.tools.map((tool) => tool.name)).toContain("send_message");
+    for (const name of ["join_room", "wait_for_invite", "update_status"]) {
+      const tool = body.result.tools.find((entry) => entry.name === name);
+      expect(tool?.inputSchema.properties).toHaveProperty("harness");
+    }
     for (const name of ["list_tasks", "claim_task", "complete_task", "block_task", "room_summary", "add_note", "add_decision"]) {
       expect(body.result.tools.map((tool) => tool.name)).toContain(name);
     }
@@ -514,10 +518,11 @@ describe("hosted MCP handler", () => {
     } as never;
     const invite = JSON.stringify({ access: "https://j01n.me/r/hook-room", join_secret: "secret" });
 
-    await handleMcpRequest(rpc("tools/call", { name: "join_room", arguments: { inviteJson: invite, participantId: "a", webhookUrl: "https://a.example/hook" } }), env);
-    await handleMcpRequest(rpc("tools/call", { name: "update_status", arguments: { inviteJson: invite, participantId: "a", state: "free", status: "x", webhookUrl: "off" } }), env);
+    await handleMcpRequest(rpc("tools/call", { name: "join_room", arguments: { inviteJson: invite, participantId: "a", webhookUrl: "https://a.example/hook", harness: "claude" } }), env);
+    await handleMcpRequest(rpc("tools/call", { name: "update_status", arguments: { inviteJson: invite, participantId: "a", state: "free", status: "x", webhookUrl: "off", harness: "pi" } }), env);
     await handleMcpRequest(rpc("tools/call", { name: "join_room", arguments: { inviteJson: invite, participantId: "b" } }), env);
 
+    expect(bodies.filter((b) => b.method === "PUT" || b.method === "PATCH").map((b) => [b.method, b.body.harness])).toEqual([["PUT", "claude"], ["PATCH", "pi"], ["PUT", undefined]]);
     expect(bodies.map((b) => [b.method, b.body.webhook_url])).toEqual([
       ["PUT", "https://a.example/hook"],
       ["PATCH", null],

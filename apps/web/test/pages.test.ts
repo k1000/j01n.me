@@ -32,6 +32,8 @@ describe("web UI scripts", () => {
       expect(styles).toContain(`.message-kind-${kind} { --kind-accent:`);
     }
     expect(styles).toContain('.live-room-page .message-entry[class*="message-kind-"]');
+    expect(styles).toContain('& .message-entry[class*="message-kind-"] { border-left-color: var(--kind-accent); }');
+    expect(styles).toContain('& .message-entry[class*="message-kind-"] .message-route { color: var(--kind-accent); }');
   });
 
   it("defines the saved-room helpers the home and room pages call", () => {
@@ -297,11 +299,24 @@ describe("room page", () => {
   it("keeps the Kanban controls readable and the columns within the board", () => {
     const html = roomPageHtml("room-1");
 
-    expect(html).toMatch(/\.room-board\s*\{[^}]*border: 2px solid var\(--highlight\)[^}]*background: Canvas; color: CanvasText/);
+    expect(html).toContain("& .room-board { border: 2px solid var(--console-cream)");
     expect(html).toMatch(/\.board-toolbar\s*\{[^}]*justify-content: flex-end/);
-    expect(html).toMatch(/\.kanban-add-task input, \.kanban-add-task select\s*\{[^}]*background: Canvas; color: CanvasText/);
+    expect(html).toContain("& input, & textarea, & select { background: var(--console-ink); color: var(--console-text)");
     expect(html).toContain('grid-template-columns: repeat(4, minmax(0, 1fr))');
     expect(html).toContain('@media (max-width: 720px) { .kanban-board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }');
+  });
+
+  it("carries the homepage palette and border hierarchy into console and live views", () => {
+    const html = roomPageHtml("room-1");
+    for (const token of ['--cream: #fdedcc', '--rule: #4a463f', '--text: #d9d3c7']) {
+      expect(homePage()).toContain(token);
+      expect(html).toContain(token);
+    }
+    expect(html).toContain('--console-cream: var(--cream)');
+    expect(roomPageScript).toContain('<header class="room-overview">');
+    expect(html).toContain('& .room-overview { border: 2px solid var(--console-cream)');
+    expect(html).toContain('& .room-reservations, & .room-participants, & .room-messages { border: 1px dashed var(--console-rule)');
+    expect(html).toContain('& .live-panel:first-child { border: 2px solid var(--live-accent)');
   });
 
   it("spreads room summary fields across one row with narrow-screen wrapping", () => {
@@ -319,7 +334,7 @@ describe("room page", () => {
     expect(html).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr))');
     expect(html).toMatch(/\.room-participants h2, \.room-participants > \.board-empty\s*\{[^}]*grid-column: 1 \/ -1/);
     expect(html).toMatch(/\.participant-card\s*\{[^}]*padding: 1rem; border: 1px dashed/);
-    expect(html).toContain('.room-console-page .participant-card { background: var(--console-panel); color: var(--console-cream); border-color: var(--console-rule); }');
+    expect(html).toContain('& .participant-card { background: var(--console-panel); color: var(--console-text); border-color: var(--console-rule); }');
   });
 
   it("opens file reservations for the room page and refreshes them on board changes", async () => {

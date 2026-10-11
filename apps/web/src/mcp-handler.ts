@@ -744,6 +744,7 @@ async function pumpRoomEvents(
 const CAPABILITIES_PARAM = { type: "string", description: "What you can do, comma-separated: code, shell, browser, screenshot, vision (read images), web_search, files" };
 const MODEL_PARAM = { type: "string", description: "Which model you run, e.g. claude-sonnet-4-5 or qwen3.8-flash. Announce it when you are an agent; update it when the host switches your model" };
 const PROVIDER_PARAM = { type: "string", description: "Which API serves that model, e.g. anthropic, openai, openrouter, token-plan" };
+const HARNESS_PARAM = { type: "string", description: "Your execution harness, e.g. pi, claude, codex; self-reported metadata, not authority or a spawn instruction" };
 const WORKSPACE_PARAM = {
   type: "object", description: "Where you work (sealed with the room key; the server stores only ciphertext)",
   properties: { path: { type: "string" }, repo: { type: "string" }, branch: { type: "string" }, host: { type: "string" } },
@@ -849,7 +850,7 @@ const tools: Record<string, ToolDef> = {
 
   join_room: roomTool("Join once using the private room link or handoff JSON and a unique name. Returns kickoff, board, open questions and a private resume_profile. Use resume_room after reconnecting, not join_room again. Events are auto-subscribed when GET /mcp is active; otherwise use wait_for_event.", {
     webhookUrl: WEBHOOK_URL_PARAM, capabilities: CAPABILITIES_PARAM, workspace: WORKSPACE_PARAM, checkout: CHECKOUT_PARAM,
-    model: MODEL_PARAM, provider: PROVIDER_PARAM,
+    model: MODEL_PARAM, provider: PROVIDER_PARAM, harness: HARNESS_PARAM,
   }, [], async (env, params, ctx) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
       const participantId = params.participantId as string;
@@ -861,6 +862,7 @@ const tools: Record<string, ToolDef> = {
         ...(typeof params.capabilities === "string" ? { capabilities: parseSkills(params.capabilities) } : {}),
         ...(typeof params.model === "string" && params.model.trim() ? { model: params.model.trim() } : {}),
         ...(typeof params.provider === "string" && params.provider.trim() ? { provider: params.provider.trim() } : {}),
+        ...(typeof params.harness === "string" && params.harness.trim() ? { harness: params.harness.trim() } : {}),
         ...(typeof params.checkout === "string" ? { checkout: params.checkout } : {}),
         ...(workspace ? { workspace: { ...workspace, repo: workspace.repo?.replace(/\/\/[^@/]+@/, "//") } } : {}),
       }, crypto);
@@ -998,6 +1000,7 @@ const tools: Record<string, ToolDef> = {
       type: "object", properties: {
         agentIdentity: { type: "string", description: "Your agentIdentity from register_agent" },
         participantId: { type: "string", description: "Your participant id in the room (default: your agent name)" },
+        harness: HARNESS_PARAM,
         timeoutSeconds: { type: "number", description: "1-50, default 50" },
       }, required: ["agentIdentity"],
     },
@@ -1006,7 +1009,7 @@ const tools: Record<string, ToolDef> = {
       const [invite] = await waitForInvites(identity, Number(params.timeoutSeconds) || 50, agentFetch(env));
       if (!invite) return { timeout: true };
       await deleteInvite(identity, invite.id, agentFetch(env));
-      const joined = await tools.join_room.handler!(env, { inviteJson: invite.room_link, participantId: params.participantId ?? identity.name }, ctx);
+      const joined = await tools.join_room.handler!(env, { inviteJson: invite.room_link, participantId: params.participantId ?? identity.name, harness: params.harness }, ctx);
       return { invited_by: invite.from, ...(joined as Record<string, unknown>) };
     },
   },
@@ -1020,7 +1023,7 @@ const tools: Record<string, ToolDef> = {
 
   update_status: roomTool("Update participant availability state and status text, and optionally set or remove your webhook (webhookUrl).", {
     state: { type: "string" }, status: { type: "string" },
-    model: MODEL_PARAM, skills: { type: "string" }, provider: PROVIDER_PARAM,
+    model: MODEL_PARAM, skills: { type: "string" }, provider: PROVIDER_PARAM, harness: HARNESS_PARAM,
     webhookUrl: WEBHOOK_URL_PARAM, capabilities: CAPABILITIES_PARAM, workspace: WORKSPACE_PARAM, checkout: CHECKOUT_PARAM,
   }, ["state", "status"], async (env, params) => {
       const { roomUrl, secret } = parseRoomId(params.inviteJson as string);
@@ -1033,6 +1036,7 @@ const tools: Record<string, ToolDef> = {
           ...(typeof params.capabilities === "string" ? { capabilities: parseSkills(params.capabilities) } : {}),
           ...(typeof params.model === "string" && params.model.trim() ? { model: params.model.trim() } : {}),
           ...(typeof params.provider === "string" && params.provider.trim() ? { provider: params.provider.trim() } : {}),
+        ...(typeof params.harness === "string" && params.harness.trim() ? { harness: params.harness.trim() } : {}),
           ...(typeof params.checkout === "string" ? { checkout: params.checkout } : {}),
           ...(workspace ? { workspace: { ...workspace, repo: workspace.repo?.replace(/\/\/[^@/]+@/, "//") } } : {}),
         },

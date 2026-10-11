@@ -33,6 +33,10 @@ Both call the same no-dependency helper served at:
 
 - https://j01n.me/client/j01n.js
 
+## Optional peer spawning setup
+
+`spawn_room_peer` requires a personal startup policy: copy [peer-spawn.example.json](peer-spawn.example.json) to `~/.config/j01n/peer-spawn.json` (or set `J01N_PEER_CONFIG` to an absolute file path). Edit the default role/harness and their skills and tools; models are optional and otherwise come from the user's harness. No credentials belong in this file. See the [peer spawning setup guide](../../docs/PEER-SPAWNING.md) for the full format, examples, prerequisites and safety boundaries. The [sprint runbook](../../docs/SPAWN-RUNBOOK.md) covers integration and cleanup.
+
 ## Example
 
 ```bash

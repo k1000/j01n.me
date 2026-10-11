@@ -145,7 +145,7 @@ async function openSession(invite: Invite, me: string): Promise<RoomClient> {
     client = await resumeRoom({ ...invite, participant_token: token }, me, crypto);
   } else {
     try {
-      client = await joinRoom(invite, me, {}, crypto);
+      client = await joinRoom(invite, me, { harness: "pi" }, crypto);
     } catch (err) {
       if (err instanceof RoomApiError && err.status === 409) {
         throw new Error(`${me} already joined this room but no participant token was found in ${file}. Run from the directory where you joined, or pass a participant profile containing participant_token.`);
@@ -262,21 +262,23 @@ async function handleJoin(parsed: ParsedArgs): Promise<string> {
     const i = parsed.rest.indexOf(name);
     return i >= 0 && parsed.rest[i + 1] && !parsed.rest[i + 1].startsWith("--") ? parsed.rest[i + 1] : undefined;
   };
-  const model = flag("--model") || process.env.J01N_MODEL || process.env.PI_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL;
-  const provider = flag("--provider") || process.env.J01N_PROVIDER || process.env.PI_PROVIDER;
+  const model = flag("--model") || process.env.J01N_MODEL || (process.env.J01N_PEER_ROLE ? undefined : process.env.PI_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL);
+  const provider = flag("--provider") || process.env.J01N_PROVIDER || (process.env.J01N_PEER_ROLE ? undefined : process.env.PI_PROVIDER);
+  const skills = flag("--skills")?.split(",").filter(Boolean);
   const detected = parsed.rest.includes("--no-workspace") ? undefined : detectWorkspace(client.invite.join_secret, client.invite.room_id);
   let workspace = detected?.workspace;
   // Re-joining from the same place announces nothing new (every seal differs, so compare the opened values).
-  const teamList = workspace || model || provider ? await client.team().catch(() => []) : [];
+  const teamList = await client.team().catch(() => []);
   const mine = teamList.find((p) => p.id === parsed.me);
   if (mine && JSON.stringify(mine.workspace) === JSON.stringify(workspace)) workspace = undefined;
   const display_name = flag("--display-name");
   const role = flag("--role");
-  const profile: { capabilities?: string[]; workspace?: Workspace; checkout?: string; model?: string; provider?: string; display_name?: string; role?: string } = { capabilities, workspace, display_name, role };
+  const profile: { capabilities?: string[]; skills?: string[]; workspace?: Workspace; checkout?: string; model?: string; provider?: string; harness?: string; display_name?: string; role?: string } = { capabilities, skills, workspace, display_name, role };
+  if (mine?.harness !== "pi") profile.harness = "pi";
   if (detected?.checkout !== mine?.checkout) profile.checkout = detected?.checkout;
   if (model && mine?.model !== model) profile.model = model;
   if (provider && mine?.provider !== provider) profile.provider = provider;
-  if (capabilities || workspace || profile.checkout || profile.model || profile.provider || display_name || role) await client.setProfile(profile);
+  if (capabilities || skills || workspace || profile.checkout || profile.model || profile.provider || profile.harness || display_name || role) await client.setProfile(profile);
   let kickoff: unknown = null;
   let kickoffError: string | undefined;
   let board: Awaited<ReturnType<RoomClient["board"]>>["board"] | null = null;
@@ -557,9 +559,20 @@ async function handleListen(parsed: ParsedArgs): Promise<string> {
   const timeout = args.find((arg) => /^\d+$/.test(arg));
   const joinFlags = args.filter((arg) => arg !== timeout);
   const as = joinFlags.indexOf("--as");
-  const participantId = as >= 0 ? joinFlags[as + 1] : me;
+  const participantId = process.env.J01N_PEER_PARTICIPANT_ID || (as >= 0 ? joinFlags[as + 1] : me);
   if (!participantId || !/^[a-z][a-z0-9_-]{0,31}$/.test(participantId)) throw new Error("--as needs a valid room participant id");
   if (as >= 0) joinFlags.splice(as, 2);
+  const peerRole = process.env.J01N_PEER_ROLE;
+  if (peerRole) {
+    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(peerRole) || peerRole === "owner" || peerRole === "host") throw new Error("invalid peer role");
+    const skillNames = process.env.J01N_PEER_SKILLS;
+    if (!skillNames || !skillNames.split(",").every((name) => /^[a-z][a-z0-9_-]*$/.test(name))) throw new Error("spawned peer needs validated skill names");
+    for (const flag of ["--role", "--skills", "--model", "--provider"]) {
+      let index: number;
+      while ((index = joinFlags.indexOf(flag)) >= 0) joinFlags.splice(index, 2);
+    }
+    joinFlags.push("--role", peerRole, "--skills", skillNames);
+  }
   const identity = loadAgent(me);
   const [invite] = await waitForInvites(identity, timeout ? Number(timeout) : undefined);
   if (!invite) return JSON.stringify({ timeout: true }, null, 2);

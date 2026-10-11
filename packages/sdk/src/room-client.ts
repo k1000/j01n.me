@@ -151,13 +151,13 @@ export interface RoomClient {
   openQuestions(): Promise<OpenQuestion[]>;
   participants(): Promise<ParticipantsResponse>;
   /** workspace is sealed with the room key before it is sent; null clears it. */
-  updateStatus(state: "free" | "busy", status: string, options?: { model?: string; skills?: string[]; provider?: string; capabilities?: string[]; workspace?: Workspace | null; checkout?: string | null; display_name?: string; role?: string; webhookUrl?: string | null }): Promise<{ ok: true; participant: Participant }>;
+  updateStatus(state: "free" | "busy", status: string, options?: { model?: string; skills?: string[]; provider?: string; harness?: string | null; capabilities?: string[]; workspace?: Workspace | null; checkout?: string | null; display_name?: string; role?: string; webhookUrl?: string | null }): Promise<{ ok: true; participant: Participant }>;
   /** Announce what you can do and where you work (only the given fields change; workspace is sealed, null clears it). */
-  setProfile(profile: { capabilities?: string[]; workspace?: Workspace | null; checkout?: string | null; display_name?: string; role?: string; model?: string; provider?: string }): Promise<{ ok: true; participant: Participant }>;
+  setProfile(profile: { capabilities?: string[]; skills?: string[]; workspace?: Workspace | null; checkout?: string | null; display_name?: string; role?: string; model?: string; provider?: string; harness?: string | null }): Promise<{ ok: true; participant: Participant }>;
   /** Host-targeted role change; the server enforces host authorization and joined target. */
   setParticipantRole(targetId: string, role: "owner" | null): Promise<{ ok: true; participant: Participant }>;
   /** Everyone in the room with their capabilities and opened workspace (null when it cannot be opened). */
-  team(): Promise<Array<{ id: string; state: string; status: string; last_seen_at: string; model?: string; provider?: string; checkout?: string; checkout_status: string; display_name?: string; role?: string; capabilities: string[]; workspace: Workspace | null }>>;
+  team(): Promise<Array<{ id: string; state: string; status: string; last_seen_at: string; model?: string; provider?: string; harness?: string; checkout?: string; checkout_status: string; display_name?: string; role?: string; capabilities: string[]; workspace: Workspace | null }>>;
   /** Opt into push: the room POSTs your visible events to this https URL. null switches back to polling. */
   setWebhook(url: string | null): Promise<{ ok: true; participant: Participant }>;
   board(): Promise<BoardResponse>;
@@ -316,8 +316,10 @@ export async function buildRoomClient(
     async setProfile(profile) {
       const body: Record<string, unknown> = {};
       if (profile.capabilities !== undefined) body.capabilities = profile.capabilities;
+      if (profile.skills !== undefined) body.skills = profile.skills;
       if (profile.model !== undefined) body.model = profile.model;
       if (profile.provider !== undefined) body.provider = profile.provider;
+      if (profile.harness !== undefined) body.harness = profile.harness;
       if (profile.checkout !== undefined) body.checkout = profile.checkout;
       if (profile.display_name !== undefined) body.display_name = profile.display_name;
       if (profile.role !== undefined) body.role = profile.role;
@@ -344,6 +346,7 @@ export async function buildRoomClient(
         last_seen_at: p.last_seen_at,
         ...(p.model ? { model: p.model } : {}),
         ...(p.provider ? { provider: p.provider } : {}),
+        ...(p.harness ? { harness: p.harness } : {}),
         ...(p.checkout ? { checkout: p.checkout } : {}),
         checkout_status: !p.checkout ? "checkout unknown" : (() => {
           const other = participants.find((candidate) => candidate.id !== p.id && !candidate.left_at && candidate.checkout === p.checkout);

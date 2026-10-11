@@ -2,17 +2,21 @@
  * Home page layout (the promo design). Plain HTML/CSS/JS kept as raw strings; homePage() in html.ts adds the
  * room dialogs and their scripts. Interactive hooks (data-open-create-room, data-saved-rooms, ...) must stay.
  */
+export const HOME_PALETTE: string = String.raw`
+    --ink: #121212;        /* page ground */
+    --panel: #1d1c1a;      /* warm raised surfaces */
+    --cream: #fdedcc;      /* brand accent */
+    --text: #d9d3c7;       /* running text */
+    --dim: #8f897d;        /* captions and metadata */
+    --rule: #4a463f;       /* dashed separators */
+    --ok: #b9d99a;         /* positive status */
+`;
+
 export const HOME_STYLES: string = String.raw`
   /* Layout: one 64ch terminal column. Logo + thesis, a live room transcript as the hero, then plain sections set like a man page. */
   :root {
     color-scheme: dark;
-    --ink: #121212;        /* page ground, same near-black as j01n.me */
-    --panel: #1d1c1a;      /* raised surfaces, faint warm bias toward the cream */
-    --cream: #fdedcc;      /* brand cream: logo, banner, buttons */
-    --text: #d9d3c7;       /* running text */
-    --dim: #8f897d;        /* captions, comments, ciphertext */
-    --rule: #4a463f;       /* dashed rules and borders */
-    --ok: #b9d99a;         /* "decrypted" marker only */
+${HOME_PALETTE}
     --display: "Fira Code", "Fira Mono", ui-monospace, Menlo, Consolas, monospace;
     --body: "Fira Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
     --s-0: 0.8125rem; --s-1: 0.9375rem; --s-2: 1.125rem; --s-3: 1.5rem; --s-4: clamp(3.25rem, 13vw, 7rem);

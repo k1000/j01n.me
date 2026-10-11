@@ -21,8 +21,9 @@ const escape = (value: unknown) => String(value ?? "").replaceAll("&", "&amp;").
 
 describe("optional live room view", () => {
   it("follows the charcoal-and-cream monospace reference without rounded surfaces or shadows", () => {
-    expect(LIVE_ROOM_STYLES).toContain('--live-bg: #121212');
-    expect(LIVE_ROOM_STYLES).toContain('--live-accent: #ffebc4');
+    expect(LIVE_ROOM_STYLES).toContain('body.live-room-page {');
+    expect(LIVE_ROOM_STYLES).toContain('--live-bg: var(--console-ink)');
+    expect(LIVE_ROOM_STYLES).toContain('--live-accent: var(--console-cream)');
     expect(LIVE_ROOM_STYLES).toContain('font-family: var(--live-mono)');
     expect([...LIVE_ROOM_STYLES.matchAll(/border-radius:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['0']);
     expect([...LIVE_ROOM_STYLES.matchAll(/box-shadow:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['none']);

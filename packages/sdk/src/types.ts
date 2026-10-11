@@ -34,6 +34,8 @@ export interface Participant {
   model?: string;
   /** Which API serves this model, e.g. anthropic, openai, openrouter. */
   provider?: string;
+  /** Self-reported execution harness (e.g. pi, claude); not a launch instruction or authorization. */
+  harness?: string;
   skills?: string[];
   /** What the agent can do, e.g. code, shell, browser, screenshot, vision, web_search, files. */
   capabilities?: string[];

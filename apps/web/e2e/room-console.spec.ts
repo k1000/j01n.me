@@ -12,6 +12,17 @@ function boardValue(entry: { value: unknown }) {
 }
 
 async function createRoom(page: Page, name = "human-host") {
+  // Wrangler's local host reports http://j01n.me; the browser fixture uses its own localhost origin.
+  await page.route("**/rooms", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const response = await route.fetch();
+    const invite = await response.json() as { access: string; invite_link: string };
+    const local = new URL(page.url()).origin;
+    await route.fulfill({ response, json: { ...invite,
+      access: invite.access.replace(new URL(invite.access).origin, local),
+      invite_link: invite.invite_link.replace(new URL(invite.invite_link).origin, local),
+    } });
+  });
   await page.goto("/");
   await page.getByRole("button", { name: "Create room", exact: true }).first().click();
   const dialog = page.getByRole("dialog", { name: "Create room", exact: true });
@@ -33,6 +44,43 @@ test("create opens the room as host with Kanban and a shareable private link", a
   await expect(link).toHaveValue(/\/room\/[^#]+#[A-Za-z0-9_-]+$/);
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("j01n.rooms") || "{}"));
   expect(Object.values(saved)).toEqual([expect.objectContaining({ participant_id: "human-host", participant_token: expect.any(String) })]);
+});
+
+test("room console and live view follow the homepage palette and responsive border hierarchy", async ({ page }) => {
+  await createRoom(page);
+  const theme = await page.evaluate(() => {
+    const body = getComputedStyle(document.body);
+    const overview = getComputedStyle(document.querySelector(".room-overview")!);
+    const board = getComputedStyle(document.querySelector(".room-board")!);
+    const reservations = getComputedStyle(document.querySelector(".room-reservations")!);
+    return {
+      cream: body.getPropertyValue("--console-cream").trim(),
+      text: body.color,
+      overviewBorder: overview.borderTopWidth,
+      boardBorder: board.borderTopWidth,
+      secondaryBorder: reservations.borderTopStyle,
+      boardBackground: board.backgroundColor,
+      taskColumns: getComputedStyle(document.querySelector(".task-editor")!).gridTemplateColumns.split(" ").length,
+    };
+  });
+  expect(theme).toMatchObject({ cream: "#fdedcc", text: "rgb(217, 211, 199)", overviewBorder: "2px", boardBorder: "2px", secondaryBorder: "dashed", boardBackground: "rgb(29, 28, 26)", taskColumns: 2 });
+  await page.getByRole("button", { name: "Add board key" }).focus();
+  expect(await page.getByRole("button", { name: "Add board key" }).evaluate((el) => getComputedStyle(el).outlineStyle)).toBe("dashed");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByLabel("Task title", { exact: true }).fill("Unbroken".repeat(16));
+  await page.getByRole("button", { name: "Save task", exact: true }).click();
+  await expect(page.getByRole("button", { name: /^Edit Unbroken/ })).toBeVisible();
+  const mobile = await page.evaluate(() => ({
+    columns: getComputedStyle(document.querySelector(".kanban-board")!).gridTemplateColumns.split(" ").length,
+    taskColumns: getComputedStyle(document.querySelector(".task-editor")!).gridTemplateColumns.split(" ").length,
+    fits: document.querySelector(".room-overview")!.getBoundingClientRect().right <= innerWidth,
+    noHorizontalOverflow: document.documentElement.scrollWidth <= innerWidth,
+  }));
+  expect(mobile).toEqual({ columns: 1, taskColumns: 1, fits: true, noHorizontalOverflow: true });
+  await page.getByRole("link", { name: "Live view" }).click();
+  await expect(page.locator("body")).toHaveClass(/live-room-page/);
+  expect(await page.locator(".live-panel").first().evaluate((el) => getComputedStyle(el).borderTopWidth)).toBe("2px");
+  expect(await page.locator(".live-panel h2").first().evaluate((el) => getComputedStyle(el, "::before").content)).toBe("none");
 });
 
 test("a private link asks for your own name and saved room access survives a new tab", async ({ page, browser }) => {
@@ -297,6 +345,9 @@ test("console and Live view fit mobile screens and pass accessibility checks", a
   await page.getByLabel("Task title", { exact: true }).fill("Review the parser changes");
   await page.getByRole("button", { name: "Save task", exact: true }).click();
   await expect(page.getByRole("button", { name: "Edit Review the parser changes", exact: true })).toBeVisible();
+  await page.locator(".message-new").last().evaluate((el) => {
+    for (const animation of el.getAnimations()) { animation.pause(); animation.currentTime = 0; }
+  });
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 900 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);

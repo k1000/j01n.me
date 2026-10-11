@@ -146,8 +146,15 @@ async function resolveRoom(): Promise<Resolved> {
 }
 
 async function agents() {
-  const me = args[1]; const rest = args.slice(2);
-  if (!me) throw Error("usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]");
+  let me = args[1]; const rest = args.slice(me ? 2 : 1);
+  if (!me) {
+    // A pane seeded with exactly one agent identity can start `listen` without repeating its name.
+    const seeds = (await fs.readdir(stateDir).catch(() => []))
+      .filter((n) => /^\.j01n-agent-[a-z0-9_-]+\.json$/.test(n))
+      .map((n) => n.slice(".j01n-agent-".length, -".json".length));
+    if (seeds.length !== 1) throw Error("usage: j01n register <me> [allowed,agents] | allow <me> <allowed,agents> | invite <me> <to> <room link> | invites <me> | listen <me> [timeout]" + (seeds.length > 1 ? ` (several seeded identities: ${seeds.join(", ")})` : " (no seeded identity in this directory)"));
+    me = seeds[0];
+  }
   const file = join(stateDir, `.j01n-agent-${safe(me)}.json`);
   if (cmd === "register") {
     const identity = await registerAgent(base, me, names(rest[0]));

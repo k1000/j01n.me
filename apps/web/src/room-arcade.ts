@@ -120,7 +120,8 @@ const ARCADE_JS = String.raw`
     const used = new Set(initial.filter((label) => counts.get(label) === 1));
     return initial.map((label, i) => {
       if (counts.get(label) === 1) return label;
-      let candidate = names[i].slice(-6);
+      const numbered = names[i].match(/[-_](\d{1,2})$/);
+      let candidate = numbered ? names[i].slice(0, 3) + "-" + numbered[1] : names[i].slice(-6);
       for (let n = 1; used.has(candidate); n++) {
         const suffix = "-" + n;
         candidate = names[i].slice(-(6 - suffix.length)) + suffix;

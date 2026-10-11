@@ -372,8 +372,8 @@ describe("room page", () => {
       isRepeatedRoomPurpose: (name: string, purpose: string) => boolean;
     };
     const now = Date.parse("2026-10-11T12:00:00Z");
-    expect(helpers.formatRoomExpiry(new Date(now + 42 * 60000).toISOString(), now)).toBe("expires in 42 min");
-    expect(helpers.formatRoomExpiry(new Date(now + 3 * 3600000).toISOString(), now)).toBe("expires in 3 h");
+    expect(helpers.formatRoomExpiry(new Date(now + 42 * 60000).toISOString(), now)).toBe("in 42 min");
+    expect(helpers.formatRoomExpiry(new Date(now + 3 * 3600000).toISOString(), now)).toBe("in 3 h");
     expect(helpers.formatRoomExpiry(new Date(now - 1).toISOString(), now)).toBe("expired");
     expect(helpers.formatRoomExpiry("invalid", now)).toBe("—");
     expect(helpers.isRepeatedRoomPurpose("Onboarding swarm", "Sprint Onboarding swarm")).toBe(true);

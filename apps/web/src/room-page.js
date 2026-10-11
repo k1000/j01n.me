@@ -62,6 +62,10 @@
 
   if (participantId) startRoom();
   else showJoinForm();
+  setInterval(() => {
+    const expiry = root?.querySelector('.room-summary time[datetime]');
+    if (expiry) expiry.textContent = formatRoomExpiry(expiry.getAttribute('datetime'));
+  }, 60_000);
 
   function showJoinForm(error = "") {
     if (!root) return;
@@ -1476,7 +1480,7 @@ ${isRepeatedRoomPurpose(room.name, room.purpose) ? "" : `<div><dt>purpose</dt><d
     if (!Number.isFinite(remaining)) return "—";
     if (remaining <= 0) return "expired";
     const minutes = Math.ceil(remaining / 60000);
-    return minutes < 60 ? `expires in ${minutes} min` : `expires in ${Math.round(minutes / 60)} h`;
+    return minutes < 60 ? `in ${minutes} min` : `in ${Math.round(minutes / 60)} h`;
   }
 
   function isRepeatedRoomPurpose(name, purpose) {

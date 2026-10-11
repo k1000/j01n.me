@@ -48,6 +48,7 @@ test("create opens the room as host with Kanban and a shareable private link", a
 });
 
 test("navigation aligns and the overview abbreviates expiry and duplicate purpose", async ({ page }, testInfo) => {
+  await page.clock.install();
   await createRoom(page, "human-host", "Sprint Planning room");
   await page.setViewportSize({ width: 1280, height: 900 });
   const nav = page.locator(".room-navigation");
@@ -73,10 +74,15 @@ test("navigation aligns and the overview abbreviates expiry and duplicate purpos
   expect(styles.liveBackground).not.toBe(styles.arcadeBackground);
   await expect(page.locator(".room-summary dt", { hasText: "purpose" })).toHaveCount(0);
   const expiry = page.locator(".room-summary time");
-  await expect(expiry).toHaveText(/^expires in \d+ (min|h)$/);
+  await expect(expiry).toHaveText(/^in \d+ (min|h)$/);
   const exact = await expiry.getAttribute("title");
   expect(exact).toBeTruthy();
   expect(exact).toBe(new Date((await expiry.getAttribute("datetime"))!).toLocaleString());
+  await page.locator(".room-board").evaluate(el => el.setAttribute("data-marker", "kept"));
+  const initialExpiry = await expiry.textContent();
+  await page.clock.fastForward(120_000);
+  await expect(expiry).not.toHaveText(initialExpiry!);
+  await expect(page.locator('.room-board[data-marker="kept"]')).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Extend 30 min" })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("header-1280.png"), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -313,6 +319,54 @@ test("sprint board keys render once as editable task cards with folded done work
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await page.screenshot({ path: testInfo.outputPath(`sprint-tasks-${width}.png`), fullPage: true });
   }
+});
+
+test("sprint room actions fit and respond to touch on a phone", async ({ browser }, testInfo) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  try {
+    const invitation = await createRoom(page);
+    const agent = await joinRoom(parseInviteLink(invitation)!, "worker-1");
+    const initial = (await agent.board()).board;
+    await agent.deleteBoardKey("columns", { ifVersion: initial.columns.version });
+    await agent.deleteBoardKey("tasks", { ifVersion: initial.tasks.version });
+    await agent.setBoardKey("task.T1", { title: "Review the long mobile layout", status: "open", files: ["apps/web/src/room-page.js"], depends_on: [], brief: "Check touch targets" }, { ifVersion: 0 });
+    await agent.setBoardKey("task.T2", { title: "Ship the room page", status: "claimed", owner: "worker-1", depends_on: ["T1"] }, { ifVersion: 0 });
+    for (let i = 2; i <= 6; i++) await joinRoom(parseInviteLink(invitation)!, `worker-${i}`);
+    const board = page.locator(".sprint-task-board");
+    await expect(board.locator(".kanban-column")).toHaveCount(4);
+    await expect(page.locator(".participant-card")).toHaveCount(7);
+    const actions = [
+      page.getByRole("link", { name: "Live view" }),
+      page.getByRole("button", { name: "Copy URL", exact: true }),
+      page.getByRole("button", { name: "Extend 30 min" }),
+      page.getByRole("button", { name: "Add board key" }),
+      board.locator('[data-sprint-task-id="T1"] summary'),
+      board.getByRole("button", { name: "Edit board key task.T1" }),
+      page.getByRole("button", { name: "Send", exact: true }),
+    ];
+    for (const action of actions) {
+      await expect(action).toBeVisible();
+      expect(await action.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    await board.locator('[data-sprint-task-id="T1"] summary').tap();
+    await expect(board.getByText("Check touch targets")).toBeVisible();
+    await board.getByRole("button", { name: "Edit board key task.T1" }).tap();
+    await expect(page.getByLabel("key", { exact: true })).toHaveValue("task.T1");
+    await page.getByRole("button", { name: "Cancel", exact: true }).tap();
+    await page.getByRole("button", { name: "Add board key" }).tap();
+    await expect(page.getByLabel("key", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Cancel", exact: true }).tap();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    await page.screenshot({ path: testInfo.outputPath("sprint-touch-390.png"), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1280);
+    await page.screenshot({ path: testInfo.outputPath("sprint-touch-1280.png"), fullPage: true });
+    await page.getByRole("button", { name: "ARCADE" }).tap();
+    await expect(page.getByRole("img", { name: "Room arcade" })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("sprint-arcade-1280.png") });
+  } finally { await context.close(); }
 });
 
 test("other board keys remain visible beside Kanban and reject stale edits", async ({ page }) => {

@@ -1,58 +1,34 @@
 #!/usr/bin/env node
-// Operator-driven sprint automation. Never print room credentials or accept a dirty integration checkout.
-import { execFileSync, spawn } from "node:child_process";
-import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+// Host-side sprint orchestrator: start | status | answer | finish.
+// It owns the canonical host flow so a host never improvises room setup: prune stale room pointers, create and
+// join the room as the host, seed worker identities into their own worktrees, give each worker a Herdr workspace
+// plus pane and an explicit task prompt, hand the raw invite link to the owner as a file body, then rebase the
+// reviewed task branches in dependency order onto main and open a merge request.
+// Rules: never print a room credential, never integrate a dirty checkout, persist every step in sprint.json so an
+// interrupted start or finish resumes instead of repeating side effects (no duplicate rooms, panes or invites).
+import { execFileSync } from "node:child_process";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const helper = join(root, "packages/helper/client/j01n.js");
 const [action, ...args] = process.argv.slice(2);
 const dry = args.includes("--dry-run");
-const pause = (ms) => new Promise((done) => setTimeout(done, ms));
-function fail(message) { throw new Error(message); }
-function run(command, argv, cwd = process.cwd(), silent = false) {
-  console.log(`$ ${command} ${argv.join(" ")}`);
-  try { return execFileSync(command, argv, { cwd, encoding: "utf8", timeout: 900_000, stdio: ["ignore", "pipe", "pipe"] }).trim(); }
-  catch (error) {
-    if (!silent) console.error(error.stderr?.toString().trim() || error.message);
-    fail(`${command} failed; stopped (inspect the checkout before retrying)`);
-  }
-}
-function git(...argv) { return run("git", argv); }
-function assertClean(cwd = process.cwd()) {
-  // dev/ (plans, lessons) is copied untracked into sprint worktrees by start; it is never deployed or pushed.
-  if (run("git", ["status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude)dev"], cwd)) fail(`dirty checkout: ${cwd}; save all work before continuing`);
-}
-function internal(path) {
-  if (!isAbsolute(path)) fail("path must be absolute on internal storage");
-  let ancestor = path;
-  while (!existsSync(ancestor)) ancestor = dirname(ancestor);
-  const physical = resolve(realpathSync(ancestor), relative(ancestor, path));
-  if (physical === "/Volumes" || physical.startsWith("/Volumes/")) fail("sprint host cannot live on /Volumes");
-  return physical;
-}
-function copyMissing(source, target, worktree) {
-  const child = relative(worktree, target);
-  if (!child || child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) fail("spec/dev destination escapes host worktree");
-  for (let path = dirname(target); path !== dirname(worktree); path = dirname(path)) {
-    if (existsSync(path) && lstatSync(path).isSymbolicLink()) fail(`refusing destination symlink: ${path}`);
-  }
-  const stat = lstatSync(source);
-  if (stat.isSymbolicLink()) fail(`refusing to copy symlink: ${source}`);
-  if (stat.isDirectory()) {
-    if (existsSync(target) && !lstatSync(target).isDirectory()) fail(`destination is not a directory: ${target}`);
-    mkdirSync(target, { recursive: true });
-    for (const name of readdirSync(source)) copyMissing(join(source, name), join(target, name), worktree);
-  } else if (stat.isFile()) {
-    if (existsSync(target)) {
-      if (!lstatSync(target).isFile() || !readFileSync(source).equals(readFileSync(target))) fail(`spec/dev collision: ${target}; inspect before continuing`);
-      return;
-    }
-    mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(source, target, constants.COPYFILE_EXCL);
-  } else fail(`unsupported spec/dev entry: ${source}`);
+const PARTICIPANT_ID = /^[a-z][a-z0-9_-]{0,31}$/;
+// Generated outputs belong to integration, never to a task's files[].
+const GENERATED = ["packages/helper/client/j01n.js", "packages/helper/src/client-script.ts", "apps/web/src/markdown-assets.ts", "packages/skill/src/skill.ts"];
+// Owner delivery target for the raw invite file; J01N_INVITE_TO or --invite-to overrides, "none" skips sending.
+const DEFAULT_INVITE_TO = process.env.J01N_INVITE_TO || "telegram:5199310384";
+const VALUED_FLAGS = ["--spec", "--name", "--workers", "--host", "--worker-prefix", "--from", "--remote", "--invite-to", "--capabilities", "--server", "--state", "--helper", "--title", "--kind"];
+const secrets = new Set();
+function fail(message, detail) { const error = new Error(message); if (detail) error.detail = detail; throw error; }
+/** Remember a value so it can be scrubbed even when another program echoes it back in an error. */
+function track(value) { if (typeof value === "string" && value.length > 8) secrets.add(value); return value; }
+function redact(text) {
+  let out = String(text);
+  for (const secret of secrets) out = out.split(secret).join("<redacted>");
+  return out;
 }
 function option(name, fallback) {
   const index = args.indexOf(name);
@@ -60,225 +36,498 @@ function option(name, fallback) {
   if (!args[index + 1] || args[index + 1].startsWith("--")) fail(`${name} needs a value`);
   return args[index + 1];
 }
-function room(command) {
-  // Capture, never echo, CLI output or errors: they can contain private room details.
-  try { return JSON.parse(execFileSync(process.execPath, [helper, command], { cwd: process.cwd(), encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] })); }
-  catch { fail(`room ${command} failed; check that exactly one host room is joined here`); }
+function positional() {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith("--")) { if (VALUED_FLAGS.includes(args[i])) i++; continue; }
+    out.push(args[i]);
+  }
+  return out;
 }
-function announce(text) {
-  try { execFileSync(process.execPath, [helper, "send", "all", text, "--kind", "finding"], { cwd: process.cwd(), timeout: 30_000, stdio: "ignore" }); }
-  catch { fail("room stage announcement failed; stop and inspect host session"); }
+function checkFlags(allowed, minPositional = 0) {
+  const flags = args.filter((value) => value.startsWith("--"));
+  if (flags.some((flag) => !allowed.includes(flag))) fail(`unknown argument for ${action}: ${flags.filter((f) => !allowed.includes(f)).join(" ")}; see docs/SPAWN-RUNBOOK.md`);
+  for (const flag of new Set(flags)) if (VALUED_FLAGS.includes(flag)) option(flag, undefined);
+  if (positional().length < minPositional) fail(`${action} needs ${minPositional} argument(s); see docs/SPAWN-RUNBOOK.md`);
 }
+/** Run a command, capture stdout, and stop on the first failure with redacted, truncated stderr. */
+function exec(command, argv, options = {}) {
+  const { cwd = process.cwd(), label, redactArgs = [], quiet = false, timeout = 900_000, echoError = true } = options;
+  const shown = label ?? `${command} ${argv.map((value, index) => (redactArgs.includes(index) || secrets.has(value) ? "<redacted>" : value)).join(" ")}`;
+  if (!quiet) console.log(`$ ${shown}`);
+  try {
+    return execFileSync(command, argv, { cwd, encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"], env: options.env ?? process.env }).trim();
+  } catch (error) {
+    const detail = redact(error.stderr?.toString().trim() || error.message);
+    if (echoError) console.error(detail.split("\n").slice(-12).join("\n"));
+    fail(`${shown} failed; stopped (inspect the state before retrying)`, detail);
+  }
+}
+function json(command, argv, options = {}) {
+  try { return JSON.parse(exec(command, argv, options)); }
+  catch (error) { if (error instanceof SyntaxError) fail(`${options.label ?? command} returned no JSON`, error.message); throw error; }
+}
+const git = (...argv) => exec("git", argv);
+const gitAt = (cwd, ...argv) => exec("git", argv, { cwd });
+/** A ref lookup that must not stop the run: "" means missing. */
+function gitSoft(cwd, ...argv) {
+  try { return execFileSync("git", argv, { cwd, encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "ignore"] }).trim(); }
+  catch { return ""; }
+}
+const slug = (roomId) => String(roomId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12) || "room";
+const safeName = (value) => String(value).replace(/[^a-zA-Z0-9_-]/g, "_");
+const nowIso = () => new Date().toISOString();
+function internal(path) {
+  if (!isAbsolute(path)) fail("worktree root must be an absolute path on internal storage");
+  let ancestor = path;
+  while (!existsSync(ancestor)) ancestor = dirname(ancestor);
+  const physical = resolve(realpathSync(ancestor), relative(ancestor, path));
+  if (physical === "/Volumes" || physical.startsWith("/Volumes/")) fail("sprint worktrees cannot live on /Volumes");
+  return physical;
+}
+
+// ── sprint.json state ──────────────────────────────────────────────────────────────────────────
+
+const keysDir = () => resolve(process.env.J01N_KEY_DIR || process.cwd());
+const serverBase = () => (option("--server", process.env.BASE_URL || "https://j01n.me")).replace(/\/$/, "");
+const stateFile = (state = null) => resolve(state?.state_file ?? option("--state", join(keysDir(), "sprint.json")));
+function loadState() {
+  const file = stateFile();
+  if (!existsSync(file)) return null;
+  try { return JSON.parse(readFileSync(file, "utf8")); } catch { fail(`sprint state is unreadable: ${file}`); }
+}
+function saveState(state) {
+  const file = stateFile(state);
+  state.updated_at = nowIso();
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
+  renameSync(tmp, file);
+  chmodSync(file, 0o600);
+  track(state.invite_link);
+  return state;
+}
+function requireState() {
+  const state = loadState();
+  if (!state?.room_id) fail(`no sprint.json at ${stateFile()}; run start first`);
+  track(state.invite_link);
+  return state;
+}
+/** Every room call runs as the host, from the host checkout, against this sprint's own key directory. */
+function helper(state, argv, options = {}) {
+  return json(process.execPath, [resolve(option("--helper", state?.helper ?? join(root, "packages/helper/client/j01n.js"))), ...argv], {
+    cwd: state?.host_checkout ?? process.cwd(),
+    env: { ...process.env, J01N_KEY_DIR: state?.keys_dir ?? keysDir(), BASE_URL: state?.base ?? serverBase() },
+    label: options.label ?? `j01n ${argv[0]}`,
+    redactArgs: options.redactArgs ?? [],
+    quiet: options.quiet ?? true,
+    timeout: options.timeout ?? 60_000,
+    echoError: options.echoError ?? true,
+  });
+}
+/** Never let a reporting nicety fail an irreversible step. */
+function soft(state, argv) { try { return helper(state, argv, { echoError: false }); } catch { return null; } }
+function announce(state, text) { soft(state, ["send", "all", text, "--kind", "finding"]); }
+/** 404 = room never existed, 410 = closed or expired. Anything else (403, network) keeps the pointer. */
+async function roomAlive(roomUrl, token) {
+  try {
+    const response = await fetch(`${roomUrl}?view=all`, { headers: { authorization: `Bearer ${token || "stale-pointer-probe"}` } });
+    return response.status !== 404 && response.status !== 410;
+  } catch { return true; }
+}
+function pointerFiles(dir) {
+  const active = join(dir, ".j01n-rooms");
+  if (!existsSync(active)) return [];
+  return readdirSync(active).filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).map((name) => join(active, name));
+}
+/** Drop active-room pointers whose room is gone: one stale pointer makes every later CLI call ambiguous. */
+async function prunePointers(dir) {
+  const pruned = [];
+  for (const file of pointerFiles(dir)) {
+    let pointer = null;
+    try { pointer = JSON.parse(readFileSync(file, "utf8")); } catch { pointer = null; }
+    if (typeof pointer?.room_url !== "string" || typeof pointer?.participant_id !== "string" || !/^https?:/.test(pointer.room_url)) { rmSync(file, { force: true }); pruned.push(basename(file)); continue; }
+    const keyFile = join(dir, `.j01n-${safeName(new URL(pointer.room_url).pathname)}-${safeName(pointer.participant_id)}.json`);
+    let token;
+    try { token = JSON.parse(readFileSync(keyFile, "utf8")).participantToken; } catch { token = undefined; }
+    if (await roomAlive(pointer.room_url, token)) continue;
+    rmSync(file, { force: true });
+    pruned.push(`${pointer.participant_id}@${slug(new URL(pointer.room_url).pathname.split("/").pop() ?? "")}`);
+  }
+  return pruned;
+}
+/** The dev/ plan folder, the untracked worktree roots and sprint.json itself are working material, never input. */
+function assertClean(cwd = process.cwd(), state = loadState()) {
+  const excluded = ["dev"];
+  for (const path of state ? [stateFile(state), state.worktree_root] : [stateFile()]) {
+    const inside = relative(cwd, path);
+    if (inside && !inside.startsWith("..") && !isAbsolute(inside)) excluded.push(inside);
+  }
+  const pathspec = ["--", ".", ...excluded.map((path) => `:(exclude)${path}`)];
+  if (exec("git", ["status", "--porcelain", "--untracked-files=all", ...pathspec], { cwd })) fail(`dirty checkout: ${cwd}; save all work before continuing`);
+}
+
+// ── start ──────────────────────────────────────────────────────────────────────────────────────
+
+function orderedTasks(tasks) {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const out = [];
+  const visit = (task, seen) => {
+    if (out.includes(task.id) || seen.has(task.id)) return;
+    seen.add(task.id);
+    for (const dep of task.depends_on ?? []) if (byId.has(dep)) visit(byId.get(dep), seen);
+    out.push(task.id);
+  };
+  for (const task of [...tasks].sort((a, b) => String(a.id).localeCompare(String(b.id)))) visit(task, new Set());
+  return out.map((id) => byId.get(id));
+}
+function promptFor(state, worker) {
+  const task = worker.task;
+  return [
+    `You are ${worker.id} in the j01n room "${state.name}" (host ${state.host}). The invitation is already in your inbox and the identity file is seeded in this checkout.`,
+    `Run exactly: /j01n listen ${worker.id} --capabilities ${state.capabilities}`,
+    task ? `Then: /j01n tasks, /j01n claim ${task}, and read the sealed BRIEF for ${task} with /j01n read before coding.` : `Then: /j01n tasks and claim one open unblocked task.`,
+    `Work only in this worktree on task ${task ?? "your claim"} and only the files it lists. Never push or merge, and never put a room link, join secret or token in a file, prompt or commit.`,
+    `Before reporting run node scripts/check-contract.mjs --peer. Then commit and immediately: /j01n done ${task ?? "<id>"} --summary <text> --commit <sha> --tests <text> --contract "pnpm check:contract --peer passed".`,
+    `If you are blocked or cannot read the brief, ask ${state.host} with --kind question --expect-reply and say what you tried.`,
+  ].join(" ");
+}
+/** Agent inboxes are global first-come-first-served names: keep an existing identity, never hide a clash. */
+function ensureIdentity(state, name, acceptFrom, hint) {
+  const file = join(state.keys_dir, `.j01n-agent-${safeName(name)}.json`);
+  if (existsSync(file)) return;
+  try { helper(state, ["register", name, acceptFrom], { quiet: false, label: `j01n register ${name}` }); }
+  catch (error) {
+    const detail = String(error.detail ?? error.message);
+    if (/already registered|taken/i.test(detail)) fail(`agent name "${name}" is already registered on ${state.base}: ${hint}`, detail);
+    throw error;
+  }
+}
+/** Workers need their own installed checkout; a fixture repo without a manifest needs none. */
+function installDeps(worktree) {
+  if (!existsSync(join(worktree, "package.json"))) return;
+  const manifest = join(worktree, "pnpm-workspace.yaml");
+  const before = existsSync(manifest) ? readFileSync(manifest) : null;
+  try { exec("pnpm", ["install", "--frozen-lockfile"], { cwd: worktree, label: "pnpm install --frozen-lockfile" }); }
+  finally { if (before && (!existsSync(manifest) || !readFileSync(manifest).equals(before))) writeFileSync(manifest, before); }
+}
+async function start() {
+  checkFlags(["--spec", "--name", "--workers", "--host", "--worker-prefix", "--from", "--remote", "--invite-to", "--capabilities", "--server", "--state", "--helper", "--dry-run"]);
+  if (positional().length) fail("start takes flags only; see the usage line");
+  const specArg = option("--spec", "");
+  const name = option("--name", "").trim();
+  const workersArg = option("--workers", "");
+  const workers = Number(workersArg);
+  if (!specArg || !name || !workersArg) fail("start needs --spec <spec.md> --name <room> --workers N");
+  const spec = resolve(specArg);
+  if (!existsSync(spec) || !statSync(spec).isFile()) fail(`--spec must be a regular file: ${specArg}`);
+  if (!Number.isInteger(workers) || workers < 1 || workers > 8) fail("--workers must be an integer from 1 to 8");
+  const host = option("--host", process.env.J01N_HOST_ID || "hermes-bot");
+  if (!PARTICIPANT_ID.test(host)) fail("--host must be a valid room participant id");
+  const prefix = option("--worker-prefix", "worker");
+  if (!PARTICIPANT_ID.test(`${prefix}-1`)) fail("--worker-prefix must produce valid participant ids");
+  const capabilities = option("--capabilities", process.env.J01N_WORKER_CAPABILITIES || "code,files");
+  const inviteTo = option("--invite-to", DEFAULT_INVITE_TO);
+  const helperPath = resolve(option("--helper", join(root, "packages/helper/client/j01n.js")));
+  if (!existsSync(helperPath)) fail(`j01n helper not found: ${helperPath}`);
+  const repoDir = git("rev-parse", "--show-toplevel");
+  if (repoDir !== process.cwd()) fail("start must run from the repository root");
+  const from = option("--from", "main");
+  git("check-ref-format", "--branch", from);
+  if (!gitSoft(process.cwd(), "rev-parse", "--verify", "--quiet", `${from}^{commit}`)) fail(`--from ${from} does not name a commit here`);
+  const keys = keysDir();
+  const wtRoot = internal(process.env.J01N_WORKTREE_ROOT || join(homedir(), "Development", "_worktrees"));
+  const base = serverBase();
+  if (dry) {
+    console.log(`Plan: prune stale pointers in ${join(keys, ".j01n-rooms")}; create+join "${name}" as ${host} from ${basename(spec)} on ${base}; ${workers} worker(s) ${prefix}-1..${prefix}-${workers} in ${wtRoot}/<room>/<worker> off ${from}, each with its own Herdr workspace + pane prompted with "/j01n listen ${prefix}-N --capabilities ${capabilities}" and its task id; register+invite each worker, seed its identity file into its worktree; deliver the raw invite link as a file via ${inviteTo === "none" ? "(skipped)" : inviteTo}; state in ${stateFile()}. Nothing changed.`);
+    return;
+  }
+  const existing = loadState();
+  const resuming = Boolean(existing?.room_id);
+  if (resuming && !(await roomAlive(existing.room_url, undefined))) fail(`sprint.json tracks ${existing.room_id}, which is closed or expired; move ${stateFile()} aside and start again`);
+  const pruned = await prunePointers(keys);
+  if (pruned.length) console.log(`Pruned ${pruned.length} stale room pointer(s): ${pruned.join(", ")}`);
+  const foreign = pointerFiles(keys).filter((file) => !(resuming && basename(file) === existing.room_pointer));
+  if (foreign.length) fail(`${foreign.length} other room(s) are still active in ${keys}; leave or close them so this sprint owns the directory`);
+  assertClean();
+  let state = existing;
+  if (!resuming) {
+    const created = helper({ host_checkout: process.cwd(), keys_dir: keys, helper: helperPath }, ["create", base, JSON.stringify({
+      host_id: host, room_name: name, purpose: `Sprint ${name}`, max_participants: Math.min(64, workers + 4), template: "sprint", spec,
+    })], { redactArgs: [2], quiet: false, echoError: false, label: `j01n create ${basename(spec)} as ${host}` });
+    const roomUrl = created.room_url ?? created.access;
+    const roomId = created.room_id ?? new URL(roomUrl).pathname.split("/").pop();
+    if (!created?.invite_link || !roomUrl || !roomId) fail("room create returned no invite; check the helper, the server and the spec");
+    track(created.invite_link);
+    track(created.join_secret);
+    state = saveState({
+      version: 1, created_at: nowIso(), state_file: stateFile(), host_checkout: repoDir, keys_dir: keys, helper: helperPath, base,
+      room_pointer: basename(pointerFiles(keys).at(-1) ?? ""), room_id: roomId, room_url: roomUrl, invite_link: created.invite_link,
+      host, name, spec, from, remote: option("--remote", "origin"), capabilities, invite_to: inviteTo, worktree_root: wtRoot,
+      agent_kind: process.env.J01N_AGENT_KIND || "pi", workers: [], delivered: false,
+    });
+    const ordered = orderedTasks(helper(state, ["tasks"], { echoError: false }).tasks ?? []);
+    if (!ordered.length) fail(`the room has no tasks; ${basename(spec)} needs a "## Tasks" section`);
+    state.tasks = ordered.map((task) => ({ id: task.id, title: task.title, files: task.files ?? [], depends_on: task.depends_on ?? [] }));
+    state.workers = Array.from({ length: workers }, (unused, index) => ({
+      id: `${prefix}-${index + 1}`, task: ordered[index]?.id ?? null, branch: `${slug(state.room_id)}/${prefix}-${index + 1}`,
+      worktree: join(wtRoot, basename(repoDir), slug(state.room_id), `${prefix}-${index + 1}`),
+    }));
+    saveState(state);
+    const unstaffed = ordered.slice(workers).map((task) => task.id);
+    if (unstaffed.length) console.log(`No worker for ${unstaffed.join(", ")}; claim them yourself or raise --workers`);
+    console.log(`Room ${state.room_id} "${state.name}" created and joined as ${state.host}.`);
+  } else {
+    console.log(`Resuming sprint ${state.room_id} "${state.name}" from ${stateFile()}`);
+  }
+  const hostIdentity = join(state.keys_dir, `.j01n-agent-${safeName(state.host)}.json`);
+  let acted = !resuming;
+  ensureIdentity(state, state.host, state.workers.map((worker) => worker.id).join(","), `pass --host <fresh id> (the host's room id and its inbox name are the same) or restore ${hostIdentity}`);
+  for (const worker of state.workers) {
+    const identity = join(state.keys_dir, `.j01n-agent-${safeName(worker.id)}.json`);
+    const wasPrompted = Boolean(worker.prompted);
+    ensureIdentity(state, worker.id, state.host, `pass --worker-prefix <fresh> for this sprint or restore ${identity}`);
+    if (!worker.invited) { helper(state, ["invite", state.host, worker.id, state.invite_link], { redactArgs: [3], quiet: false, label: `j01n invite ${worker.id}` }); worker.invited = true; acted = true; saveState(state); }
+    if (!existsSync(worker.worktree)) {
+      if (!resolve(worker.worktree).startsWith(resolve(state.worktree_root, basename(state.host_checkout), slug(state.room_id)) + "/")) fail(`refusing a worktree outside the sprint root: ${worker.worktree}`);
+      mkdirSync(dirname(worker.worktree), { recursive: true, mode: 0o755 });
+      if (gitAt(state.host_checkout, "branch", "--list", worker.branch)) gitAt(worker.worktree, "worktree", "add", worker.worktree, worker.branch);
+      else gitAt(state.host_checkout, "worktree", "add", "-b", worker.branch, worker.worktree, state.from);
+      installDeps(worker.worktree);
+      acted = true;
+    }
+    assertClean(worker.worktree, state);
+    const seeded = join(worker.worktree, `.j01n-agent-${safeName(worker.id)}.json`);
+    if (!existsSync(seeded)) { copyFileSync(identity, seeded); chmodSync(seeded, 0o600); worker.seeded = true; acted = true; saveState(state); }
+    if (!worker.workspace_id || !worker.pane_id) {
+      const made = json("herdr", ["workspace", "create", "--cwd", worker.worktree, "--label", worker.id, "--env", `BASE_URL=${state.base}`,
+        "--env", `J01N_TASK=${worker.task ?? ""}`, "--env", `J01N_WORKER=${worker.id}`, "--no-focus"], { cwd: state.host_checkout, label: `herdr workspace create ${worker.id}`, timeout: 120_000 });
+      worker.workspace_id = made.result?.workspace?.workspace_id ?? made.result?.workspace_id ?? made.result?.workspace?.id;
+      worker.pane_id = made.result?.root_pane?.pane_id ?? made.result?.pane?.pane_id ?? made.result?.pane_id ?? made.result?.pane_id;
+      if (!worker.workspace_id || !worker.pane_id) fail("herdr did not return the new workspace and its root pane; inspect the session before retrying");
+      acted = true;
+      saveState(state);
+    }
+    if (!worker.started) {
+      exec("herdr", ["agent", "start", worker.id, "--kind", state.agent_kind, "--pane", worker.pane_id], { cwd: state.host_checkout, label: `herdr agent start ${worker.id}`, timeout: 300_000 });
+      worker.started = true;
+      acted = true;
+      saveState(state);
+    }
+    if (!worker.prompted) {
+      exec("herdr", ["agent", "prompt", worker.pane_id, promptFor(state, worker)], { cwd: state.host_checkout, label: `herdr agent prompt ${worker.id}`, timeout: 60_000 });
+      worker.prompted = true;
+      acted = true;
+      saveState(state);
+    }
+    console.log(`${worker.id}: task ${worker.task ?? "(any open task)"} branch ${worker.branch} pane ${worker.pane_id}${wasPrompted ? " (already prompted)" : ""}`);
+  }
+  if (!state.delivered && state.invite_to && state.invite_to !== "none") {
+    const dir = mkdtempSync(join(tmpdir(), "j01n-sprint-"));
+    chmodSync(dir, 0o700);
+    const file = join(dir, `invite-${slug(state.room_id)}.txt`);
+    // Byte-exact: the file body is the raw link and nothing else, so no client reflows, quotes or truncates it.
+    writeFileSync(file, state.invite_link, { mode: 0o600 });
+    try { exec("hermes", ["send", "-t", state.invite_to, "-f", file, "-q"], { label: `hermes send -t ${state.invite_to} -f <invite file>`, timeout: 120_000 }); state.delivered = true; acted = true; saveState(state); }
+    finally { rmSync(dir, { recursive: true, force: true }); }
+    console.log(`Invite link sent to ${state.invite_to} as a raw file; confirm with status that the owner actually joins.`);
+  }
+  // Room announcements are noise on a no-op resume, so only speak when this run actually did something.
+  if (acted) announce(state, `Sprint ${state.name} started: ${state.workers.map((worker) => `${worker.id}=${worker.task ?? "?"}`).join(" ")}; branches ${state.workers.map((worker) => worker.branch).join(" ")} off ${state.from}.`);
+  console.log(`Next: status, answer <msg-id> <text>, finish --dry-run.`);
+}
+
+// ── status ─────────────────────────────────────────────────────────────────────────────────────
+
+const compactTasks = (tasks) => tasks.map((task) => `${task.id}:${task.status}${task.owner ? `@${task.owner}` : ""}${task.blocked_by?.length ? `<- ${task.blocked_by.join(",")}` : ""}`).join(" ") || "no tasks";
+/** Unanswered asks, counted the way the room does it: an ask closes when the owed participant replies to it. */
+function openAsks(messages) {
+  const repliers = new Map();
+  for (const message of messages) {
+    if (!message.reply_to) continue;
+    if (!repliers.has(message.reply_to)) repliers.set(message.reply_to, new Set());
+    repliers.get(message.reply_to).add(message.from);
+  }
+  const now = Date.now();
+  return messages.filter((message) => message.expects_reply).flatMap((ask) => {
+    const replied = repliers.get(ask.id) ?? new Set();
+    const owedBy = ask.to === "all" ? ([...replied].some((id) => id !== ask.from) ? [] : ["anyone"]) : (Array.isArray(ask.to) ? ask.to : [ask.to]).filter((id) => !replied.has(id));
+    return owedBy.map((who) => ({ ask_id: ask.id, seq: ask.seq, from: ask.from, owed_by: who, due_at: ask.expects_reply.due_at, overdue: Date.parse(ask.expects_reply.due_at) < now }));
+  });
+}
+const compactAsks = (asks) => (asks.length ? `asks:${asks.length} ${asks.map((ask) => `#${ask.seq ?? String(ask.ask_id).slice(0, 8)} ${ask.from}->${ask.owed_by}${ask.overdue ? " OVERDUE" : ""}`).join(",")}` : "asks:none");
+function compactUsage(usage) {
+  if (!usage) return "usage:unavailable";
+  const rows = usage.rows ?? [];
+  const total = (usage.lines ?? []).at(-1)?.replace(/^room:\s*/, "") ?? "";
+  return `usage:${usage.reported ?? 0}/${rows.length} ${rows.map((row) => `${row.participant}=${row.snapshot ? `${row.snapshot.input_tokens}in/${row.snapshot.output_tokens}out${row.stale ? "?" : ""}` : "-"}`).join(",")}${total ? ` | ${total}` : ""}`;
+}
+async function status() {
+  checkFlags(["--state", "--helper"]);
+  if (positional().length) fail("status takes no arguments");
+  const state = loadState() ?? { host_checkout: process.cwd(), keys_dir: keysDir() };
+  const summary = helper(state, ["summary"]);
+  const asks = openAsks(helper(state, ["inbox"]));
+  const usage = soft(state, ["usage"]);
+  const participants = summary.participants ?? [];
+  const owner = participants.some((participant) => participant.role === "owner") ? "owner" : "no owner";
+  console.log(`[${slug(state.room_id ?? "")} ${(state.name ?? "?").trim()}] ${compactTasks(summary.tasks ?? [])} | ${compactAsks(asks)} | ${compactUsage(usage)} | report:${summary.report ? "yes" : "no"} decisions:${(summary.decisions ?? []).length} | ${participants.length} in, ${owner}`);
+}
+
+// ── answer ─────────────────────────────────────────────────────────────────────────────────────
+
+async function answer() {
+  checkFlags(["--state", "--helper", "--kind"], 2);
+  const [target, ...words] = positional();
+  const kind = option("--kind", undefined);
+  if (kind && !["finding", "decision", "handoff", "notify"].includes(kind)) fail("--kind must be finding, decision, handoff or notify");
+  const state = loadState() ?? { host_checkout: process.cwd(), keys_dir: keysDir() };
+  const messages = helper(state, ["inbox"]);
+  const asked = messages.find((message) => message.id === target) || (/^\d+$/.test(target) ? messages.find((message) => String(message.seq) === target) : undefined);
+  if (!asked) fail(`no message ${target} in this room; run j01n inbox and answer what you can read`);
+  if (asked.from === "system") fail("system notices have no participant to answer");
+  const sent = helper(state, ["send", asked.from, ...words, "--reply-to", asked.id, ...(kind ? ["--kind", kind] : [])],
+    { quiet: false, label: `j01n send ${asked.from} <text> --reply-to ${String(asked.id).slice(0, 8)}` });
+  console.log(`answered #${asked.seq ?? "?"} from ${asked.from}${sent.seq ? ` as #${sent.seq}` : ""}`);
+}
+
+// ── finish ─────────────────────────────────────────────────────────────────────────────────────
+
 function peerContractPassed(evidence) {
   // Older sprint peers put the explicit result in --tests instead of --contract.
   const report = evidence?.contract ?? evidence?.tests ?? "";
   return /\bpnpm\s+check:contract\s+--peer\s+passed\b/i.test(report);
 }
-function summarize() {
-  const summary = room("summary");
-  const tasks = summary.tasks || [];
-  console.log("Tasks:");
-  for (const task of tasks) console.log(`  ${task.id}: ${task.status} (${task.owner || "unclaimed"})${task.blocked_by?.length ? ` blocked by ${task.blocked_by.join(", ")}` : ""}`);
-  console.log("Participants:");
-  for (const p of summary.participants || []) console.log(`  ${p.id}: ${p.role || "member"} ${p.state || ""}`);
-  return summary;
-}
-function validName(name) { if (!/^[a-z][a-z0-9_-]{0,31}$/.test(name)) fail("--name must be a Herdr-compatible agent name"); return name; }
-function checkFlags(allowed, positional = 0) {
-  const flags = args.filter((v) => v.startsWith("--"));
-  if (flags.some((f) => !allowed.includes(f)) || args.length !== positional + flags.reduce((n, f) => n + (["--name", "--peers", "--integrator"].includes(f) ? 2 : 1), 0)) fail(`Invalid ${action} arguments; see docs/SPAWN-RUNBOOK.md`);
-}
-async function start() {
-  checkFlags(["--name", "--peers", "--integrator", "--dry-run"], 1);
-  const spec = resolve(args[0]);
-  if (!existsSync(spec) || !statSync(spec).isFile()) fail("spec.md must exist and be a regular file");
-  if (process.env.HERDR_ENV !== "1" || !process.env.HERDR_PANE_ID) fail("start requires a Herdr-managed pane");
-  const repo = git("rev-parse", "--show-toplevel");
-  if (repo !== process.cwd()) fail("start must run from the repository root");
-  const repoName = basename(git("remote", "get-url", "origin").replace(/\.git$/, ""));
-  const baseDir = internal(join(homedir(), "Development", "_MY"));
-  const waves = readdirSync(baseDir).map((name) => name.match(new RegExp(`^${repoName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-w(\\d+)$`))?.[1]).filter(Boolean).map(Number);
-  const wave = `w${Math.max(0, ...waves) + 1}`;
-  const branch = `${wave}/host`;
-  const target = internal(join(baseDir, `${repoName}-${wave}`, "host"));
-  if (existsSync(target) || git("branch", "--list", branch)) fail(`host target or branch already exists: ${branch}`);
-  const name = validName(option("--name", "host").toLowerCase());
-  const peers = Number(option("--peers", "3"));
-  if (!Number.isInteger(peers) || peers < 1 || peers > 5) fail("--peers must be 1..5");
-  const identity = internal(process.env.J01N_AGENT_DIR || join(homedir(), ".local/share/j01n/agents"));
-  if (!existsSync(identity) || (statSync(identity).mode & 0o077)) fail("J01N_AGENT_DIR must be an existing private directory (0700)");
-  const inbox = `host-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
-  const integrator = option("--integrator", "");
-  if (integrator) validName(integrator);
-  const dev = join(repo, "dev");
-  const specInDev = spec.startsWith(dev + sep);
-  if (specInDev && !realpathSync(spec).startsWith(realpathSync(repo) + sep)) fail("spec inside dev/ resolves outside the repository");
-  // A dry run uses the locally fetched gitlab/main ref; actual start refreshes it before copying.
-  const devTrackedInSource = specInDev && !!git("ls-files", "--", "dev");
-  const devTrackedInBase = specInDev && !!git("ls-tree", "-r", "--name-only", "gitlab/main", "--", "dev");
-  const copyDev = specInDev && !devTrackedInSource && !devTrackedInBase;
-  console.log(`Host ${branch} -> ${target}; spec ${spec}; ${peers} peer spawn(s)`);
-  console.log(copyDev ? "Spec preflight: dev/ untracked in source and cached gitlab/main; copy only missing dev/ files (reject collisions)." : "Spec preflight: copy only the missing spec; tracked dev/ will not be overwritten.");
-  if (dry) { console.log("Plan: fetch gitlab, create host worktree, copy missing spec/dev, install, split/label/start Pi, prompt host, wait for room and open owner invitation. No changes made."); return; }
-  if (integrator) {
-    // The integrator's standing inbox accepts invitations from this wave's host inbox only (registered on first use).
-    try { execFileSync(process.execPath, [helper, "allow", integrator, inbox], { cwd: repo, timeout: 30_000, stdio: "ignore" }); }
-    catch { run(process.execPath, [helper, "register", integrator, inbox], repo); }
+function branchFor(state, task, participants) {
+  const worker = state.workers.find((entry) => entry.id === task.owner);
+  if (worker?.branch && worker?.worktree && existsSync(worker.worktree)) return worker;
+  const peer = participants.find((participant) => participant.id === task.owner);
+  if (!peer?.workspace?.branch || !peer?.workspace?.path || !existsSync(peer.workspace.path)) {
+    fail(`task ${task.id}: no recorded branch/worktree for ${task.owner}; finish needs the sprint state or a peer workspace announcement`);
   }
-  git("fetch", "gitlab");
-  git("worktree", "add", "-b", branch, target, "gitlab/main");
-  // Re-check the fetched base; never overwrite tracked content or copy a source symlink.
-  const trackedInHost = specInDev && !!run("git", ["ls-files", "--", "dev"], target);
-  if (specInDev && !devTrackedInSource && !trackedInHost) copyMissing(dev, join(target, "dev"), target);
-  else copyMissing(spec, specInDev ? join(target, relative(repo, spec)) : join(target, basename(spec)), target);
-  const manifest = join(target, "pnpm-workspace.yaml");
-  const before = existsSync(manifest) ? readFileSync(manifest) : null;
-  try { run("pnpm", ["install", "--frozen-lockfile"], target); }
-  catch { fail(`host checkout remains at ${target}; inspect before retrying`); }
-  finally { if (before && (!existsSync(manifest) || !readFileSync(manifest).equals(before))) writeFileSync(manifest, before); }
-  const env = [`J01N_AGENT_DIR=${identity}`, `J01N_PEER_SPAWNS=${peers}`, `BASE_URL=${process.env.BASE_URL || "https://j01n.me"}`, `J01N_HOST_INBOX=${inbox}`];
-  const pane = JSON.parse(run("herdr", ["pane", "split", "--current", "--direction", "down", "--cwd", target, ...env.flatMap((v) => ["--env", v]), "--no-focus"])).result?.pane?.pane_id;
-  if (!pane) fail("Herdr did not return a host pane; inspect the checkout before retrying");
-  run("herdr", ["pane", "rename", pane, name]);
-  run("herdr", ["agent", "start", name, "--kind", "pi", "--pane", pane]);
-  const copied = spec.startsWith(dev + sep) ? relative(repo, spec) : basename(spec);
-  run("herdr", ["agent", "prompt", pane, `Host this sprint from ${copied}. Create the sprint with {"host_id":${JSON.stringify(name)},"spec":${JSON.stringify(copied)}}; confirm the owner joins, invite repo agents, spawn one peer per task, coordinate review.${integrator ? ` Right after joining, call invite_integrator({"name":"${integrator}"}); when it joins, give it the owner role (/j01n profile <its id> --role owner).` : ""} Follow docs/SPAWN-RUNBOOK.md. Never paste room credentials into Herdr.`]);
-  if (integrator) console.log(`Integrator: run \`node packages/helper/client/j01n.js listen ${integrator} --as <id>\` from ${repo} to join.`);
-  const roomDir = join(process.env.J01N_KEY_DIR || target, ".j01n-rooms");
-  let joined = false;
-  for (let i = 0; i < 180; i++) {
-    if (existsSync(roomDir) && readdirSync(roomDir).some((v) => /^[a-f0-9]{64}\.json$/.test(v))) { joined = true; break; }
-    await pause(1000);
-  }
-  if (!joined) fail("host room not joined within 3 minutes; host pane remains running. Open owner invite from host once joined");
-  // A host room may be created before its key file is saved; retry without emitting private CLI output.
-  for (let i = 0; i < 10; i++) {
-    try {
-      execFileSync(process.execPath, [join(target, "packages/helper/client/j01n.js"), "invite-link", "--open"], { cwd: target, timeout: 15_000, stdio: "ignore" });
-      console.log("Owner invitation opened in browser (confirm the owner joined in sprint status).");
-      return;
-    } catch { await pause(1000); }
-  }
-  fail("owner invitation could not be opened; host must run invite-link --open before proceeding");
-}
-function remotes() {
-  for (const remote of ["gitlab", "origin"]) git("fetch", remote);
-  for (const remote of ["gitlab", "origin"]) {
-    // A remote update not contained in HEAD means a parallel actor has changed main.
-    try { execFileSync("git", ["merge-base", "--is-ancestor", `${remote}/main`, "HEAD"], { stdio: "ignore" }); }
-    catch { fail(`${remote}/main moved outside the integration history; reconcile before proceeding`); }
-  }
+  return { id: peer.id, branch: peer.workspace.branch, worktree: peer.workspace.path };
 }
 function printLessons(summary) {
   // dev/ may be private and untracked: print room notes and decisions for dev/lessons.md, never commit them.
-  const entries = [...(summary.notes || []).map((n) => `- ${n.by}: ${n.text}`), ...(summary.decisions || []).map((d) => `- Decision (${d.by}): ${d.decision} — ${d.why}`)];
+  const entries = [...(summary.notes ?? []).map((note) => `- ${note.by}: ${note.text}`), ...(summary.decisions ?? []).map((d) => `- Decision (${d.by}): ${d.decision} — ${d.why}`)];
   if (entries.length) console.log(`Room notes and decisions for dev/lessons.md:\n${entries.join("\n")}`);
 }
-async function localE2E() {
-  const server = spawn("pnpm", ["exec", "wrangler", "dev", "--config", "apps/web/wrangler.jsonc", "--port", "8787"], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], detached: true });
-  let logs = "";
-  for (const stream of [server.stdout, server.stderr]) stream.on("data", (data) => { logs = (logs + data.toString()).slice(-4000); });
-  try {
-    let ready = false;
-    for (let i = 0; i < 60; i++) {
-      if (server.exitCode !== null) fail("wrangler dev exited before readiness");
-      if (/ready on|localhost:8787|127\.0\.0\.1:8787/i.test(logs)) { ready = true; break; }
-      await pause(1000);
-    }
-    if (!ready) fail("wrangler dev did not become ready within 60 seconds");
-    run(process.execPath, ["scripts/e2e.mjs", "http://127.0.0.1:8787"]);
-  } finally { if (server.pid) { try { process.kill(-server.pid, "SIGTERM"); } catch { /* already exited */ } } }
-}
 async function finish() {
-  checkFlags(["--dry-run", "--reviewed", "--owner-read"]);
-  if (!dry && (!args.includes("--reviewed") || !args.includes("--owner-read"))) fail("finish needs --reviewed --owner-read: host reviewed diffs/evidence and owner has read the report");
-  const cwd = git("rev-parse", "--show-toplevel");
-  if (cwd !== process.cwd() || !/^w\d+\/host$/.test(git("branch", "--show-current"))) fail("finish must run at a sprint host worktree root");
+  checkFlags(["--state", "--helper", "--title", "--dry-run", "--reviewed"]);
+  if (positional().length) fail("finish takes no positional arguments");
+  const state = requireState();
+  if (!dry && !args.includes("--reviewed")) fail("finish needs --reviewed: the host reviewed each diff and its evidence");
+  if (git("rev-parse", "--show-toplevel") !== state.host_checkout) fail(`finish must run in the host checkout ${state.host_checkout}`);
   assertClean();
-  const summary = summarize();
-  const tasks = summary.tasks || [];
-  if (!tasks.length || tasks.some((task) => task.status !== "done" || !task.owner || !task.evidence?.commits?.length || !task.evidence?.tests || !peerContractPassed(task.evidence))) fail("all tasks need done evidence (commits, tests and explicit passed peer contract)");
-  if (!summary.report) fail("post the host review report before finish");
+  const summary = helper(state, ["summary"]);
+  const tasks = summary.tasks ?? [];
+  const missing = tasks.filter((task) => task.status !== "done" || !task.owner || !task.evidence?.commits?.length || !task.evidence?.tests || !peerContractPassed(task.evidence));
+  if (!tasks.length || missing.length) fail(`every task needs done evidence (commits, tests, explicit passed peer contract): ${missing.map((task) => `${task.id}:${task.status}`).join(", ") || "no tasks"}`);
+  const openAsksList = openAsks(helper(state, ["inbox"]));
+  if (openAsksList.length) fail(`answer the ${openAsksList.length} unanswered ask(s) first: ${openAsksList.map((ask) => `#${ask.seq ?? "?"}?${ask.from}`).join(", ")}`);
   if (summary.reservations?.length) fail("release or reconcile outstanding reservations before finish");
-  if (!(summary.participants || []).some((p) => p.role === "owner")) fail("owner must join before finish");
-  const byId = new Map((summary.participants || []).map((p) => [p.id, p]));
-  const branches = [];
-  for (const task of tasks) {
-    const branch = byId.get(task.owner)?.workspace?.branch;
-    if (!branch || branch === git("branch", "--show-current") || !/^w\d+\/t\d+$/.test(branch) || branches.includes(branch)) fail(`task ${task.id}: unique peer branch unavailable`);
+  const conflicts = helper(state, ["conflicts"], { echoError: false });
+  if (conflicts.conflicts?.length) fail("peer branch merge conflicts reported; resolve and review before finishing");
+  const participants = summary.participants ?? [];
+  const ordered = orderedTasks(tasks);
+  state.finish ??= { rebased: {}, generated: null, checked: false, pushed: null, mr: null };
+  const records = new Map(ordered.map((task) => [task.id, branchFor(state, task, participants)]));
+  for (const task of ordered) {
+    const record = records.get(task.id);
     const expected = task.evidence.commits.at(-1);
     if (!/^[0-9a-f]{7,40}$/.test(expected)) fail(`task ${task.id}: invalid commit evidence`);
-    const actual = git("rev-parse", branch);
-    if (git("rev-parse", expected) !== actual) fail(`task ${task.id}: branch HEAD changed since done evidence; stop and re-review`);
-    branches.push(branch);
+    const actual = gitAt(record.worktree, "rev-parse", record.branch);
+    const reviewed = gitAt(record.worktree, "rev-parse", expected);
+    // A completed rebase moves the branch on purpose; only a head that nobody recorded is a real surprise.
+    if (actual !== reviewed && actual !== state.finish.rebased[task.id]) fail(`task ${task.id}: ${record.branch} is at ${actual.slice(0, 7)}, not the reviewed ${reviewed.slice(0, 7)}; stop and re-review`);
   }
-  console.log(`Verified ${branches.length} reported branch heads. Plan: fetch/reconcile, no-ff merges, regenerate, clean full contract, local E2E, deploy/live E2E, push both remotes, pi update, close room and safe cleanup.`);
+  const integration = state.finish.branch ?? `sprint/${slug(state.room_id)}`;
+  state.finish.branch = integration;
+  saveState(state);
+  let base = state.from;
+  const hasRemote = Boolean(state.remote) && gitSoft(state.host_checkout, "remote", "get-url", state.remote);
+  if (hasRemote) {
+    git("fetch", state.remote, state.from);
+    if (gitSoft(state.host_checkout, "rev-parse", "--verify", "--quiet", `${state.remote}/${state.from}^{commit}`)) base = `${state.remote}/${state.from}`;
+  } else if (!dry) console.log(`remote ${state.remote} is not configured; rebasing onto the local ${state.from}`);
+  console.log(`Plan: rebase ${ordered.map((task) => `${task.id}@${records.get(task.id).branch}`).join(" -> ")} onto ${base} (no merge commits), fast-forward ${integration}, regenerate client-script+assets, run FULL node scripts/check-contract.mjs, push ${state.remote}/${integration}, open MR ${integration} -> ${state.from}. The room stays open; no deploy and no merge to ${state.from}.`);
   if (dry) return;
-  announce("Sprint integration: fetching gitlab and origin before merging.");
-  remotes();
-  const conflicts = room("conflicts");
-  if (conflicts.conflicts?.length) fail("peer branch merge conflicts reported; resolve/review before finishing");
-  announce("Sprint integration: merging the reviewed task branches.");
-  for (const branch of branches) { assertClean(); git("merge", "--no-ff", "--no-edit", branch); }
-  run(process.execPath, ["scripts/generate-client-script.mjs"]);
-  run(process.execPath, ["scripts/generate-assets.mjs"]);
-  git("add", "--", "packages/helper/client/j01n.js", "packages/helper/src/client-script.ts", "apps/web/src/markdown-assets.ts", "packages/skill/src/skill.ts");
-  if (git("diff", "--cached", "--name-only")) git("commit", "-m", "Regenerate sprint integration outputs");
-  printLessons(summary);
-  assertClean();
-  run("pnpm", ["check:contract"]);
-  run("pnpm", ["check:generated"]);
-  await localE2E();
-  assertClean();
-  announce("Sprint integration: fetching remotes before deployment.");
-  remotes();
-  const deployed = git("rev-parse", "HEAD");
-  announce("Sprint integration: deploying the verified clean snapshot.");
-  run("pnpm", ["deploy"]);
-  run(process.execPath, ["scripts/e2e.mjs", "https://j01n.me"]);
-  announce("Sprint integration: fetching and reconciling both remotes before pushing.");
-  remotes();
-  assertClean();
-  announce("Sprint integration: pushing the deployed commit to gitlab and origin.");
-  for (const remote of ["gitlab", "origin"]) git("push", remote, `HEAD:main`);
-  for (const remote of ["gitlab", "origin"]) if (git("ls-remote", remote, "refs/heads/main").split(/\s+/)[0] !== deployed) fail(`${remote} does not point to deployed commit; stop cleanup`);
-  run("pi", ["update"]);
-  // Read only the local host key file; never print its URL, token or join secret.
-  const keyDir = process.env.J01N_KEY_DIR || process.cwd();
-  const rooms = readdirSync(join(keyDir, ".j01n-rooms")).filter((f) => /^[a-f0-9]{64}\.json$/.test(f));
-  if (rooms.length !== 1) fail("expected exactly one host room; close it manually after verifying ownership");
-  const { room_url, participant_id } = JSON.parse(readFileSync(join(keyDir, ".j01n-rooms", rooms[0]), "utf8"));
-  const safe = (s) => s.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const session = JSON.parse(readFileSync(join(keyDir, `.j01n-${safe(new URL(room_url).pathname)}-${safe(participant_id)}.json`), "utf8"));
-  if (!session.participantToken) fail("no host participant token in local key file; close manually");
-  announce("Sprint integration: deployment verified and both remotes updated; closing the room.");
-  const response = await fetch(room_url, { method: "DELETE", headers: { authorization: `Bearer ${session.participantToken}` } });
-  if (!response.ok) fail("room close failed; stop cleanup and inspect host session");
-  console.log("Room closed. Inspecting worktrees for safe cleanup.");
-  const listed = git("worktree", "list", "--porcelain");
-  const agents = JSON.parse(run("herdr", ["agent", "list"])).result?.agents || [];
-  for (const branch of branches) {
-    const entry = listed.split(/\n\n+/).find((block) => block.includes(`branch refs/heads/${branch}\n`) || block.endsWith(`branch refs/heads/${branch}`));
-    const path = entry?.match(/^worktree (.+)$/m)?.[1];
-    if (!path || !isAbsolute(path) || !existsSync(path) || run("git", ["status", "--porcelain"], path)) { console.log(`Skipping dirty/missing worktree ${branch}`); continue; }
-    try { execFileSync("git", ["merge-base", "--is-ancestor", branch, "HEAD"], { stdio: "ignore" }); }
-    catch { console.log(`Skipping unmerged branch ${branch}`); continue; }
-    const owner = tasks.find((task) => byId.get(task.owner)?.workspace?.branch === branch)?.owner;
-    const declared = byId.get(owner)?.workspace?.path;
-    const occupants = agents.filter((agent) => agent.cwd === path);
-    if (!declared || resolve(declared) !== resolve(path) || occupants.length !== 1 || occupants[0].agent !== "pi" ||
-        ![owner, `${owner}-`].some((prefix) => occupants[0].name === prefix || occupants[0].name?.startsWith(prefix)) ||
-        !["idle", "done"].includes(occupants[0].agent_status)) { console.log(`Skipping unconfirmed/active peer pane/worktree ${branch}`); continue; }
-    run("herdr", ["pane", "close", occupants[0].pane_id]);
-    if (run("git", ["status", "--porcelain"], path)) { console.log(`Skipping worktree changed after pane close ${branch}`); continue; }
-    git("worktree", "remove", path);
-    git("branch", "-d", branch);
+  let onto = base;
+  for (const task of ordered) {
+    const record = records.get(task.id);
+    const done = state.finish.rebased[task.id];
+    if (done && gitAt(record.worktree, "rev-parse", record.branch) === done) { onto = record.branch; console.log(`task ${task.id}: already rebased at ${done.slice(0, 7)}`); continue; }
+    assertClean(record.worktree, state);
+    announce(state, `Sprint integration: rebasing ${record.branch} (task ${task.id}) onto ${onto}.`);
+    gitAt(record.worktree, "rebase", onto);
+    state.finish.rebased[task.id] = gitAt(record.worktree, "rev-parse", record.branch);
+    saveState(state);
+    onto = record.branch;
   }
-  console.log("Host worktree/pane retained: close only after verifying no uncommitted or unpushed work.");
+  announce(state, `Sprint integration: fast-forwarding ${integration} to the rebased chain.`);
+  if (!gitSoft(state.host_checkout, "rev-parse", "--verify", "--quiet", `${integration}^{commit}`)) git("branch", integration, onto);
+  if (git("branch", "--show-current") !== integration) git("checkout", integration);
+  git("merge", "--ff-only", onto);
+  if (!state.finish.generated) {
+    exec(process.execPath, ["scripts/generate-client-script.mjs"], { label: "node scripts/generate-client-script.mjs" });
+    exec(process.execPath, ["scripts/generate-assets.mjs"], { label: "node scripts/generate-assets.mjs" });
+    const present = GENERATED.filter((path) => existsSync(path));
+    if (present.length) git("add", "--", ...present);
+    if (git("diff", "--cached", "--name-only")) git("commit", "-m", "Regenerate sprint integration outputs");
+    state.finish.generated = git("rev-parse", "HEAD");
+    saveState(state);
+  }
+  assertClean();
+  if (!state.finish.checked) {
+    announce(state, "Sprint integration: running the full contract check (not --peer).");
+    exec(process.execPath, ["scripts/check-contract.mjs"], { label: "node scripts/check-contract.mjs" });
+    state.finish.checked = true;
+    saveState(state);
+  }
+  printLessons(summary);
+  const head = git("rev-parse", "HEAD");
+  if (!state.finish.pushed) {
+    if (!hasRemote) fail(`finish needs a push remote: ${state.remote} is not configured (pass --remote at start)`);
+    announce(state, `Sprint integration: pushing ${integration} to ${state.remote}; the merge request follows.`);
+    git("push", state.remote, `HEAD:refs/heads/${integration}`);
+    if (git("ls-remote", state.remote, `refs/heads/${integration}`).split(/\s+/)[0] !== head) fail(`${state.remote} does not point at ${head.slice(0, 7)}; stop before opening the merge request`);
+    state.finish.pushed = head;
+    saveState(state);
+  }
+  if (!state.finish.mr) {
+    const description = [
+      `Sprint ${state.name} (room ${state.room_id}): ${ordered.length} task branch(es) rebased in dependency order onto ${base}, no merge commits.`,
+      "",
+      ...ordered.map((task) => `- ${task.id} ${task.title} (${task.owner}, ${task.evidence.commits.map((c) => c.slice(0, 7)).join(",")}): ${task.summary}`),
+      "",
+      "Every task reported an explicit passed peer contract; this branch passed the full node scripts/check-contract.mjs.",
+      `Workers: ${state.workers.map((worker) => `${worker.id}=${worker.task ?? "?"}`).join(" ")}.`,
+    ].join("\n");
+    const out = exec("glab", ["mr", "create", "--source-branch", integration, "--target-branch", state.from, "--title", option("--title", `Sprint ${state.name}`), "--description", description, "--yes"],
+      { label: `glab mr create ${integration} -> ${state.from}`, timeout: 120_000 });
+    state.finish.mr = (out.match(/https?:\/\/\S+/) ?? [])[0] ?? "";
+    saveState(state);
+    announce(state, `Sprint integration: merge request ready for review: ${state.finish.mr || `${integration} -> ${state.from}`}`);
+  }
+  // The standalone CLI has no board_set, so the host report lands as a durable room decision (status counts them).
+  if (!state.finish.reported) {
+    soft(state, ["decide", `integrated ${integration} at ${head.slice(0, 7)} -> ${state.finish.mr || "merge request pending"}`,
+      "--why", `rebased ${ordered.map((task) => task.id).join(",")} onto ${base} in dependency order; full node scripts/check-contract.mjs passed`]);
+    state.finish.reported = true;
+    saveState(state);
+  }
+  console.log(`Integrated ${ordered.length} task(s) into ${integration} at ${head.slice(0, 7)}; merge request: ${state.finish.mr || "see glab output"}.`);
+  console.log(`Room ${state.room_id} stays open for owner review (status shows asks and usage); close it once the merge request lands.`);
 }
+
 try {
   if (action === "start") await start();
-  else if (action === "status") { checkFlags([]); summarize(); }
+  else if (action === "status") await status();
+  else if (action === "answer") await answer();
   else if (action === "finish") await finish();
-  else fail("Usage: node scripts/sprint.mjs start <spec.md> [--name <Host>] [--peers N] [--integrator <inbox>] [--dry-run] | status | finish [--reviewed --owner-read] [--dry-run]");
-} catch (error) { console.error(error.message); process.exitCode = 1; }
+  else fail("Usage: node scripts/sprint.mjs start --spec <spec.md> --name <room> --workers N [--host hermes-bot] [--worker-prefix worker] [--from main] [--remote origin] [--invite-to telegram:chat|none] [--capabilities code,files] [--server url] [--state sprint.json] [--helper j01n.js] [--dry-run] | status | answer <msg-id|seq> <text> [--kind finding] | finish [--reviewed] [--title <text>] [--dry-run]");
+} catch (error) {
+  // SPRINT_DEBUG=1 keeps the stack for operators; the normal message stays one line.
+  console.error(redact(process.env.SPRINT_DEBUG && error instanceof Error && error.stack ? error.stack : error?.message ?? String(error)));
+  process.exitCode = 1;
+}

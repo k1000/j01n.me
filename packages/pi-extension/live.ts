@@ -8,7 +8,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { listReservations, reservationFor, RESERVATIONS_KEY } from "@j01n/sdk";
 import type { Reservation, RoomClient } from "@j01n/sdk";
 import type { RoomMessage } from "@j01n/sdk/types";
-import { activeRoomClients, currentRepo, replyHint, repoPath } from "./commands";
+import { activeRoomClients, currentRepo, processRoomParticipant, replyHint, repoPath } from "./commands";
 
 const BATCH_MS = 2_000;
 const PRESENCE_MS = 15_000;
@@ -62,13 +62,16 @@ export function modelPatchFor(
 
 /** A spawned peer must not operate using another agent's saved room session in a shared checkout. */
 export function liveClientsForProcess(clients: RoomClient[], env: Record<string, string | undefined> = process.env): RoomClient[] {
-  if (!env.J01N_PEER_PARTICIPANT_ID) return clients;
-  return clients.filter((client) => client.participantId === env.J01N_PEER_PARTICIPANT_ID && client.invite.room_id === env.J01N_PEER_ROOM_ID);
+  if (env.J01N_PEER_PARTICIPANT_ID) return clients.filter((client) => client.participantId === env.J01N_PEER_PARTICIPANT_ID && client.invite.room_id === env.J01N_PEER_ROOM_ID);
+  return clients.filter((client) => {
+    const selected = processRoomParticipant(client.invite.room_url);
+    return selected ? client.participantId === selected : !clients.some((other) => other !== client && other.invite.room_url === client.invite.room_url && other.participantId !== client.participantId);
+  });
 }
 
 /** Without a process-scoped identity, two actors in one checkout cannot both truthfully announce this Pi model. */
 export function modelAnnounceClients(clients: RoomClient[]): RoomClient[] {
-  return clients.filter((client) => !clients.some((other) => other !== client && other.invite.room_url === client.invite.room_url && other.participantId !== client.participantId));
+  return liveClientsForProcess(clients);
 }
 
 export function registerLive(pi: ExtensionAPI): { refresh(): Promise<void>; setEnabled(on: boolean): string } {
@@ -76,10 +79,20 @@ export function registerLive(pi: ExtensionAPI): { refresh(): Promise<void>; setE
   const loops = new Set<string>();
   let clients: RoomClient[] = [];
   let notify: ((message: string, level: "info" | "warning" | "error") => void) | undefined;
+  const warnedIdentity = new Set<string>();
 
   async function refresh(): Promise<void> {
-    clients = enabled ? liveClientsForProcess(await activeRoomClients()) : [];
+    const saved = enabled ? await activeRoomClients() : [];
+    clients = liveClientsForProcess(saved);
+    for (const client of saved) {
+      const room = client.invite.room_id;
+      if (saved.some((other) => other !== client && other.invite.room_url === client.invite.room_url && other.participantId !== client.participantId) && !clients.some((selected) => selected.invite.room_url === client.invite.room_url) && !warnedIdentity.has(room)) {
+        warnedIdentity.add(room);
+        notify?.(`j01n: multiple local identities in room ${room}; run /j01n use ${room} <your-id> to select one for this Pi process`, "warning");
+      }
+    }
     for (const client of clients) if (!loops.has(roomKey(client))) void deliver(client);
+    await announceModel();
   }
 
   async function deliver(client: RoomClient): Promise<void> {
@@ -88,6 +101,7 @@ export function registerLive(pi: ExtensionAPI): { refresh(): Promise<void>; setE
     try {
       while (enabled && clients.some((c) => roomKey(c) === key)) {
         const woke = await client.wait({ timeoutSeconds: 50 }).catch(async () => { await sleep(5_000); return { timeout: true as const }; });
+        if (!enabled || !clients.some((c) => roomKey(c) === key)) break;
         if (woke.timeout) continue;
         await sleep(BATCH_MS); // let a burst arrive, then inject it once
         const messages = await client.read();
@@ -164,7 +178,6 @@ export function registerLive(pi: ExtensionAPI): { refresh(): Promise<void>; setE
     notify = ctx.ui.notify.bind(ctx.ui);
     readModel(ctx);
     await refresh().catch(() => undefined);
-    await announceModel().catch(() => undefined);
   });
   pi.on("model_select", async (_event, ctx) => {
     readModel(ctx);

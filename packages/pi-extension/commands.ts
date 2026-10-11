@@ -2,10 +2,10 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, w
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { buildMinimalInvite, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, inviteLink, joinRoom, normalizeInvite, parseInviteLink, parseSprintSpec, registerAgent, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, sealForRoom, setAcceptFrom, waitForInvites } from "@j01n/sdk";
+import { buildMinimalInvite, buildRoomClient, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, inviteLink, joinRoom, normalizeInvite, parseInviteLink, parseSprintSpec, registerAgent, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, sealForRoom, setAcceptFrom, waitForInvites } from "@j01n/sdk";
 import type { AgentIdentity, Workspace } from "@j01n/sdk";
 import { execFileSync } from "node:child_process";
-import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
+import { createSdkCryptoSession, type SdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { roomReplyHint, roomReplyHints, runProfileCommand, runReservationCommand, runRoomCommand } from "@j01n/sdk/room-commands";
 import { notesAndDecisions } from "@j01n/sdk/notes";
 import { detectWorkspace, localStateDir } from "@j01n/sdk/node";
@@ -18,6 +18,8 @@ import { removeMergedPeerWorktrees, requirePrivateIdentityDir } from "./spawn-he
 import { getExtensionDiagnostics } from "./version";
 
 const sessions = new Map<string, RoomClient>();
+const processRoomIdentities = new Map<string, string>();
+export const processRoomParticipant = (roomUrl: string): string | undefined => processRoomIdentities.get(roomUrl);
 /** Key files and identities: this directory, or a private folder on the internal disk when it is on /Volumes. */
 const activeRoomsDir = () => join(localStateDir(), ".j01n-rooms");
 
@@ -72,10 +74,12 @@ function rememberRoom(invite: Invite, participantId: string): void {
   const temporary = `${target}.${process.pid}.tmp`;
   writeFileSync(temporary, JSON.stringify({ room_url: invite.room_url, participant_id: participantId }), { mode: 0o600 });
   renameSync(temporary, target);
+  processRoomIdentities.set(invite.room_url, participantId);
 }
 
 function forgetRoom(invite: Invite, participantId: string): void {
   rmSync(roomStatePath(invite.room_url, participantId), { force: true });
+  if (processRoomIdentities.get(invite.room_url) === participantId) processRoomIdentities.delete(invite.room_url);
 }
 
 function activeCommand(cmd: string, rest: string[]): ParsedArgs {
@@ -110,7 +114,7 @@ const ACTIVE_COMMANDS = new Set([
   "status", "webhook", "participants", "room_status", "transition", "host", "profile", "reserve", "release", "reservations", "tasks", "claim", "done", "conflicts", "block", "unblock", "summary", "note", "decide", "invite-link", "leave", "close",
 ]);
 
-const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen", "herdr_agents", "invite_herdr", "worktrees"]);
+const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen", "herdr_agents", "invite_herdr", "worktrees", "use"]);
 
 function parseCommand(args: string[]): ParsedArgs {
   const cmd = args[0];
@@ -127,7 +131,7 @@ function parseCommand(args: string[]): ParsedArgs {
  * Join once, then resume on later commands (even from a new Pi process) using the
  * participant token and ECDH keypair saved in the key file.
  */
-async function openSession(invite: Invite, me: string): Promise<RoomClient> {
+async function openSession(invite: Invite, me: string, created?: { client: RoomClient; crypto: SdkCryptoSession }): Promise<RoomClient> {
   const cacheKey = `${invite.room_url}:${me}`;
   const cached = sessions.get(cacheKey);
   // A session resumed without the room secret ("resume-only") is replaced once a call brings the real secret,
@@ -138,11 +142,12 @@ async function openSession(invite: Invite, me: string): Promise<RoomClient> {
   const saved: SavedSession = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   if (saved.roomUrl && saved.roomUrl !== invite.room_url) throw new Error("saved key belongs to another room URL");
   if (invite.join_secret === "resume-only" && saved.joinSecret) invite = { ...invite, join_secret: saved.joinSecret };
-  const crypto = await createSdkCryptoSession(me, saved.privateJwk, saved.publicJwk);
+  const crypto = created?.crypto ?? await createSdkCryptoSession(me, saved.privateJwk, saved.publicJwk);
   const token = invite.participant_token ?? saved.participantToken;
 
   let client: RoomClient;
-  if (token) {
+  if (created) client = created.client;
+  else if (token) {
     client = await resumeRoom({ ...invite, participant_token: token }, me, crypto);
   } else {
     try {
@@ -193,7 +198,10 @@ function parseOptionalObject(value: unknown): Record<string, unknown> | undefine
 }
 
 async function handleCreate(parsed: ParsedArgs): Promise<string> {
+  const joinHost = parsed.rest[1] === "--join";
+  if (parsed.rest.length > (joinHost ? 2 : 1)) throw new Error("create needs: <options-json> [--join]");
   const options = parsed.rest[0] ? JSON.parse(parsed.rest[0]) : {};
+  if (joinHost && (typeof options.host_id !== "string" || !/^[a-z][a-z0-9_-]{0,31}$/.test(options.host_id))) throw new Error("create --join needs a valid host_id");
   let specText: string | undefined;
   if (options.spec !== undefined) {
     if (typeof options.spec !== "string" || !options.spec) throw new Error("create spec needs a Markdown file path");
@@ -201,8 +209,10 @@ async function handleCreate(parsed: ParsedArgs): Promise<string> {
     if (options.tasks !== undefined || (options.template !== undefined && options.template !== "sprint")) throw new Error("create spec cannot override tasks or sprint template");
     specText = readFileSync(options.spec, "utf8");
   }
+  const crypto = joinHost ? await createSdkCryptoSession(options.host_id) : undefined;
   const invite = await createRoom(createBaseUrl(parsed), {
     hostId: options.host_id,
+    ...(crypto ? { hostPublicKey: (await crypto.announceKeyBody()).public_key } : {}),
     roomName: options.room_name,
     maxParticipants: options.max_participants,
     inviteTtlMs: options.invite_ttl_ms,
@@ -212,8 +222,24 @@ async function handleCreate(parsed: ParsedArgs): Promise<string> {
     template: specText !== undefined ? "sprint" : options.template,
     tasks: specText !== undefined ? parseSprintSpec(specText) : options.tasks,
   });
+  if (crypto) {
+    if (!invite.host_joined || typeof invite.cursor !== "number" || !invite.participant_token) throw new Error("room service did not auto-join the host; private invitation withheld (room will expire)");
+    const client = await buildRoomClient(invite, options.host_id, invite.cursor, crypto);
+    try {
+      await openSession(invite, options.host_id, { client, crypto });
+      rememberRoom(invite, options.host_id);
+    } catch {
+      await client.close().catch(() => undefined);
+      sessions.delete(`${invite.room_url}:${options.host_id}`);
+      forgetRoom(invite, options.host_id);
+      rmSync(keyFilePath(invite.room_url, options.host_id), { force: true });
+      throw new Error("could not save the host identity; room closed or will expire");
+    }
+    if (specText !== undefined) await client.send("all", { encrypted_payload: await sealForRoom(specText, invite.join_secret, invite.room_id) }, { intent: "kickoff", plain: true });
+    return JSON.stringify({ room_id: invite.room_id, participant_id: options.host_id, host_joined: true }, null, 2);
+  }
   if (specText !== undefined) {
-    // The create response carries no room.host_id; join as the requested host.
+    // Legacy create with spec joins the host but keeps the invitation output for existing callers.
     const host = options.host_id;
     const client = await openSession(invite, host);
     rememberRoom(invite, host);
@@ -467,6 +493,18 @@ async function handleHerdrAgents(): Promise<string> {
   return JSON.stringify({ agents: listHerdrPeers() }, null, 2);
 }
 
+function handleUse(parsed: ParsedArgs): string {
+  const [roomId, participantId] = parsed.rest;
+  if (parsed.rest.length !== 2 || !roomId || !participantId) throw new Error("use needs: <room_id> <participant_id>");
+  if (process.env.J01N_PEER_PARTICIPANT_ID && (process.env.J01N_PEER_PARTICIPANT_ID !== participantId || process.env.J01N_PEER_ROOM_ID !== roomId)) throw new Error("a spawned peer cannot select another room identity");
+  const room = activeRooms().find((entry) => entry.room_url.split("/").pop() === roomId && entry.participant_id === participantId);
+  if (!room) throw new Error("room identity is not joined from this directory");
+  const saved: SavedSession = JSON.parse(readFileSync(keyFilePath(room.room_url, participantId), "utf8"));
+  if (!saved.participantToken || saved.roomUrl !== room.room_url) throw new Error("saved room identity is unavailable; join again");
+  processRoomIdentities.set(room.room_url, participantId);
+  return JSON.stringify({ room_id: roomId, participant_id: participantId, selected: true }, null, 2);
+}
+
 async function handleInviteHerdr(parsed: ParsedArgs): Promise<string> {
   const [me, link, ...targets] = parsed.rest;
   if (!me || !link || !targets.length) throw new Error("invite_herdr needs: <your registered name> <room link> <pane-id=registered-name> [...]");
@@ -637,6 +675,7 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   invite: handleInviteAgent,
   listen: handleListen,
   herdr_agents: handleHerdrAgents,
+  use: async (parsed) => handleUse(parsed),
   invite_herdr: handleInviteHerdr,
   create: handleCreate,
   join: handleJoin,

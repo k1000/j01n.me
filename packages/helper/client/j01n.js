@@ -1732,7 +1732,11 @@ async function agents() {
 async function main() {
   if (cmd === "create") {
     const url = isUrl(args[1]) ? args[1] : base;
-    const options = JSON.parse((isUrl(args[1]) ? args[2] : args[1]) || "{}");
+    const optionsIndex = isUrl(args[1]) ? 2 : 1;
+    const joinHost = args[optionsIndex + 1] === "--join";
+    if (args.length > optionsIndex + (joinHost ? 2 : 1)) throw Error("create needs: <options-json> [--join]");
+    const options = JSON.parse(args[optionsIndex] || "{}");
+    if (joinHost && (typeof options.host_id !== "string" || !/^[a-z][a-z0-9_-]{0,31}$/.test(options.host_id))) throw Error("create --join needs a valid host_id");
     let specText;
     if (options.spec !== void 0) {
       if (typeof options.spec !== "string" || !options.spec) throw Error("create spec needs a Markdown file path");
@@ -1743,16 +1747,36 @@ async function main() {
       options.template = "sprint";
       delete options.spec;
     }
+    const session2 = joinHost ? await createSdkCryptoSession(options.host_id) : void 0;
+    if (session2) options.host_public_key = (await session2.announceKeyBody()).public_key;
     const response = await fetch(`${url.replace(/\/$/, "")}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(options) });
     const text2 = await response.text();
-    if (!response.ok) throw Error(text2);
+    if (!response.ok) throw Error(joinHost ? `failed to create room (${response.status})` : text2);
+    if (session2) {
+      const invite2 = normalizeInvite(JSON.parse(text2));
+      if (!invite2.host_joined || typeof invite2.cursor !== "number" || !invite2.participant_token) throw Error("room service did not auto-join the host; private invitation withheld (room will expire)");
+      const client2 = await buildRoomClient(invite2, options.host_id, invite2.cursor, session2);
+      const keyFile2 = join2(stateDir, `.j01n-${safe(new URL(invite2.room_url).pathname)}-${safe(options.host_id)}.json`);
+      try {
+        await fs.writeFile(keyFile2, JSON.stringify({ ...await session2.exportKeyPair(), peers: {}, participantToken: invite2.participant_token, joinSecret: invite2.join_secret, roomUrl: invite2.room_url }), { mode: 384 });
+        await remember(invite2.room_url, options.host_id);
+      } catch {
+        await client2.close().catch(() => void 0);
+        await fs.rm(keyFile2, { force: true });
+        await fs.rm(activePath(invite2.room_url, options.host_id), { force: true });
+        throw Error("could not save the host identity; room closed or will expire");
+      }
+      if (specText !== void 0) await client2.send("all", { encrypted_payload: await sealForRoom(specText, invite2.join_secret, invite2.room_id) }, { intent: "kickoff", plain: true });
+      output({ room_id: invite2.room_id, participant_id: options.host_id, host_joined: true });
+      return;
+    }
     if (specText !== void 0) {
       const invite2 = normalizeInvite(JSON.parse(text2));
       const me2 = options.host_id;
-      const session2 = await createSdkCryptoSession(me2);
-      const client2 = await joinRoom(invite2, me2, process.env.J01N_HARNESS ? { harness: process.env.J01N_HARNESS } : {}, session2);
+      const session3 = await createSdkCryptoSession(me2);
+      const client2 = await joinRoom(invite2, me2, process.env.J01N_HARNESS ? { harness: process.env.J01N_HARNESS } : {}, session3);
       const keyFile2 = join2(stateDir, `.j01n-${safe(new URL(invite2.room_url).pathname)}-${safe(me2)}.json`);
-      await fs.writeFile(keyFile2, JSON.stringify({ ...await session2.exportKeyPair(), peers: {}, participantToken: client2.invite.participant_token, joinSecret: invite2.join_secret, roomUrl: invite2.room_url }), { mode: 384 });
+      await fs.writeFile(keyFile2, JSON.stringify({ ...await session3.exportKeyPair(), peers: {}, participantToken: client2.invite.participant_token, joinSecret: invite2.join_secret, roomUrl: invite2.room_url }), { mode: 384 });
       await remember(invite2.room_url, me2);
       await client2.send("all", { encrypted_payload: await sealForRoom(specText, invite2.join_secret, invite2.room_id) }, { intent: "kickoff", plain: true });
     }

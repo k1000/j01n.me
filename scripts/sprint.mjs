@@ -293,7 +293,7 @@ function promptFor(state, worker) {
   const brief = task ? briefOf((state.tasks ?? []).find((entry) => entry.id === task)) : "";
   return [
     `You are ${worker.id} in the j01n room "${state.name}" (host ${state.host}). The invitation is already in your inbox and the identity file is seeded in this checkout.`,
-    `Run exactly: /j01n listen ${worker.id} --capabilities ${state.capabilities}`,
+    `Open with /j01n tasks: if that answers, this pane already auto-joined at session start and you must NOT run listen (its invite is spent, so listen would only time out); only when no room is joined run exactly: /j01n listen ${worker.id} --capabilities ${state.capabilities}`,
     // A late joiner cannot read chat sent before it joined, so the brief comes off the room-sealed board, never a message.
     !task ? `Then: /j01n tasks and claim one open unblocked task.`
       : brief ? `Then: /j01n tasks, /j01n claim ${task}, and work the board BRIEF for ${task} (board key task.${task}, field "brief"): ${brief}`
@@ -361,7 +361,7 @@ async function start() {
   if (!gitSoft(process.cwd(), "rev-parse", "--verify", "--quiet", `${from}^{commit}`)) fail(`--from ${from} does not name a commit here`);
   const wtRoot = internal(worktreeRoot);
   if (dry) {
-    console.log(`Plan: preflight passed (git >= ${MIN_GIT_MAJOR}.${MIN_GIT_MINOR}, herdr socket, free worker names, private keys dir, internal worktree root); prune stale pointers in ${join(keys, ".j01n-rooms")}; create+join "${name}" as ${host} from ${basename(spec)} on ${base}; ${workers} worker(s) ${prefix}-1..${prefix}-${workers} in ${wtRoot}/<room>/<worker> off ${from}, each with its own Herdr workspace + pane prompted with "/j01n listen ${prefix}-N --capabilities ${capabilities}", its task id and its board brief; register+invite each worker, seed its identity file into its worktree; deliver the raw invite link as a file via ${inviteTo === "none" ? "(skipped)" : inviteTo}; status tops the invite up while under ${Math.round(KEEPALIVE_WINDOW_MS / 60_000)} minutes; state in ${stateFile()}. Nothing changed.`);
+    console.log(`Plan: preflight passed (git >= ${MIN_GIT_MAJOR}.${MIN_GIT_MINOR}, herdr socket, free worker names, private keys dir, internal worktree root); prune stale pointers in ${join(keys, ".j01n-rooms")}; create+join "${name}" as ${host} from ${basename(spec)} on ${base}; ${workers} worker(s) ${prefix}-1..${prefix}-${workers} in ${wtRoot}/<room>/<worker> off ${from}, each with its own Herdr workspace + pane carrying BASE_URL/J01N_TASK/J01N_WORKER/J01N_WORKER_CAPABILITIES in its env and prompted to open with /j01n tasks (listen ${prefix}-N --capabilities ${capabilities} only as the fallback when the pane did not auto-join), its task id and its board brief; register+invite each worker, seed its identity file into its worktree; deliver the raw invite link as a file via ${inviteTo === "none" ? "(skipped)" : inviteTo}; status tops the invite up while under ${Math.round(KEEPALIVE_WINDOW_MS / 60_000)} minutes; state in ${stateFile()}. Nothing changed.`);
     return;
   }
   assertClean();
@@ -422,8 +422,10 @@ async function start() {
     const seeded = join(worker.worktree, `.j01n-agent-${safeName(worker.id)}.json`);
     if (!existsSync(seeded)) { copyFileSync(identity, seeded); chmodSync(seeded, 0o600); worker.seeded = true; acted = true; saveState(state); }
     if (!worker.workspace_id || !worker.pane_id) {
+      // J01N_WORKER_CAPABILITIES lets the pane's own session-start autojoin announce capabilities, so the worker's
+      // presence is right before its first turn; the listen fallback above carries the same value.
       const made = json("herdr", ["workspace", "create", "--cwd", worker.worktree, "--label", worker.id, "--env", `BASE_URL=${state.base}`,
-        "--env", `J01N_TASK=${worker.task ?? ""}`, "--env", `J01N_WORKER=${worker.id}`, "--no-focus"], { cwd: state.host_checkout, label: `herdr workspace create ${worker.id}`, timeout: 120_000 });
+        "--env", `J01N_TASK=${worker.task ?? ""}`, "--env", `J01N_WORKER=${worker.id}`, "--env", `J01N_WORKER_CAPABILITIES=${state.capabilities}`, "--no-focus"], { cwd: state.host_checkout, label: `herdr workspace create ${worker.id}`, timeout: 120_000 });
       worker.workspace_id = made.result?.workspace?.workspace_id ?? made.result?.workspace_id ?? made.result?.workspace?.id;
       worker.pane_id = made.result?.root_pane?.pane_id ?? made.result?.pane?.pane_id ?? made.result?.pane_id ?? made.result?.pane_id;
       if (!worker.workspace_id || !worker.pane_id) fail("herdr did not return the new workspace and its root pane; inspect the session before retrying");

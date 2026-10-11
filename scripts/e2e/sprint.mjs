@@ -187,8 +187,20 @@ const made = herdrCalls().filter((call) => call.argv[0] === "workspace");
 const prompts = herdrCalls().filter((call) => call.argv[0] === "agent" && call.argv[1] === "prompt");
 check("herdr gets one new workspace per worker worktree, unfocused", made.length === 2 && made.every((call) => call.argv.includes("--no-focus")) &&
   made.map((call) => call.argv[call.argv.indexOf("--cwd") + 1]).join(" ") === `${one.worktree} ${two.worktree}`, JSON.stringify(made.map((call) => call.argv.slice(0, 5))));
+// The pane env is what lets the session-start autojoin announce capabilities, so it must be there before turn one.
+const paneEnvs = (call) => call.argv.reduce((acc, value, index) => (value === "--env" ? [...acc, call.argv[index + 1]] : acc), []);
+check("each new workspace env carries the sprint capabilities so an autojoin announces them",
+  made.length === 2 && made.every((call, index) => {
+    const worker = first.workers[index];
+    const values = paneEnvs(call);
+    return values.includes(`J01N_WORKER=${worker.id}`) && values.includes(`J01N_TASK=${worker.task}`) &&
+      values.includes("J01N_WORKER_CAPABILITIES=code,files") && values.some((entry) => entry.startsWith("BASE_URL="));
+  }), JSON.stringify(made.map(paneEnvs)));
 check("herdr starts the agent in each new pane", herdrCalls().filter((call) => call.argv[0] === "agent" && call.argv[1] === "start").length === 2);
 check("each prompt states the exact listen command with capabilities", prompts.length === 2 && prompts[0].argv[3].includes(`/j01n listen ${one.id} --capabilities code,files`) && prompts[1].argv[3].includes(`/j01n listen ${two.id} --capabilities code,files`), prompts[0]?.argv[3]?.slice(0, 80));
+check("the listen step is framed as the fallback after an autojoin, not the first move",
+  prompts.every((call) => /Open with \/j01n tasks/.test(call.argv[3]) && call.argv[3].includes("must NOT run listen") &&
+    /only when no room is joined run exactly: \/j01n listen/.test(call.argv[3])), prompts[0]?.argv[3]?.slice(0, 200));
 check("each prompt carries that worker's task id", prompts.length === 2 && prompts[0].argv[3].includes("claim t1") && prompts[1].argv[3].includes("claim t2"));
 // The board is the only thing a late joiner can read, so a briefed task is prompted from the board, not from chat.
 check("a task with a board brief is prompted with that brief and its board key",

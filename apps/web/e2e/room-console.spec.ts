@@ -179,6 +179,28 @@ test("live updates keep drafts and conflicting board writes require an explicit 
   await expect(message).toBeFocused();
 });
 
+test("a new message updates only the message list, not the board or the composer", async ({ page }) => {
+  const agent = await joinRoom(parseInviteLink(await createRoom(page))!, "worker-agent");
+  await page.getByText("New task", { exact: true }).click();
+  await page.getByLabel("Task title", { exact: true }).fill("Draft task");
+  await page.getByLabel("Message", { exact: true }).fill("Draft message");
+  // Mark the live DOM nodes; a section that is rebuilt loses its marker.
+  await page.evaluate(() => {
+    document.querySelector(".room-board")!.setAttribute("data-marker", "kept");
+    document.querySelector(".room-participants")!.setAttribute("data-marker", "kept");
+    document.querySelector("[data-message-form]")!.setAttribute("data-marker", "kept");
+  });
+  await agent.send("all", { text: "Only the list changes" });
+  await expect(page.getByText("Only the list changes", { exact: true })).toBeVisible();
+  expect(await page.locator('.room-board[data-marker="kept"]').count()).toBe(1);
+  expect(await page.locator('[data-message-form][data-marker="kept"]').count()).toBe(1);
+  await expect(page.getByLabel("Task title", { exact: true })).toHaveValue("Draft task");
+  await expect(page.getByLabel("Message", { exact: true })).toHaveValue("Draft message");
+  await page.getByRole("button", { name: "Reply to worker-agent" }).click();
+  await expect(page.getByRole("combobox", { name: "Recipient", exact: true })).toHaveValue("worker-agent");
+  await expect(page.locator("[data-reply-status]")).toHaveText("Replying to worker-agent");
+});
+
 test("JSON invitations cannot import another participant's token or identity", async ({ page, browser }) => {
   const invitation = await createRoom(page, "Human Host");
   await expect(page.getByRole("button", { name: "Extend 30 min" })).toBeVisible();

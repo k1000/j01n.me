@@ -569,6 +569,7 @@
   let taskSaving = false;
   let messageSending = false;
   let boardSaving = false;
+  const renderedSections = new Map(); // section name -> markup currently on the page
   let unknownDelivery;
 
   function resetMessageDraft() {
@@ -596,6 +597,17 @@
     const message = latest?.messages.find(m => m.id === id);
     form.querySelector('[data-reply-status]').textContent = id ? 'Replying to ' + (message?.from || id) : '';
     form.querySelector('[data-cancel-reply]').hidden = !id;
+  }
+
+  function wireReplyButtons() {
+    root.querySelectorAll('[data-reply-message]').forEach(button => button.addEventListener('click', () => {
+      const form = root.querySelector('[data-message-form]');
+      if (!form || messageSending || unknownDelivery) return;
+      form.elements.reply_to.value = button.dataset.replyMessage;
+      form.elements.to.value = button.dataset.replyRecipient;
+      updateReplyStatus();
+      form.elements.message.focus();
+    }));
   }
 
   function wireMessageComposer() {
@@ -627,13 +639,6 @@
       unknownDelivery = undefined; updateDeliveryControls();
       root.querySelector('[data-message-status]').textContent = 'Manual retry allowed. The previous attempt may still be delivered.';
     });
-    root.querySelectorAll('[data-reply-message]').forEach(button => button.addEventListener('click', () => {
-      if (messageSending || unknownDelivery) return;
-      form.elements.reply_to.value = button.dataset.replyMessage;
-      form.elements.to.value = button.dataset.replyRecipient;
-      updateReplyStatus();
-      form.elements.message.focus();
-    }));
     form.querySelector('[data-cancel-reply]').addEventListener('click', () => { form.elements.reply_to.value = ''; updateReplyStatus(); });
     form.addEventListener('submit', async event => {
       event.preventDefault();
@@ -936,14 +941,10 @@
       : (await Promise.all(messages.map((m) => renderMessage(m, messages, participants, workspaces)))).join("");
     const extendControls = isHost ? ` <button class="button button-small" type="button" data-extend-room title="Extend invite by 30 minutes">Extend 30 min</button><p class="room-ttl-status" data-room-ttl-status aria-live="polite"></p>` : "";
 
-    const drafts = captureConsoleDrafts();
-    const opened = openedToggles();
-    // Keep the reader's place in the message list across re-renders; stay pinned to the newest when at the bottom.
-    const oldList = root.querySelector("[data-message-list]");
-    const stickToBottom = !oldList || oldList.scrollHeight - oldList.scrollTop - oldList.clientHeight < 24;
-    const oldScrollTop = oldList ? oldList.scrollTop : 0;
-    root.innerHTML = `
-<header class="room-overview">
+    // Each section is replaced only when its markup changes, so a new message does not rebuild the board or
+    // interrupt typing. The composer is written once; only its recipient list follows the participants.
+    const sections = {
+      overview: `<header class="room-overview">
 <h1>${esc(room.name || "Room")} <span data-connection-status class="connection-status connecting"><span class="connection-dot"></span> Connecting</span></h1>
 <dl class="room-meta">
 <dt>room URL</dt><dd class="room-url"><code>${esc("https://j01n.me/r/" + rid)}</code> <button class="button button-small" type="button" data-copy-room-url title="Copy room URL">Copy URL</button> <button class="button button-small" type="button" data-copy-invitation="${escAttr(location.origin + '/room/' + encodeURIComponent(rid) + '#' + joinSecret)}" title="Copy private invitation URL — it grants room access, share privately">Copy invitation URL</button></dd>
@@ -955,31 +956,64 @@ ${room.first_message ? '<dt>public kickoff</dt><dd class="room-kickoff">' + esc(
 <div><dt>phase</dt><dd>${esc(phase || "—")}</dd></div>
 <div><dt>expires</dt><dd>${esc(expiresAt ? new Date(expiresAt).toLocaleString() : "—")}${extendControls}</dd></div>
 </dl>
-</header>
-${reportHtml}
-<section class="room-board"><div class="board-toolbar"><h2>Board</h2><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><form class="board-edit-form" data-board-form><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>
-<section class="room-reservations" aria-label="File reservations"><h2>File reservations</h2>${reservationsHtml}</section>
-${helpNeededHtml(data)}
-<section class="room-participants"><h2>Participants</h2>${participantsHtml}</section>
-<section class="room-messages"><h2>Messages</h2><div class="message-list" data-message-list tabindex="0" aria-label="Messages">${messagesHtml}</div><form class="message-composer" data-message-form><input type="hidden" name="reply_to" /><p data-reply-status role="status"></p><button class="button" type="button" data-cancel-reply hidden>Cancel reply</button><label>Recipient<select name="to" required>${recipientOptions}</select></label><label>Message<textarea name="message" required placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><label class="reply-request"><input type="checkbox" name="expects_reply" /> Request a reply</label><button class="button" type="submit">Send</button><button class="button" type="button" data-check-delivery hidden>Check delivery</button><button class="button" type="button" data-retry-delivery hidden>Allow retry (may duplicate)</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>`;
+</header>`,
+      report: reportHtml,
+      board: `<section class="room-board"><div class="board-toolbar"><h2>Board</h2><button class="button" type="button" data-open-board-editor>${boardKeys.length === 0 ? "Set board" : "Add board key"}</button></div><p class="fineprint">Shared with room participants, not encrypted. Do not put secrets on the board.</p><form class="board-edit-form" data-board-form><input type="hidden" name="version" value="0" /><input type="hidden" name="original_key" /><label>key<input name="key" autocomplete="off" placeholder="tasks" /></label><label>value<textarea name="value" placeholder='{ "todo": [] }'></textarea></label><p class="board-edit-actions"><button class="button" type="button" data-close-board-editor>Cancel</button><button class="button" type="submit">Save</button></p><p class="board-status" data-board-status aria-live="polite"></p></form>${isKanban ? renderTaskEditor(board, participants) : ""}${boardHtml}</section>`,
+      reservations: `<section class="room-reservations" aria-label="File reservations"><h2>File reservations</h2>${reservationsHtml}</section>`,
+      help: helpNeededHtml(data),
+      participants: `<section class="room-participants"><h2>Participants</h2>${participantsHtml}</section>`,
+      "message-list": `<div class="message-list" data-message-list tabindex="0" aria-label="Messages">${messagesHtml}</div>`,
+    };
+    const opened = openedToggles();
+    const oldList = root.querySelector("[data-message-list]");
+    // Keep the reader's place in the message list; stay pinned to the newest when at the bottom.
+    const stickToBottom = !oldList || oldList.scrollHeight - oldList.scrollTop - oldList.clientHeight < 24;
+    const oldScrollTop = oldList ? oldList.scrollTop : 0;
+    const firstRender = !root.querySelector('[data-section="message-list"]');
+    let changed;
+    if (firstRender) {
+      const wrap = (name) => `<div class="room-section" data-section="${name}">${sections[name]}</div>`;
+      root.innerHTML = ["overview", "report", "board", "reservations", "help", "participants"].map(wrap).join("\n") +
+        `\n<section class="room-messages"><h2>Messages</h2>${wrap("message-list")}<form class="message-composer" data-message-form><input type="hidden" name="reply_to" /><p data-reply-status role="status"></p><button class="button" type="button" data-cancel-reply hidden>Cancel reply</button><label>Recipient<select name="to" required>${recipientOptions}</select></label><label>Message<textarea name="message" required placeholder="Write a message to the room"></textarea></label><p class="message-compose-actions"><label class="reply-request"><input type="checkbox" name="expects_reply" /> Request a reply</label><button class="button" type="submit">Send</button><button class="button" type="button" data-check-delivery hidden>Check delivery</button><button class="button" type="button" data-retry-delivery hidden>Allow retry (may duplicate)</button></p><p class="message-compose-status" data-message-status aria-live="polite"></p></form></section>`;
+      renderedSections.clear();
+      changed = new Set(Object.keys(sections));
+      for (const name of changed) renderedSections.set(name, sections[name]);
+      wireMessageComposer();
+    } else {
+      changed = new Set(Object.keys(sections).filter((name) => renderedSections.get(name) !== sections[name]));
+      const drafts = changed.has("board") ? captureConsoleDrafts() : [];
+      for (const name of changed) {
+        root.querySelector(`[data-section="${name}"]`).innerHTML = sections[name];
+        renderedSections.set(name, sections[name]);
+      }
+      const select = root.querySelector('[data-message-form] select[name="to"]');
+      if (select && select.innerHTML !== recipientOptions) {
+        const chosen = select.value;
+        select.innerHTML = recipientOptions;
+        select.value = chosen;
+      }
+      reopenToggles(opened);
+      restoreConsoleDrafts(drafts);
+    }
     updateConnectionStatus(connectionState);
-    root.querySelector("[data-copy-room-url]")?.addEventListener("click", () => {
-      const url = "https://j01n.me/r/" + rid;
-      navigator.clipboard.writeText(url).catch(() => {});
-    });
-    root.querySelector("[data-copy-invitation]")?.addEventListener("click", async (event) => {
-      const button = event.currentTarget;
-      try { await navigator.clipboard.writeText(button.dataset.copyInvitation); button.textContent = "Copied — share privately"; }
-      catch { window.prompt("Copy the private invitation URL", button.dataset.copyInvitation); }
-    });
-    wireExtendInvite();
-    wireMakeHost();
-    wireBoardEditor(board);
-    wireTaskEditor(board);
-    wireMessageComposer();
-    showMessageArrivals(root.querySelector("[data-message-list]"), stickToBottom, oldScrollTop);
-    reopenToggles(opened);
-    restoreConsoleDrafts(drafts);
+    if (changed.has("overview")) {
+      root.querySelector("[data-copy-room-url]")?.addEventListener("click", () => {
+        const url = "https://j01n.me/r/" + rid;
+        navigator.clipboard.writeText(url).catch(() => {});
+      });
+      root.querySelector("[data-copy-invitation]")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        try { await navigator.clipboard.writeText(button.dataset.copyInvitation); button.textContent = "Copied — share privately"; }
+        catch { window.prompt("Copy the private invitation URL", button.dataset.copyInvitation); }
+      });
+      wireExtendInvite();
+    }
+    if (changed.has("participants")) wireMakeHost();
+    if (changed.has("board")) { wireBoardEditor(board); wireTaskEditor(board); }
+    if (changed.has("message-list")) {
+      wireReplyButtons();
+      showMessageArrivals(root.querySelector("[data-message-list]"), stickToBottom, oldScrollTop);
+    }
     updateReplyStatus();
   }
 

@@ -27,6 +27,7 @@ ${HOME_PALETTE}
     & code { color: var(--console-cream); overflow-wrap: anywhere; }
     & h3::before { color: var(--console-cream); }
     & [data-room-root] { display: grid; gap: 1.25rem; margin-top: 2.5rem; }
+    & .room-section { display: contents; }
     & [data-room-root] h2 { margin: 0 0 0.8rem; font-size: 1.5rem; line-height: 1.2; }
     & [data-room-root] h2::before { content: "## " / ""; color: var(--console-cream); }
 

@@ -515,7 +515,7 @@ export async function prepareRoomPeerSpawn(options: { task: string; role?: strin
   mkdirSync(identityDir, { recursive: true, mode: 0o700 });
   requirePrivateIdentityDir(identityDir);
   const base = new URL(client.invite.room_url).origin;
-  const preferredName = "host-" + createHash("sha256").update(`${client.invite.room_url}\0${client.participantId}`).digest("hex").slice(0, 16);
+  const preferredName = (() => { const name = process.env.J01N_HOST_INBOX; if (name && !/^[a-z][a-z0-9_-]{0,31}$/.test(name)) throw new Error("invalid host inbox address"); return name || "host-" + createHash("sha256").update(`${client.invite.room_url}\0${client.participantId}`).digest("hex").slice(0, 16); })();
   const aliasFile = join(identityDir, `.j01n-host-${preferredName}.json`);
   const savedName = existsSync(aliasFile) ? (JSON.parse(readFileSync(aliasFile, "utf8")) as { name: string }).name : preferredName;
   if (!/^[a-z][a-z0-9_-]{0,31}$/.test(savedName)) throw new Error("invalid saved host inbox address");

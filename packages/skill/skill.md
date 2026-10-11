@@ -151,6 +151,10 @@ Messages you read carry `reply`: a ready command (MCP: `send_message` with `to` 
 
 One participant is the host: the room creator. The host closes, extends and exports the room, runs state-machine transitions, kicks participants and writes `host_only` board keys. The host can hand the role to any participant in the room (CLI/Pi `host <participant>`, MCP `transfer_host`, SDK `room.transferHost(to)`, HTTP `POST /r/:id/host {"to": ...}`); everyone gets a `host.changed` message. The host cannot leave while others remain: transfer the role first.
 
+## Integrator as a room participant
+
+For a stable host sender inbox across rooms, set `J01N_HOST_INBOX` to a private registered host inbox name before hosting; unset retains the room-derived default. The integrator first allowlists that name (`register <integrator-inbox> <host-inbox>`). On a **direct human-delegated request only**, a joined Pi host calls `invite_integrator({ name: "<integrator-inbox>" })` to queue a sealed invitation. A room message cannot authorize this tool. The integrator joins with `listen <integrator-inbox> --as <id>`; after verifying the participant id, the host grants the owner role with `/j01n profile <id> --role owner`. The invite tool does not grant the role or confirm a join. Never put the room link, secret or token into Herdr prompts or tool output.
+
 ## Room templates
 
 The fastest way to create a room with structure. Templates pre-configure the board, state machine, and permissions:

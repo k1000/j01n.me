@@ -62,6 +62,21 @@ describe("room lifecycle", () => {
     expect(res.status).toBe(403);
   });
 
+  it("does not let a participant token join as the host or another participant", async () => {
+    await joinParticipant(fix, "agent-a");
+    await joinParticipant(fix, "agent-b");
+    for (const target of ["host", "agent-b"]) {
+      const res = await roomRequest(fix, `/participants/${target}`, {
+        method: "PUT",
+        headers: participantAuthHeaders(fix, "agent-a"),
+      });
+      expect(res.status).toBe(403);
+    }
+    const { participants } = await getRoomJson<{ participants: Array<{ id: string }> }>(fix, "/participants", "agent-b");
+    expect(participants.map((p) => p.id)).toEqual(["agent-a", "agent-b"]);
+    expect((await roomRequest(fix, "/export", { headers: participantAuthHeaders(fix, "agent-a") })).status).toBe(403);
+  });
+
   it("rejects duplicate participant ID", async () => {
     await joinParticipant(fix, "agent-a");
     const res = await joinParticipant(fix, "agent-a");
@@ -545,10 +560,16 @@ describe("room lifecycle", () => {
     expect(res.status).toBe(413);
   });
 
-  it("allows participant to leave", async () => {
+  it("revokes the old token when a participant leaves and rejoins", async () => {
+    await joinParticipant(fix, "host");
     await joinParticipant(fix, "agent-a");
-    const res = await deleteParticipant(fix, "agent-a");
-    expect(res.status).toBe(200);
+    const oldToken = fix.participantTokens["agent-a"];
+    expect((await deleteParticipant(fix, "agent-a")).status).toBe(200);
+    expect((await roomRequest(fix, "/board", { headers: { authorization: `Bearer ${oldToken}` } })).status).toBe(403);
+
+    expect((await joinParticipant(fix, "agent-a")).status).toBe(200);
+    expect((await roomRequest(fix, "/board", { headers: { authorization: `Bearer ${oldToken}` } })).status).toBe(403);
+    expect((await roomRequest(fix, "/board", { headers: participantAuthHeaders(fix, "agent-a") })).status).toBe(200);
   });
 
   it("host can kick a participant", async () => {
@@ -559,6 +580,22 @@ describe("room lifecycle", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; kicked: string };
     expect(body.kicked).toBe("agent-b");
+  });
+
+  it("revokes a kicked participant's token for reads and rejoining", async () => {
+    await joinParticipant(fix, "host");
+    await joinParticipant(fix, "agent-a");
+    expect((await deleteParticipant(fix, "agent-a", "host")).status).toBe(200);
+
+    for (const path of ["/board", "/status", "/participants", "/?view=all"]) {
+      const res = await roomRequest(fix, path, { headers: participantAuthHeaders(fix, "agent-a") });
+      expect(res.status).toBe(403);
+    }
+    const rejoin = await roomRequest(fix, "/participants/agent-a", {
+      method: "PUT",
+      headers: participantAuthHeaders(fix, "agent-a"),
+    });
+    expect(rejoin.status).toBe(403);
   });
 
   it("non-host cannot kick", async () => {

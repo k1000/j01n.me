@@ -62,7 +62,7 @@ export async function authenticate(invite: InviteState, parsed: ParsedRequest): 
     const pid = invite.tokenIndex[roomHash];
     if (pid) {
       const participant = invite.participants[pid];
-      if (participant?.tokenHash) {
+      if (isParticipantJoined(invite.participants, pid) && participant?.tokenHash) {
         // Verify the token is bound to this participant (double-check)
         const expectedHash = await hashJoinSecret(invite.roomId + "." + pid, parsed.token);
         if (expectedHash === participant.tokenHash) {

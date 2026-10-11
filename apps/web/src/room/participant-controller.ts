@@ -63,6 +63,9 @@ export class RoomParticipantController {
 
     const participantId = normalizeParticipantId(pathParticipantId);
     if (participantId instanceof Response) return participantId;
+    if (authResult.resolvedParticipantId && authResult.resolvedParticipantId !== participantId) {
+      return json({ error: "participant token does not match participant_id" }, 403);
+    }
 
     const participants = { ...invite.participants };
     const joinValidation = validateParticipantCanJoin(participants, participantId, invite.maxParticipants);

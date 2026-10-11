@@ -90,6 +90,7 @@ ${HOME_PALETTE}
 
     & .message-list { max-height: min(60vh, 36rem); overflow-y: auto; overscroll-behavior: contain; padding: 0 1rem; border: 1px dashed var(--console-rule); background: var(--console-ink); }
     & .message-list:focus-visible { outline-offset: -2px; }
+    & .message-list > [data-reply-message] { display: block; margin-left: auto; }
     & .message-entry { border-color: var(--console-rule); }
     & .message-entry[class*="message-kind-"] { border-left-color: var(--kind-accent); }
     & .message-entry[class*="message-kind-"] .message-route { color: var(--kind-accent); }

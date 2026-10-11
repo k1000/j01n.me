@@ -22,7 +22,8 @@ function run(command, argv, cwd = process.cwd(), silent = false) {
 }
 function git(...argv) { return run("git", argv); }
 function assertClean(cwd = process.cwd()) {
-  if (run("git", ["status", "--porcelain", "--untracked-files=all"], cwd)) fail(`dirty checkout: ${cwd}; save all work before continuing`);
+  // dev/ (plans, lessons) is copied untracked into sprint worktrees by start; it is never deployed or pushed.
+  if (run("git", ["status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude)dev"], cwd)) fail(`dirty checkout: ${cwd}; save all work before continuing`);
 }
 function internal(path) {
   if (!isAbsolute(path)) fail("path must be absolute on internal storage");
@@ -135,7 +136,7 @@ async function start() {
   run("herdr", ["agent", "start", name, "--kind", "pi", "--pane", pane]);
   const copied = spec.startsWith(dev + sep) ? relative(repo, spec) : basename(spec);
   run("herdr", ["agent", "prompt", pane, `Host this sprint from ${copied}. Create the sprint with {"spec":${JSON.stringify(copied)}}; confirm the owner joins, invite repo agents, spawn one peer per task, coordinate review. Follow docs/SPAWN-RUNBOOK.md. Never paste room credentials into Herdr.`]);
-  const roomDir = join(target, ".j01n-rooms");
+  const roomDir = join(process.env.J01N_KEY_DIR || target, ".j01n-rooms");
   let joined = false;
   for (let i = 0; i < 180; i++) {
     if (existsSync(roomDir) && readdirSync(roomDir).some((v) => /^[a-f0-9]{64}\.json$/.test(v))) { joined = true; break; }
@@ -160,15 +161,10 @@ function remotes() {
     catch { fail(`${remote}/main moved outside the integration history; reconcile before proceeding`); }
   }
 }
-function appendLessons(summary) {
+function printLessons(summary) {
+  // dev/ may be private and untracked: print room notes and decisions for dev/lessons.md, never commit them.
   const entries = [...(summary.notes || []).map((n) => `- ${n.by}: ${n.text}`), ...(summary.decisions || []).map((d) => `- Decision (${d.by}): ${d.decision} — ${d.why}`)];
-  if (!entries.length) return;
-  const path = join(process.cwd(), "dev/lessons.md");
-  mkdirSync(dirname(path), { recursive: true });
-  const existing = existsSync(path) ? readFileSync(path, "utf8") : "# Sprint lessons\n";
-  writeFileSync(path, `${existing.trimEnd()}\n\n## Sprint ${git("branch", "--show-current")}\n${entries.join("\n")}\n`);
-  git("add", "--", "dev/lessons.md");
-  git("commit", "-m", "Record sprint notes and decisions");
+  if (entries.length) console.log(`Room notes and decisions for dev/lessons.md:\n${entries.join("\n")}`);
 }
 async function localE2E() {
   const server = spawn("pnpm", ["exec", "wrangler", "dev", "--config", "apps/web/wrangler.jsonc", "--port", "8787"], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], detached: true });
@@ -220,7 +216,7 @@ async function finish() {
   run(process.execPath, ["scripts/generate-assets.mjs"]);
   git("add", "--", "packages/helper/client/j01n.js", "packages/helper/src/client-script.ts", "apps/web/src/markdown-assets.ts", "packages/skill/src/skill.ts");
   if (git("diff", "--cached", "--name-only")) git("commit", "-m", "Regenerate sprint integration outputs");
-  appendLessons(summary);
+  printLessons(summary);
   assertClean();
   run("pnpm", ["check:contract"]);
   run("pnpm", ["check:generated"]);
@@ -240,11 +236,11 @@ async function finish() {
   for (const remote of ["gitlab", "origin"]) if (git("ls-remote", remote, "refs/heads/main").split(/\s+/)[0] !== deployed) fail(`${remote} does not point to deployed commit; stop cleanup`);
   run("pi", ["update"]);
   // Read only the local host key file; never print its URL, token or join secret.
-  const rooms = readdirSync(".j01n-rooms").filter((f) => /^[a-f0-9]{64}\.json$/.test(f));
-  if (rooms.length !== 1) fail("expected exactly one host room; close it manually after verifying ownership");
-  const { room_url, participant_id } = JSON.parse(readFileSync(join(".j01n-rooms", rooms[0]), "utf8"));
-  const safe = (s) => s.replace(/[^a-zA-Z0-9_-]/g, "_");
   const keyDir = process.env.J01N_KEY_DIR || process.cwd();
+  const rooms = readdirSync(join(keyDir, ".j01n-rooms")).filter((f) => /^[a-f0-9]{64}\.json$/.test(f));
+  if (rooms.length !== 1) fail("expected exactly one host room; close it manually after verifying ownership");
+  const { room_url, participant_id } = JSON.parse(readFileSync(join(keyDir, ".j01n-rooms", rooms[0]), "utf8"));
+  const safe = (s) => s.replace(/[^a-zA-Z0-9_-]/g, "_");
   const session = JSON.parse(readFileSync(join(keyDir, `.j01n-${safe(new URL(room_url).pathname)}-${safe(participant_id)}.json`), "utf8"));
   if (!session.participantToken) fail("no host participant token in local key file; close manually");
   announce("Sprint integration: deployment verified and both remotes updated; closing the room.");

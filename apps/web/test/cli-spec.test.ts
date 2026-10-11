@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { openRoomSeal } from "@j01n/sdk";
 
@@ -41,8 +42,8 @@ it("CLI create --spec sends only tasks in plaintext and seals the complete kicko
   writeFileSync(join(dir, "sprint.md"), spec);
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
   port = (server.address() as { port: number }).port;
-  const cli = new URL("../../../packages/helper/src/cli.ts", import.meta.url).pathname;
-  const tsx = new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url).pathname;
+  const cli = fileURLToPath(new URL("../../../packages/helper/src/cli.ts", import.meta.url));
+  const tsx = fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url));
   const { stdout } = await exec(process.execPath, [tsx, cli, "create", `http://127.0.0.1:${port}`, JSON.stringify({ host_id: "host", spec: "sprint.md" })], { cwd: dir, env: { ...process.env, J01N_KEY_DIR: dir } });
   expect(JSON.parse(stdout).room_id).toBe("room-1");
   expect(calls[0]).toMatchObject({ template: "sprint", tasks: [{ id: "T1", title: "Build", files: ["src/build.ts"] }] });

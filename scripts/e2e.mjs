@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const [base, helper] = process.argv.slice(2);
 if (!base) throw new Error("Usage: e2e.mjs <base> [helper]");
 const here = dirname(fileURLToPath(import.meta.url));
-for (const script of ["smoke-helper.mjs", "e2e/mcp.mjs", "e2e/sprint.mjs", "e2e/kinds.mjs", "e2e/volumes.mjs", "e2e/page.mjs"]) {
+for (const script of ["smoke-helper.mjs", "e2e/mcp.mjs", "e2e/sprint.mjs", "e2e/spec.mjs", "e2e/kinds.mjs", "e2e/volumes.mjs", "e2e/page.mjs"]) {
   console.log(`$ node scripts/${script} ${base}`);
   execFileSync(process.execPath, [join(here, script), base, ...(helper ? [helper] : [])], { stdio: "inherit" });
 }

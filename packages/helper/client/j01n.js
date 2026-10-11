@@ -467,6 +467,47 @@ async function unblockTask(client, id) {
   return next;
 }
 
+// packages/sdk/src/spec.ts
+function parseSprintSpec(spec) {
+  const lines = spec.split(/\r?\n/);
+  const sections = lines.flatMap((line, index) => /^## Tasks\s*$/.test(line) ? [index] : []);
+  if (sections.length !== 1) throw new Error("spec needs exactly one ## Tasks section");
+  const start = sections[0];
+  const tasks = [];
+  let current;
+  const fields = /* @__PURE__ */ new Set();
+  for (const line of lines.slice(start + 1)) {
+    if (/^#{1,2}\s/.test(line)) break;
+    if (!line.trim()) continue;
+    const heading = line.match(/^- ([A-Za-z0-9_-]+) (.+)$/);
+    if (heading) {
+      current = { id: heading[1], title: heading[2].trim(), files: [] };
+      if (!current.title || tasks.some((task) => task.id === heading[1])) throw new Error(`invalid or duplicate spec task ${heading[1]}`);
+      tasks.push(current);
+      fields.clear();
+      continue;
+    }
+    const field = line.match(/^  +(?:- )?(files|depends|role|worktree):\s*(.*?)\s*$/);
+    if (!current || !field || fields.has(field[1])) throw new Error(`invalid spec task line: ${line}`);
+    const [, name, value] = field;
+    fields.add(name);
+    if (!value && name !== "depends") throw new Error(`spec task ${current.id} needs ${name}`);
+    if (name === "files") current.files = value.split(",").map((file) => file.trim());
+    if (name === "depends") current.depends_on = value ? value.split(",").map((id) => id.trim()) : [];
+    if (name === "role") current.role = value;
+    if (name === "worktree") current.worktree = value;
+  }
+  if (!tasks.length) throw new Error("spec ## Tasks section is empty");
+  const ids = new Set(tasks.map((task) => task.id));
+  for (const task of tasks) {
+    if (!task.files.length || task.files.some((file) => !file || /(?:^|\/)(?:client-script\.ts|markdown-assets\.ts|skill\.ts)$/.test(file))) {
+      throw new Error(`spec task ${task.id} needs valid files (generated files belong to integration)`);
+    }
+    if (task.depends_on?.some((id) => !ids.has(id) || id === task.id)) throw new Error(`spec task ${task.id} has an unknown or self dependency`);
+  }
+  return tasks;
+}
+
 // packages/sdk/src/sdk-crypto-session.ts
 async function createSdkCryptoSession(participantId, privateJwk, publicJwk) {
   const keyPair = privateJwk && publicJwk ? {
@@ -1312,10 +1353,29 @@ async function agents() {
 async function main() {
   if (cmd === "create") {
     const url = isUrl(args[1]) ? args[1] : base;
-    const options = (isUrl(args[1]) ? args[2] : args[1]) || "{}";
-    const response = await fetch(`${url.replace(/\/$/, "")}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(JSON.parse(options)) });
+    const options = JSON.parse((isUrl(args[1]) ? args[2] : args[1]) || "{}");
+    let specText;
+    if (options.spec !== void 0) {
+      if (typeof options.spec !== "string" || !options.spec) throw Error("create spec needs a Markdown file path");
+      if (options.tasks !== void 0 || options.template !== void 0 && options.template !== "sprint") throw Error("create spec cannot override tasks or sprint template");
+      specText = await fs.readFile(options.spec, "utf8");
+      options.tasks = parseSprintSpec(specText);
+      options.template = "sprint";
+      delete options.spec;
+    }
+    const response = await fetch(`${url.replace(/\/$/, "")}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(options) });
     const text = await response.text();
     if (!response.ok) throw Error(text);
+    if (specText !== void 0) {
+      const invite2 = normalizeInvite(JSON.parse(text));
+      const me2 = invite2.room.host_id;
+      const session2 = await createSdkCryptoSession(me2);
+      const client2 = await joinRoom(invite2, me2, {}, session2);
+      const keyFile2 = join2(stateDir, `.j01n-${safe(new URL(invite2.room_url).pathname)}-${safe(me2)}.json`);
+      await fs.writeFile(keyFile2, JSON.stringify({ ...await session2.exportKeyPair(), peers: {}, participantToken: client2.invite.participant_token, joinSecret: invite2.join_secret, roomUrl: invite2.room_url }), { mode: 384 });
+      await remember(invite2.room_url, me2);
+      await client2.send("all", { encrypted_payload: await sealForRoom(specText, invite2.join_secret, invite2.room_id) }, { intent: "kickoff", plain: true });
+    }
     console.log(text);
     return;
   }
@@ -1390,8 +1450,11 @@ async function main() {
     } catch {
     }
     let kickoff = board?.kickoff?.value ?? null;
-    if (kickoff === null) kickoff = (await client.read({ all: true, includeSelf: true })).find((m) => m.intent === "kickoff")?.body ?? null;
-    output({ ...profile, kickoff, board, ...notesAndDecisions(board ?? {}), questions: await client.openQuestions(), team: await client.team() });
+    const messages = await client.read({ all: true, includeSelf: true }).catch(() => []);
+    const sealedKickoff = messages.find((m) => m.intent === "kickoff" && !m.decrypt_error)?.body;
+    if (kickoff === null) kickoff = sealedKickoff ?? null;
+    const spec = typeof sealedKickoff === "string" ? { spec: sealedKickoff } : {};
+    output({ ...profile, kickoff, ...spec, board, ...notesAndDecisions(board ?? {}), questions: await client.openQuestions(), team: await client.team() });
     return;
   }
   if (cmd === "invite-link") {

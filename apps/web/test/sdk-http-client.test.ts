@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createRoom, createRoomAndJoin, joinRoom, resumeRoom, type Invite } from "@j01n/sdk";
 import { createSdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { sealForRoom } from "@j01n/sdk/crypto";
+import { bootstrapRoom, joinParticipant } from "./room/helpers";
 
 async function withFetch<T>(impl: typeof globalThis.fetch, fn: () => Promise<T>): Promise<T> {
   const original = globalThis.fetch;
@@ -290,6 +291,26 @@ describe("SDK HTTP client", () => {
     });
 
     expect(requests.some((r) => r.method === "PUT")).toBe(false);
+  });
+
+  it("sending an encrypted reply does not consume unread peer messages", async () => {
+    const fix = await bootstrapRoom({ roomId: "invite" });
+    await joinParticipant(fix, "agent-a");
+    await joinParticipant(fix, "agent-b");
+    const transportFetch = ((url: string | URL | Request, init?: RequestInit) =>
+      fix.session.fetch(new Request(url, init))) as typeof fetch;
+    const invite = { ...makeInvite(), join_secret: fix.joinSecret, transportFetch };
+    const a = await resumeRoom({ ...invite, participant_token: fix.participantTokens["agent-a"] }, "agent-a");
+    const b = await resumeRoom({ ...invite, participant_token: fix.participantTokens["agent-b"] }, "agent-b");
+    await a.announceKey();
+    await b.announceKey();
+    await b.send("agent-a", { text: "unread" });
+
+    await a.send("agent-b", { text: "reply" });
+    const { participants } = await a.participants();
+    expect(participants.find((p) => p.id === "agent-a")?.last_read_seq).toBe(0);
+    const unread = await a.read();
+    expect(unread.some((message) => message.from === "agent-b" && (message.body as { text?: string }).text === "unread")).toBe(true);
   });
 
   it("read decrypts a new message from a peer whose key was announced before this process started", async () => {

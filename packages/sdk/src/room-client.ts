@@ -231,13 +231,15 @@ export async function buildRoomClient(
   let cursor = initialCursor;
   const session = cryptoSession ?? await createSdkCryptoSession(participantId);
 
+  async function syncPeerKeys(): Promise<void> {
+    const { participants = [] } = await client.participants();
+    await session.processPeerKeys(participants.flatMap((p) => (p.public_key ? [{ id: p.id, public_key: p.public_key }] : [])));
+  }
+
   async function decryptAll(messages: RoomMessage[]): Promise<RoomMessage[]> {
     await session.processKeyExchange(messages);
-    if (messages.some((msg) => isEncryptedBody(msg.body))) {
-      // A resumed client may only see new messages, so learn keys announced earlier from the participant list.
-      const { participants = [] } = await client.participants();
-      await session.processPeerKeys(participants.flatMap((p) => (p.public_key ? [{ id: p.id, public_key: p.public_key }] : [])));
-    }
+    // A resumed client may only see new messages, so learn keys announced earlier from the participant list.
+    if (messages.some((msg) => isEncryptedBody(msg.body))) await syncPeerKeys();
     return Promise.all(
       messages.map(async (msg) => {
         if (isSealedKickoff(msg.body)) {
@@ -273,7 +275,7 @@ export async function buildRoomClient(
     },
 
     async send(to: Recipient, body: unknown, options = {}) {
-      if (shouldEncrypt(options) && !options.skipKeySync) await client.read({ all: true, includeSelf: true });
+      if (shouldEncrypt(options) && !options.skipKeySync) await syncPeerKeys();
       const sendBody = shouldEncrypt(options) ? await session.encryptForSend(body, to) : body;
       return request(invite.room_url, invite, {
         method: "POST",

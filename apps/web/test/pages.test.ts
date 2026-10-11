@@ -312,6 +312,15 @@ describe("room page", () => {
     expect(html).toContain('data-extend-room');
   });
 
+  it("groups sprint board keys into reusable Kanban cards without generic duplicate rows", () => {
+    expect(roomPageScript).toContain("function renderSprintTaskBoard(entries)");
+    expect(roomPageScript).toContain("key.startsWith('task.')");
+    expect(roomPageScript).toContain("!key.startsWith('task.')");
+    expect(roomPageScript).toContain("sprintTasks.length ? renderSprintTaskBoard(sprintTasks) : ''");
+    expect(roomPageScript).toContain('data-edit-board-key="');
+    expect(roomPageHtml("room-1")).toContain(".sprint-task-board .kanban-card-details > summary");
+  });
+
   it("keeps the Kanban controls readable and the columns within the board", () => {
     const html = roomPageHtml("room-1");
 

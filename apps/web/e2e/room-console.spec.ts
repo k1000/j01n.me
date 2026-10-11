@@ -272,6 +272,49 @@ test("missing saved keys cannot silently replace an existing identity", async ({
   expect(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith("j01n.hostKey.")))).toEqual([]);
 });
 
+test("sprint board keys render once as editable task cards with folded done work", async ({ page }, testInfo) => {
+  const agent = await joinRoom(parseInviteLink(await createRoom(page))!, "worker-agent");
+  const initial = (await agent.board()).board;
+  await agent.deleteBoardKey("columns", { ifVersion: initial.columns.version });
+  await agent.deleteBoardKey("tasks", { ifVersion: initial.tasks.version });
+  const tasks = [
+    ["T1", { title: "Set up parser", status: "done", files: ["parser.ts"], depends_on: [] }],
+    ["T2", { title: "Ship parser", status: "open", files: ["a/very/long/path/that/can/wrap/parser.ts"], depends_on: ["T1", "T3"], brief: "Handle <empty> input" }],
+    ["T3", { title: "Review parser", status: "claimed", owner: "worker-agent", files: ["review.ts"], depends_on: [] }],
+    ["T4", { title: "Resolve review", status: "blocked", files: [], depends_on: [], blocked_reason: "Needs design" }],
+    ...[5, 6, 7].map(id => [`T${id}`, { title: `Completed ${id}`, status: "done", files: [], depends_on: [], evidence: { tests: "passed" } }]),
+  ] as const;
+  for (const [id, task] of tasks) await agent.setBoardKey(`task.${id}`, task, { ifVersion: 0 });
+  await agent.setBoardKey("decision", "Keep parser small", { ifVersion: 0 });
+  const sprint = page.locator(".sprint-task-board");
+  await expect(sprint.locator(".kanban-column-title")).toHaveText(["Open", "Claimed", "Blocked", "Done"]);
+  await expect(sprint.locator('[data-sprint-task-id="T2"]')).toContainText("waits for T3");
+  await expect(sprint.locator('[data-sprint-task-id="T2"]')).not.toContainText("waits for T1");
+  await expect(page.locator(".board-entry")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Edit board key decision" })).toBeVisible();
+  const card = sprint.locator('[data-sprint-task-id="T2"]');
+  await expect(card.getByText("Handle <empty> input")).toBeHidden();
+  await card.getByText("Details").click();
+  await expect(card.getByText("Handle <empty> input")).toBeVisible();
+  await expect(card.getByText("a/very/long/path/that/can/wrap/parser.ts")).toBeVisible();
+  await expect(sprint.locator('[data-sprint-task-id="T1"]')).toBeHidden();
+  await sprint.getByText("Show 1 more").click();
+  await expect(sprint.locator('[data-sprint-task-id="T1"]')).toBeVisible();
+  const completed = sprint.locator('[data-sprint-task-id="T5"]');
+  await completed.getByText("Details").click();
+  await expect(completed.getByText("passed")).toBeVisible();
+  await card.getByRole("button", { name: "Edit board key task.T2" }).click();
+  await expect(page.getByLabel("key", { exact: true })).toHaveValue("task.T2");
+  await expect(page.getByLabel("value", { exact: true })).toHaveValue(/Ship parser/);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(sprint.locator(".kanban-column")).toHaveCount(4);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: testInfo.outputPath(`sprint-tasks-${width}.png`), fullPage: true });
+  }
+});
+
 test("other board keys remain visible beside Kanban and reject stale edits", async ({ page }) => {
   const agent = await joinRoom(parseInviteLink(await createRoom(page))!, "worker-agent");
   await agent.setBoardKey("decision", "Initial decision", { ifVersion: 0 });
@@ -290,10 +333,10 @@ test("other board keys remain visible beside Kanban and reject stale edits", asy
 
 test("board rows preview values, keep edits secondary and show the warning only in the form", async ({ page }, testInfo) => {
   const agent = await joinRoom(parseInviteLink(await createRoom(page))!, "worker-agent");
-  await agent.setBoardKey("task.T2", { title: "Polish board rows", status: "claimed", brief: "Not shown in preview" }, { ifVersion: 0 });
+  await agent.setBoardKey("feature.T2", { title: "Polish board rows", status: "claimed", brief: "Not shown in preview" }, { ifVersion: 0 });
   const longText = "First line\n" + "x".repeat(170);
   await agent.setBoardKey("notes", longText, { ifVersion: 0 });
-  const objectRow = page.locator('[data-collapse="key:task.T2"]');
+  const objectRow = page.locator('[data-collapse="key:feature.T2"]');
   const textRow = page.locator('[data-collapse="key:notes"]');
   await expect(objectRow.locator(".board-preview")).toHaveText("Polish board rows");
   await expect(objectRow.locator(".board-preview-state")).toHaveText("claimed");
@@ -301,14 +344,14 @@ test("board rows preview values, keep edits secondary and show the warning only 
   await expect(objectRow.locator(".board-meta")).toContainText("v1 · worker-agent");
   await expect(objectRow).not.toHaveAttribute("open", "");
   await expect(page.locator(".room-board > .fineprint")).toHaveCount(0);
-  const edit = page.getByRole("button", { name: "Edit board key task.T2" });
+  const edit = page.getByRole("button", { name: "Edit board key feature.T2" });
   await expect(edit).toHaveClass(/button-small/);
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 844 });
     await expect(edit).toBeVisible();
     const layout = await page.evaluate(() => {
-      const button = document.querySelector('[data-edit-board-key="task.T2"]')!;
-      const state = document.querySelector('[data-collapse="key:task.T2"] .board-preview-state')!;
+      const button = document.querySelector('[data-edit-board-key="feature.T2"]')!;
+      const state = document.querySelector('[data-collapse="key:feature.T2"] .board-preview-state')!;
       const style = getComputedStyle(button);
       return { noOverflow: document.documentElement.scrollWidth <= innerWidth, stateVisible: state.getBoundingClientRect().right <= button.getBoundingClientRect().left, height: button.getBoundingClientRect().height, background: style.backgroundColor, color: style.color };
     });
@@ -321,7 +364,7 @@ test("board rows preview values, keep edits secondary and show the warning only 
   }
   await edit.click();
   await expect(page.locator("[data-board-form] .fineprint")).toHaveText("Shared with room participants, not encrypted. Do not put secrets on the board.");
-  await expect(page.getByLabel("key", { exact: true })).toHaveValue("task.T2");
+  await expect(page.getByLabel("key", { exact: true })).toHaveValue("feature.T2");
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await objectRow.locator("summary").click();
   await expect(objectRow).toHaveAttribute("open", "");

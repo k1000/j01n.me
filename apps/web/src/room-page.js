@@ -495,6 +495,28 @@
     }).join("") + '</div>';
   }
 
+  function renderSprintTaskBoard(entries) {
+    const tasks = entries.map(([key, entry]) => ({ key, id: key.slice(5), value: boardDisplayValue(entry.value) }));
+    const done = new Set(tasks.filter(({ value }) => value?.status === "done").map(({ id }) => id));
+    const card = ({ key, id, value }) => {
+      const task = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      const waiting = Array.isArray(task.depends_on) ? task.depends_on.filter(dep => !done.has(dep)) : [];
+      const details = Object.fromEntries(Object.entries(task).filter(([field]) => !["title", "status", "owner"].includes(field)));
+      return '<article class="kanban-card" data-sprint-task-id="' + escAttr(id) + '">' +
+        '<span class="kanban-card-title">' + esc(id) + ' · ' + esc(task.title || id) + '</span>' +
+        (task.owner ? '<span class="kanban-card-owner">Owner: ' + esc(task.owner) + '</span>' : '') +
+        (waiting.length ? '<span class="sprint-task-waiting">waits for ' + esc(waiting.join(', ')) + '</span>' : '') +
+        '<details class="kanban-card-details" data-collapse="' + escAttr('key:' + key) + '"><summary>Details</summary><div class="board-value">' + renderValue(details) + '</div></details>' +
+        '<button class="button button-small" type="button" data-edit-board-key="' + escAttr(key) + '" aria-label="' + escAttr('Edit board key ' + key) + '">Edit</button></article>';
+    };
+    return '<div class="kanban-board sprint-task-board" aria-label="Sprint tasks">' + ["open", "claimed", "blocked", "done"].map(status => {
+      const inColumn = tasks.filter(({ value }) => value?.status === status || (status === "open" && !["open", "claimed", "blocked", "done"].includes(value?.status)));
+      const older = status === "done" ? inColumn.slice(0, -3) : [];
+      const cards = (older.length ? '<details class="kanban-done-more" data-collapse="sprint-done-more"><summary>Show ' + older.length + ' more</summary>' + older.map(card).join('') + '</details>' : '') + inColumn.slice(older.length).map(card).join('');
+      return '<div class="kanban-column"><h3 class="kanban-column-title">' + status[0].toUpperCase() + status.slice(1) + '</h3><div class="kanban-cards">' + cards + '</div></div>';
+    }).join('') + '</div>';
+  }
+
   function extractValue(v) {
     if (v && typeof v === "object" && "encrypted_payload" in v) {
       try {
@@ -903,7 +925,8 @@
     const tasksVal = extractValue(board.tasks?.value) || {};
     const isKanban = columnsVal && typeof columnsVal === "object" && !Array.isArray(columnsVal) && ["todo", "doing", "review", "done"].some((c) => c in columnsVal)
       && typeof tasksVal === 'object' && !Array.isArray(tasksVal) && !('encrypted_payload' in tasksVal);
-    const boardEntries = Object.entries(board).filter(([key]) => key !== 'reservations' && (!isKanban || !['columns', 'tasks'].includes(key))).map(([k, entry]) => {
+    const sprintTasks = Object.entries(board).filter(([key]) => key.startsWith('task.'));
+    const boardEntries = Object.entries(board).filter(([key]) => key !== 'reservations' && !key.startsWith('task.') && (!isKanban || !['columns', 'tasks'].includes(key))).map(([k, entry]) => {
       const meta = `<span class="board-meta" title="${escAttr('updated at ' + entry.updated_at)}">v${esc(entry.version)} · ${esc(entry.updated_by)} · ${esc(shortTime(entry.updated_at))}</span>`;
       const edit = `<button class="button button-small" type="button" data-edit-board-key="${escAttr(k)}" aria-label="${escAttr('Edit board key ' + k)}">Edit</button>`;
       const value = `<div class="board-value">${renderBoardValue(entry.value)}</div>`;
@@ -912,7 +935,7 @@
       const preview = boardPreview(boardDisplayValue(entry.value));
       return `<div class="board-entry"><details class="board-entry-details" data-collapse="${escAttr('key:' + k)}"><summary><span class="board-entry-heading"><span class="board-key">${esc(k)}</span><span class="board-preview">${esc(preview.text)}</span>${preview.state ? `<span class="board-preview-state">${esc(preview.state)}</span>` : ""}</span>${meta}</summary>${value}</details>${edit}</div>`;
     }).join('');
-    const boardHtml = boardKeys.length === 0 ? '<p class="board-empty">No board data yet.</p>' : (isKanban ? renderKanbanBoard(board, columnsVal) : '') + boardEntries;
+    const boardHtml = boardKeys.length === 0 ? '<p class="board-empty">No board data yet.</p>' : (isKanban ? renderKanbanBoard(board, columnsVal) : '') + (sprintTasks.length ? renderSprintTaskBoard(sprintTasks) : '') + boardEntries;
 
     const pList = Object.values(participants);
     // Where each participant works: sealed with the room key, opened here with the join secret.

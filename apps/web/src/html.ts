@@ -295,6 +295,10 @@ function roomPageStyles(): string {
   .kanban-card { background: Canvas; color: CanvasText; padding: 0.5rem 0.75rem; border: 1px solid color-mix(in srgb, currentColor 22%, transparent); }
   .kanban-card-title { display: block; font-weight: 700; font-size: 0.95rem; }
   .kanban-card-owner { display: block; font-size: 0.85rem; opacity: 0.6; margin-top: 0.15rem; }
+  .sprint-task-board { margin-bottom: 1rem; }
+  .sprint-task-waiting { display: block; margin-top: 0.35rem; font-size: 0.85rem; }
+  .sprint-task-board .kanban-card-details > summary, .sprint-task-board .kanban-done-more > summary { min-height: 44px; display: flex; align-items: center; }
+  .sprint-task-board .kanban-card > .button { margin-top: 0.35rem; }
   .kanban-card-priority { display: block; width: fit-content; margin-top: 0.3rem; padding: 0 0.35rem; border: 1px solid currentColor; font-size: 0.75rem; opacity: 0.8; }
   .kanban-card-priority[data-priority="low"] { opacity: 0.55; }
   .kanban-done-more > summary { cursor: pointer; font-size: 0.85rem; opacity: 0.72; padding: 0.25rem 0; }

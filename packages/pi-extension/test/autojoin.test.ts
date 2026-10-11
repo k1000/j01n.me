@@ -269,6 +269,8 @@ describe("Pi session start auto-join", () => {
     expect(message.display).toBe(true);
     // Live mode resumes in the same boot: the joined room is one of the delivered rooms.
     expect(readdirSync(".")).toContain(".j01n-rooms");
+    const { activeRoomClients } = await import("../commands");
+    expect((await activeRoomClients()).map((client) => client.participantId)).toEqual(["worker-4"]);
     expect(handlers.get("session_start")!.length).toBeGreaterThan(2);
     expect(notify).not.toHaveBeenCalledWith(expect.stringContaining(LINK), expect.anything());
   });

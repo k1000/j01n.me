@@ -106,5 +106,5 @@ try {
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
-if (smokeIndex !== -1) run(process.execPath, ["scripts/smoke-helper.mjs", flags[smokeIndex + 1]]);
+if (smokeIndex !== -1) run(process.execPath, ["scripts/e2e.mjs", flags[smokeIndex + 1]]);
 console.log("Contract check passed");

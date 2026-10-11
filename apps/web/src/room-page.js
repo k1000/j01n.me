@@ -1020,7 +1020,7 @@ ${helpNeededHtml(data)}
     if (host !== "github.com" && host !== "gitlab.com") return "";
     const repo = url.pathname.replace(/\.git$/i, "").replace(/^\//, "");
     if (!repo || repo.split("/").some(part => !/^[A-Za-z0-9_.-]+$/.test(part) || part === "." || part === "..")) return "";
-    return `https://${host}/${repo}/${host === "gitlab.com" ? "-/blob" : "blob"}/${encodeURIComponent(workspace.branch)}/`;
+    return `https://${host}/${repo}/${host === "gitlab.com" ? "-/blob" : "blob"}/${workspace.branch.split("/").map(encodeURIComponent).join("/")}/`;
   }
 
   function renderMessageBody(body, participants, workspace) {

@@ -224,14 +224,14 @@ describe("room page", () => {
   it("links relative repo files with optional lines against the sender's sealed workspace", () => {
     const body = 'See packages/sdk/src/node.ts:12, apps/web/src/html.ts and https://github.com/group/repo/blob/main/src/no.ts; <script> &';
     const gitlab = messageBodyHtml(body, {}, { repo: "git@gitlab.com:group/repo.git", branch: "feature/t15" });
-    expect(gitlab).toContain('href="https://gitlab.com/group/repo/-/blob/feature%2Ft15/packages/sdk/src/node.ts#L12" target="_blank" rel="noopener noreferrer">packages/sdk/src/node.ts:12</a>,');
-    expect(gitlab).toContain('href="https://gitlab.com/group/repo/-/blob/feature%2Ft15/apps/web/src/html.ts"');
+    expect(gitlab).toContain('href="https://gitlab.com/group/repo/-/blob/feature/t15/packages/sdk/src/node.ts#L12" target="_blank" rel="noopener noreferrer">packages/sdk/src/node.ts:12</a>,');
+    expect(gitlab).toContain('href="https://gitlab.com/group/repo/-/blob/feature/t15/apps/web/src/html.ts"');
     expect(gitlab.match(/<a /g)).toHaveLength(2);
     expect(gitlab).toContain('https://github.com/group/repo/blob/main/src/no.ts;');
     expect(gitlab).toContain('&lt;script&gt; &amp;');
     const github = messageBodyHtml("apps/web/src/html.ts", {}, { repo: "https://github.com/group/repo.git", branch: "main" });
     expect(github).toContain('href="https://github.com/group/repo/blob/main/apps/web/src/html.ts"');
-    expect(messageBodyHtml("apps/web/src/html.ts", {}, { repo: "git@github.com:group/repo.git", branch: "main" })).toContain('href="https://github.com/group/repo/blob/main/apps/web/src/html.ts"');
+    expect(messageBodyHtml("apps/web/src/html.ts", {}, { repo: "git@github.com:group/repo.git", branch: "w1/t15" })).toContain('href="https://github.com/group/repo/blob/w1/t15/apps/web/src/html.ts"');
   });
 
   it("leaves unsafe remotes, non-path tokens and traversal plain", () => {

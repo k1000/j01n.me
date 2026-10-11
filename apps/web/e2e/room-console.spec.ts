@@ -79,7 +79,7 @@ test("room console and live view follow the homepage palette and responsive bord
   expect(mobile).toEqual({ columns: 1, taskColumns: 1, fits: true, noHorizontalOverflow: true });
   await page.getByRole("link", { name: "Live view" }).click();
   await expect(page.locator("body")).toHaveClass(/live-room-page/);
-  expect(await page.locator(".live-panel").first().evaluate((el) => getComputedStyle(el).borderTopWidth)).toBe("2px");
+  expect(await page.locator(".live-grid > .live-panel").first().evaluate((el) => getComputedStyle(el).borderTopWidth)).toBe("2px");
   expect(await page.locator(".live-panel h2").first().evaluate((el) => getComputedStyle(el, "::before").content)).toBe("none");
 });
 

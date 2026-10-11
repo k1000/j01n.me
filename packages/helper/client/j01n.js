@@ -1436,6 +1436,39 @@ import { execFileSync as execFileSync2 } from "node:child_process";
 function git2(root, ...args2) {
   return execFileSync2("git", args2, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
+function conflictedFilesFromOutput(output2) {
+  const files = /* @__PURE__ */ new Set();
+  for (const match of output2.matchAll(/^\d{6} [0-9a-f]+ [123]\t(.+)$/gm)) files.add(match[1]);
+  for (const match of output2.matchAll(/^CONFLICT .*: Merge conflict in (.+)$/gm)) files.add(match[1]);
+  let block = null;
+  const close = () => {
+    if (block?.saw_our && block.saw_their && block.file) files.add(block.file);
+    block = null;
+  };
+  for (const line of output2.split("\n")) {
+    if (line === "changed in both") {
+      close();
+      block = {};
+      continue;
+    }
+    if (line === "simple conflict") {
+      close();
+      block = { saw_our: true, saw_their: true };
+      continue;
+    }
+    if (block && /^(?:merged|added in (?:both|local|remote)|removed in (?:local|remote)|unchanged|missing (?:local|remote))$/.test(line)) {
+      close();
+      continue;
+    }
+    if (!block) continue;
+    const header = line.match(/^ {2}(?:base|our|their)\s+\d{6} [0-9a-f]+ (.+)$/);
+    if (header && !block.file) block.file = header[1];
+    else if (/^\+?<<<<<<< \.our$/.test(line)) block.saw_our = true;
+    else if (/^\+?>>>>>>> \.their$/.test(line)) block.saw_their = true;
+  }
+  close();
+  return files;
+}
 async function checkConflicts(client, root, finishedBranch) {
   const repo2 = (() => {
     try {
@@ -1480,25 +1513,17 @@ async function checkConflicts(client, root, finishedBranch) {
       if (other === existing[i] || finishedBranch && existing[i] !== finishedBranch && other !== finishedBranch) continue;
       const pair = [existing[i], other];
       let output2;
-      let conflicted = false;
       try {
         output2 = git2(root, "merge-tree", "--write-tree", ...pair);
       } catch (error) {
         const e = error;
-        if (e.status === 1) {
-          conflicted = true;
-          output2 = e.stdout || "";
-        } else if (e.status === 128 || (e.stderr || "").includes("unknown rev")) {
+        if (e.status === 1) output2 = e.stdout || "";
+        else if (e.status === 128 || (e.stderr || "").includes("unknown rev")) {
           const base2 = git2(root, "merge-base", ...pair);
           output2 = git2(root, "merge-tree", base2, ...pair);
-          conflicted = output2.includes("<<<<<<<");
         } else throw new Error(`merge-tree ${pair.join(" vs ")}: ${e.stderr || String(error)}`);
       }
-      const files = conflicted ? [.../* @__PURE__ */ new Set([
-        ...[...output2.matchAll(/^\d{6} [0-9a-f]+ [123]\t(.+)$/gm)].map((match) => match[1]),
-        ...[...output2.matchAll(/^CONFLICT .*? in (.+)$/gm)].map((match) => match[1]),
-        ...[...output2.matchAll(/^ {2}(?:base|our|their)\s+\d{6} [0-9a-f]+ (.+)$/gm)].map((match) => match[1])
-      ])].sort() : [];
+      const files = [...conflictedFilesFromOutput(output2)].sort();
       comparisons.push({ branches: pair, files });
     }
   }

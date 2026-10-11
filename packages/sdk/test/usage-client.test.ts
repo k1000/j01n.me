@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { RoomApiError } from "../src/errors";
+import { buildMinimalInvite } from "../src/invite";
+import { buildRoomClient } from "../src/room-client";
 import {
   sealUsage,
   openUsage,
@@ -258,5 +260,103 @@ describe("usageReport", () => {
       tokens: 4500,
       cost_usd: 0.3,
     });
+  });
+});
+
+/**
+ * The room endpoints a usage report touches: board read, one guarded board write, and the participant list.
+ * Requests authenticate either with the room join secret (room-link form) or with a participant token (profile
+ * file and env forms); the board value is always sealed with the room key, so every form leaves rows that the
+ * other forms can read.
+ */
+function usageRoom(joinSecret: string, participants = ["worker-1", "worker-2"]) {
+  const roomUrl = "https://usage.test/r/usage-room";
+  const path = new URL(roomUrl).pathname;
+  const tokens = new Map(participants.map((id) => [id, `participant-token-for-${id}`]));
+  const board: Record<string, BoardEntry> = {};
+  const writes: Array<{ key: string; auth: "join_secret" | "participant_token" }> = [];
+  const transportFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const auth = new Headers(init?.headers ?? {}).get("authorization") ?? "";
+    const tokenHolder = [...tokens].find(([, token]) => auth === `Bearer ${token}`)?.[0];
+    if (auth !== `Bearer ${joinSecret}` && !tokenHolder) return Response.json({ error: "forbidden" }, { status: 403 });
+    if (url.pathname === `${path}/board` && (init?.method ?? "GET") === "GET") {
+      return Response.json({ board: structuredClone(board), board_schema: null, board_acls: {} });
+    }
+    const keyed = /^\/r\/usage-room\/board\/(.+)$/.exec(url.pathname);
+    if (keyed && init?.method === "PUT") {
+      const key = decodeURIComponent(keyed[1]);
+      if ((board[key]?.version ?? 0) !== Number(url.searchParams.get("if_version"))) {
+        return Response.json({ error: "version conflict" }, { status: 409 });
+      }
+      board[key] = {
+        value: JSON.parse(String(init.body)), version: (board[key]?.version ?? 0) + 1,
+        updated_by: tokenHolder ?? joinSecret, updated_at: new Date().toISOString(),
+      };
+      writes.push({ key, auth: tokenHolder ? "participant_token" : "join_secret" });
+      return Response.json({ ok: true, key, entry: board[key] });
+    }
+    if (url.pathname === `${path}/participants`) {
+      return Response.json({ participants: participants.map((id) => ({ id, state: "free", joined_at: "2026-01-15T12:00:00.000Z" })) });
+    }
+    return Response.json({ error: "not found" }, { status: 404 });
+  }) as typeof fetch;
+  return { board, roomUrl, token: (id: string) => tokens.get(id) as string, transportFetch, writes };
+}
+
+/** A client the way each helper auth form builds one: the seal key plus, when the form has one, the request token. */
+async function usageClientFor(room: ReturnType<typeof usageRoom>, participant: string, options: { sealSecret: string; participantToken?: string }) {
+  return buildRoomClient(
+    {
+      ...buildMinimalInvite(room.roomUrl, options.sealSecret),
+      transportFetch: room.transportFetch,
+      ...(options.participantToken ? { participant_token: options.participantToken } : {}),
+    },
+    participant,
+    0,
+  );
+}
+
+describe("room-sealed usage across the helper auth forms", () => {
+  const JOIN_SECRET = "room-join-secret-for-usage-test";
+
+  it("reports through the profile-file form (token auth, room key seal) and reads it back through a second participant client", async () => {
+    const room = usageRoom(JOIN_SECRET);
+    const reporter = await usageClientFor(room, "worker-1", { sealSecret: JOIN_SECRET, participantToken: room.token("worker-1") });
+    const row = await reporter.reportUsage({ active_ms: 60_000, input_tokens: 1_000, output_tokens: 200, cost_usd: 0.1, model: "claude-sonnet", provider: "anthropic" });
+
+    expect(room.writes).toEqual([{ key: "usage.worker-1", auth: "participant_token" }]);
+
+    const reader = await usageClientFor(room, "worker-2", { sealSecret: JOIN_SECRET, participantToken: room.token("worker-2") });
+    const report = await reader.usageReport();
+    expect(report.rows.find((entry) => entry.participant === "worker-1")?.snapshot).toEqual(row.snapshot);
+    expect(report.reported).toBe(1);
+    expect(report.totals).toMatchObject({ participants: 1, active_ms: 60_000, input_tokens: 1_000, output_tokens: 200, tokens: 1_200 });
+  });
+
+  it("regression: a row sealed with a participant token instead of the room key stays unreadable to the room", async () => {
+    const room = usageRoom(JOIN_SECRET);
+    // What `usage <profile.json> <me> report` did from a directory without a key file: the token became the seal key.
+    const broken = await usageClientFor(room, "worker-1", { sealSecret: room.token("worker-1"), participantToken: room.token("worker-1") });
+    const row = await broken.reportUsage({ active_ms: 60_000 });
+
+    expect(row.version).toBe(1);
+    const reader = await usageClientFor(room, "worker-2", { sealSecret: JOIN_SECRET });
+    const report = await reader.usageReport();
+    expect(report.rows.find((entry) => entry.participant === "worker-1")?.snapshot).toBeNull();
+    expect(report.reported).toBe(0);
+    expect(await openUsage(room.board["usage.worker-1"].value, "worker-1", JOIN_SECRET, "usage-room")).toBeNull();
+  });
+
+  it("keeps accumulating deltas across the room-link and profile-file forms, so both read one equal snapshot", async () => {
+    const room = usageRoom(JOIN_SECRET);
+    const byLink = await usageClientFor(room, "worker-1", { sealSecret: JOIN_SECRET });
+    await byLink.reportUsage({ active_ms: 60_000, input_tokens: 1_000 });
+    const byProfile = await usageClientFor(room, "worker-1", { sealSecret: JOIN_SECRET, participantToken: room.token("worker-1") });
+    const row = await byProfile.reportUsage({ active_ms: 30_000, input_tokens: 500, output_tokens: 100 });
+
+    const reader = await usageClientFor(room, "worker-2", { sealSecret: JOIN_SECRET, participantToken: room.token("worker-2") });
+    expect((await reader.usageReport()).rows.find((entry) => entry.participant === "worker-1")?.snapshot).toEqual(row.snapshot);
+    expect(row.snapshot).toMatchObject({ reports: 2, active_ms: 90_000, input_tokens: 1_500, output_tokens: 100 });
   });
 });

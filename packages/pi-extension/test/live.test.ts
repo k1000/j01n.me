@@ -61,10 +61,37 @@ describe("pi live mode", () => {
     expect(formatBatch(me, [message("claude-code", "review", { kind: "handoff", to: ["other", "pi-agent"] })])!.wake).toBe(true);
     expect(formatBatch(me, [message("claude-code", "Found it", { kind: "finding" })])!.text).toContain("[finding]");
     expect(formatBatch(me, [message("system", "agent-b joined")])!.wake).toBe(false);
-    expect(formatBatch(me, [message("system", "T2 is now unblocked", { intent: "task.unblocked", to: "pi-agent", body: { text: "T2 is now unblocked", task_id: "T2" } })])!.wake).toBe(true);
+    // Untargeted unblocked (no assigned field) does NOT wake
+    expect(formatBatch(me, [message("system", "T2 is now unblocked", { intent: "task.unblocked", to: "pi-agent", body: { text: "T2 is now unblocked", task_id: "T2" } })])!.wake).toBe(false);
     expect(formatBatch(me, [message("system", "T2 is now unblocked", { intent: "task.unblocked", to: "other", body: { text: "T2 is now unblocked", task_id: "T2" } })])!.wake).toBe(false);
     expect(formatBatch(me, [message("system", "T2 is now unblocked", { intent: "task.unblocked", to: "pi-agent", body: { text: "T2 is now unblocked" } })])!.wake).toBe(false);
+    // task.unblocked with assigned == self wakes
+    expect(formatBatch(me, [message("system", "T2 is now unblocked", { intent: "task.unblocked", to: "pi-agent", body: { text: "T2 is now unblocked", task_id: "T2", assigned: "pi-agent", blocked_by: ["T1"], summary: "done", commit: "abc1234567890" } })])!.wake).toBe(true);
+    // task.unblocked with assigned != self does NOT wake
+    expect(formatBatch(me, [message("system", "T2 is now unblocked", { intent: "task.unblocked", to: "pi-agent", body: { text: "T2 is now unblocked", task_id: "T2", assigned: "other" } })])!.wake).toBe(false);
+    // task.assigned direct to self wakes
+    expect(formatBatch(me, [message("system", "T3 assigned", { intent: "task.assigned", to: "pi-agent", body: { task: { id: "T3", title: "CLI assign hint" } } })])!.wake).toBe(true);
+    // task.assigned to other does NOT wake
+    expect(formatBatch(me, [message("system", "T3 assigned", { intent: "task.assigned", to: "other", body: { task: { id: "T3", title: "CLI assign hint" } } })])!.wake).toBe(false);
     expect(formatBatch(me, [message("pi-agent", "own")])).toBeNull();
+  });
+
+  it("formats task.assigned and task.unblocked digest lines with ready command", async () => {
+    const { formatBatch } = await import("../live");
+    // task.assigned digest line
+    const assigned = formatBatch(me, [message("system", "T3 assigned", { intent: "task.assigned", to: "pi-agent", body: { task: { id: "t3", title: "CLI assign hint" } } })])!;
+    expect(assigned.text).toContain("Task t3 assigned to you: CLI assign hint");
+    expect(assigned.text).toContain("ready: j01n claim t3");
+    // task.unblocked with assigned == self digest line
+    const unblocked = formatBatch(me, [message("system", "T2 unblocked", { intent: "task.unblocked", to: "pi-agent", body: { text: "T2 unblocked", task_id: "t2", assigned: "pi-agent", blocked_by: ["t1"], summary: "assign verb", commit: "abc1234567890" } })])!;
+    expect(unblocked.text).toContain("Task t2 unblocked and assigned to you");
+    expect(unblocked.text).toContain("predecessor: t1 — assign verb (commit abc1234)");
+    expect(unblocked.text).toContain("ready: j01n claim t2");
+    // task.unblocked without summary/commit still shows ready command
+    const unblockedMinimal = formatBatch(me, [message("system", "T2 unblocked", { intent: "task.unblocked", to: "pi-agent", body: { text: "T2 unblocked", task_id: "t2", assigned: "pi-agent" } })])!;
+    expect(unblockedMinimal.text).toContain("Task t2 unblocked and assigned to you");
+    expect(unblockedMinimal.text).toContain("ready: j01n claim t2");
+    expect(unblockedMinimal.text).not.toContain("predecessor:");
   });
 
   it("turns tool calls into a short activity", async () => {

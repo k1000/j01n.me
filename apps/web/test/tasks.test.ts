@@ -92,6 +92,45 @@ describe("task primitives", () => {
     expect((await listTasks(a))[0].owner).toBe(winner.owner);
   });
 
+  // An assign (RoomClient.assign) leaves the task claimed by the worker with assigned_by set. Claiming it is the
+  // acceptance step: it takes the file reservation the offer deliberately left alone, and keeps the markers so a
+  // sprint runner can still see which offers were never taken.
+  it("accepts a host assign: keeps the owner, reserves the files, leaves the offer markers", async () => {
+    const { client, add, board } = room();
+    add("T1", {
+      ...task(["src/a.ts"]), status: "claimed", owner: "a", assigned: "a", assigned_by: "host",
+      assigned_at: "2026-01-15T12:00:00.000Z", assigned_reason: "free and knows the SDK",
+    });
+    const a = client("a");
+
+    expect(await claimTask(a, "T1", "repo")).toMatchObject({
+      status: "claimed", owner: "a", assigned: "a", assigned_by: "host", assigned_reason: "free and knows the SDK", files: ["src/a.ts"],
+    });
+    expect(board["task.T1"].version).toBe(2);
+    expect((await listReservations(a)).map((r) => `${r.by}:${r.reason}`)).toEqual(["a:task T1"]);
+    expect((await listTasks(a))[0]).toMatchObject({ id: "T1", status: "claimed", owner: "a" });
+  });
+
+  it("refuses to accept an assign offer addressed to another worker", async () => {
+    const { client, add, board } = room();
+    add("T1", { ...task(["src/a.ts"]), status: "claimed", owner: "b", assigned: "b", assigned_by: "host" });
+
+    await expect(claimTask(client("a"), "T1", "repo")).rejects.toThrow("task T1 is claimed by b");
+    expect(board["task.T1"].version).toBe(1);
+    expect(await listReservations(client("a"))).toEqual([]);
+  });
+
+  it("still refuses a second claim of a task we claimed ourselves with no offer behind it", async () => {
+    const { client, add, board } = room();
+    add("T1", task(["src/a.ts"]));
+    const a = client("a");
+    await claimTask(a, "T1", "repo");
+    const version = board["task.T1"].version;
+
+    await expect(claimTask(a, "T1", "repo")).rejects.toThrow("task T1 is claimed by a");
+    expect(board["task.T1"].version).toBe(version);
+  });
+
   it("retries a claim when a dependency completes before the waiter write (lost-wake interleaving)", async () => {
     const { client, add, board } = room();
     add("T1", task());

@@ -395,20 +395,23 @@ async function claimTask(client, id, repo2) {
     const entry = board[key(id)];
     if (!entry) throw new Error(`task ${id} does not exist`);
     const current = taskFrom(entry.value);
-    if (current.status !== "open") throw new Error(`task ${id} is ${current.status}${current.owner ? ` by ${current.owner}` : ""}`);
-    const unfinished = (entries) => current.depends_on.filter((dep) => entries[key(dep)]?.value && taskFrom(entries[key(dep)].value).status === "done" ? false : true);
-    const waiting = unfinished(board);
-    if (waiting.length) {
-      if (!current.waiting_for?.includes(client.participantId)) {
-        try {
-          await client.setBoardKey(key(id), { ...current, waiting_for: [...current.waiting_for ?? [], client.participantId] }, { ifVersion: entry.version ?? 0 });
-        } catch (error) {
-          if (error instanceof RoomApiError && error.status === 409) continue;
-          throw error;
+    const accepting = current.status === "claimed" && current.owner === client.participantId && !!current.assigned_by;
+    if (current.status !== "open" && !accepting) throw new Error(`task ${id} is ${current.status}${current.owner ? ` by ${current.owner}` : ""}`);
+    if (!accepting) {
+      const unfinished = (entries) => current.depends_on.filter((dep) => entries[key(dep)]?.value && taskFrom(entries[key(dep)].value).status === "done" ? false : true);
+      const waiting = unfinished(board);
+      if (waiting.length) {
+        if (!current.waiting_for?.includes(client.participantId)) {
+          try {
+            await client.setBoardKey(key(id), { ...current, waiting_for: [...current.waiting_for ?? [], client.participantId] }, { ifVersion: entry.version ?? 0 });
+          } catch (error) {
+            if (error instanceof RoomApiError && error.status === 409) continue;
+            throw error;
+          }
         }
+        if (unfinished((await client.board()).board).length === 0) continue;
+        throw new Error(`task ${id} waits for ${waiting.join(", ")}`);
       }
-      if (unfinished((await client.board()).board).length === 0) continue;
-      throw new Error(`task ${id} waits for ${waiting.join(", ")}`);
     }
     task = current;
     version = entry.version ?? 0;
@@ -487,17 +490,18 @@ function parseSprintSpec(spec) {
       fields.clear();
       continue;
     }
-    const field = line.match(/^  +(?:- )?(files|depends|role|worktree|brief|contract):\s*(.*?)\s*$/);
+    const field = line.match(/^  +(?:- )?(files|depends|role|worktree|brief|contract|needs):\s*(.*?)\s*$/);
     if (!current || !field || fields.has(field[1])) throw new Error(`invalid spec task line: ${line}`);
     const [, name, value] = field;
     fields.add(name);
-    if (!value && name !== "depends") throw new Error(`spec task ${current.id} needs ${name}`);
+    if (!value && name !== "depends" && name !== "needs") throw new Error(`spec task ${current.id} needs ${name}`);
     if (name === "files") current.files = value.split(",").map((file) => file.trim());
     if (name === "depends") current.depends_on = value ? value.split(",").map((id) => id.trim()) : [];
     if (name === "role") current.role = value;
     if (name === "worktree") current.worktree = value;
     if (name === "brief") current.brief = value;
     if (name === "contract") current.contract = value;
+    if (name === "needs") current.needs = value ? value.split(",").map((token) => token.trim()).filter(Boolean) : [];
   }
   if (!tasks.length) throw new Error("spec ## Tasks section is empty");
   const ids = new Set(tasks.map((task) => task.id));
@@ -853,6 +857,7 @@ function roundCost(value) {
 function boardKeyUrl(roomUrl, key2, ifVersion) {
   return `${roomUrl}/board/${encodeURIComponent(key2)}${ifVersion === void 0 ? "" : `?if_version=${ifVersion}`}`;
 }
+var TASK_ID = /^[a-z][a-z0-9_-]{0,31}$/;
 function shouldEncrypt(options) {
   return options.plain !== true && (options.forceEncrypt === true || options.intent !== "key.exchange");
 }
@@ -1083,6 +1088,58 @@ async function buildRoomClient(invite, participantId, initialCursor, cryptoSessi
     async transferHost(to) {
       return request(`${invite.room_url}/host`, invite, { method: "POST", participantId, body: { to } });
     },
+    async assign(taskId, workerId, options = {}) {
+      key(taskId);
+      if (!TASK_ID.test(workerId)) throw new Error("invalid participant id");
+      const reason = options.reason?.trim() || void 0;
+      const team = await client.team();
+      if (team.find((p) => p.id === participantId)?.role !== "host") {
+        const hostId = (await client.status()).room.host_id;
+        if (hostId !== participantId) throw new Error(`assign is host only: ask ${hostId} to assign ${taskId}`);
+      }
+      const target = team.find((p) => p.id === workerId);
+      if (!target) throw new Error(`${workerId} is not joined in this room: invite them first`);
+      if (target.state !== "free") throw new Error(`${workerId} is ${target.state}: assign only offers work to a free participant`);
+      const tasks = await listTasks(client);
+      const task = tasks.find((t) => t.id === taskId);
+      if (!task) throw new Error(`task ${taskId} does not exist`);
+      if (task.status !== "open") throw new Error(`task ${taskId} is ${task.status}${task.owner ? ` by ${task.owner}` : ""}: assign only takes open tasks`);
+      if (task.blocked_by.length) throw new Error(`task ${taskId} waits for ${task.blocked_by.join(", ")}`);
+      const conflicts = (await listReservations(client)).filter((r) => (!r.checkout || !target.checkout || r.checkout === target.checkout) && r.paths.some((path) => task.files.some((file) => pathsOverlap(path, file))) && !(r.by === workerId && r.reason === `task ${taskId}`));
+      if (conflicts.length) {
+        throw new Error(`task ${taskId} files overlap a live reservation: ${conflicts.map((r) => `${r.by}${r.reason ? ` (${r.reason})` : ""}`).join(", ")}`);
+      }
+      const entry = (await client.board()).board[key(taskId)];
+      if (!entry) throw new Error(`task ${taskId} does not exist`);
+      const at = (/* @__PURE__ */ new Date()).toISOString();
+      const next = {
+        ...entry.value,
+        status: "claimed",
+        owner: workerId,
+        assigned: workerId,
+        assigned_by: participantId,
+        assigned_at: at,
+        ...reason ? { assigned_reason: reason } : {}
+      };
+      await client.setBoardKey(key(taskId), next, { ifVersion: entry.version ?? 0 });
+      try {
+        await client.send(workerId, {
+          text: `${taskId} assigned to you${reason ? `: ${reason}` : ""}`,
+          task: taskId,
+          task_id: taskId,
+          title: task.title,
+          assigned: workerId,
+          from: participantId,
+          assigned_by: participantId,
+          assigned_at: at,
+          ...reason ? { reason } : {}
+        }, { intent: "task.assigned" });
+      } catch (error) {
+        await client.setBoardKey(key(taskId), entry.value, { ifVersion: (entry.version ?? 0) + 1 }).catch(() => void 0);
+        throw error;
+      }
+      return next;
+    },
     async extend(options = {}) {
       return request(
         invite.api.extend ?? `${invite.room_url}/extend`,
@@ -1259,6 +1316,12 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
     if (!rest[0]) throw new Error("claim needs: <id>");
     return { task: await claimTask(client, rest[0], options.repo ?? "") };
   }
+  if (cmd2 === "assign") {
+    const [id, worker, ...reasonWords] = rest;
+    if (!id || !worker || id.startsWith("--") || worker.startsWith("--")) throw new Error("assign needs: <task id> <participant> [reason]");
+    const reason = reasonWords.join(" ").trim();
+    return { task: await client.assign(id, worker, reason ? { reason } : {}) };
+  }
   if (cmd2 === "done") {
     const [id, ...args2] = rest;
     if (!id) throw new Error("done needs: <id> --summary <text> --commit <sha>... --tests <text> [--contract <text>]");
@@ -1375,6 +1438,35 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
     const [key2, ifVersion] = rest;
     if (!key2) throw new Error("board_delete needs: <key> [if_version]");
     return client.deleteBoardKey(key2, { ifVersion: ifVersion === void 0 ? void 0 : Number(ifVersion) });
+  }
+  if (cmd2 === "unassign") {
+    const [id, ...noteWords] = rest;
+    if (!id) throw new Error("unassign needs: <task id> [note]");
+    const note = noteWords.join(" ").trim() || void 0;
+    const team = await client.team();
+    const me = team.find((p) => p.id === client.participantId);
+    if (me?.role !== "host") {
+      const hostId = (await client.status()).room.host_id;
+      if (hostId !== client.participantId) throw new Error(`unassign is host only: ask ${hostId} to unassign ${id}`);
+    }
+    const board = await client.board();
+    const entry = board.board[`task.${id}`];
+    if (!entry) throw new Error(`task ${id} does not exist`);
+    const task = entry.value;
+    if (!task.assigned_by) {
+      throw new Error(`task ${id} was not assigned (no assigned_by field)`);
+    }
+    if (task.evidence) {
+      throw new Error(`task ${id} has evidence (already completed, cannot unassign)`);
+    }
+    const { owner, assigned, assigned_by, assigned_at, assigned_reason, ...taskRest } = task;
+    const unassigned = {
+      ...taskRest,
+      status: "open",
+      ...note ? { assigned_reason: note } : {}
+    };
+    await client.setBoardKey(`task.${id}`, unassigned, { ifVersion: entry.version });
+    return { task: unassigned };
   }
   if (cmd2 === "status") {
     const [state, status] = rest;
@@ -1998,7 +2090,7 @@ async function main() {
     output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true }));
     return;
   }
-  if (["webhook", "tasks", "claim", "done", "block", "unblock", "conflicts", "summary", "note", "decide", "compare", "verdict"].includes(cmd || "")) {
+  if (["webhook", "tasks", "claim", "assign", "unassign", "done", "block", "unblock", "conflicts", "summary", "note", "decide", "compare", "verdict"].includes(cmd || "")) {
     output(await roomCommand(client, cmd, rest));
     return;
   }
@@ -2131,7 +2223,7 @@ Usage: ${usageHelp("usage [report]")}`);
     output({ ok: true, expires_at: extended.expires_at });
     return;
   }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|extend|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|usage|report|invite-link|note|decide|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|extend|reserve|release|reservations|tasks|claim|assign|unassign|done|block|unblock|conflicts|summary|usage|report|invite-link|note|decide|leave`);
 }
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));

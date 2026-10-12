@@ -571,3 +571,183 @@ describe("CLI report command", () => {
     expect(unknown.stderr).toMatch(/Usage: [^\n]*\breport\b/);
   });
 });
+
+describe("CLI unassign command", () => {
+  const unassignRoomId = "unassign-1";
+  const unassignSecret = "test-room-secret-unassign-012345";
+  const tokens: Record<string, string> = { host: "host-token-unassign", worker: "worker-token-unassign" };
+  const hostDir = mkdtempSync(join(tmpdir(), "j01n-cli-unassign-host-"));
+  const workerDir = mkdtempSync(join(tmpdir(), "j01n-cli-unassign-worker-"));
+  const unassignCli = fileURLToPath(new URL("../../../packages/helper/src/cli.ts", import.meta.url));
+  const unassignTsx = fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url));
+  let unassignServer: ReturnType<typeof createServer>;
+  let unassignPort: number;
+  const roomUrl = () => `http://127.0.0.1:${unassignPort}/r/${unassignRoomId}`;
+  // Board state: tasks with various assignment states
+  const board: Record<string, { value: unknown; version: number }> = {
+    "task.assigned-no-evidence": {
+      value: {
+        title: "Assigned task without evidence",
+        files: ["src/a.ts"],
+        depends_on: [],
+        status: "claimed",
+        owner: "worker",
+        assigned: "worker",
+        assigned_by: "host",
+        assigned_at: "2026-01-15T12:00:00.000Z",
+      },
+      version: 1,
+    },
+    "task.assigned-with-evidence": {
+      value: {
+        title: "Assigned task with evidence",
+        files: ["src/b.ts"],
+        depends_on: [],
+        status: "claimed",
+        owner: "worker",
+        assigned: "worker",
+        assigned_by: "host",
+        assigned_at: "2026-01-15T12:00:00.000Z",
+        evidence: { commits: ["abc123"], tests: "passed" },
+      },
+      version: 1,
+    },
+    "task.not-assigned": {
+      value: {
+        title: "Task without assignment",
+        files: ["src/c.ts"],
+        depends_on: [],
+        status: "claimed",
+        owner: "worker",
+      },
+      version: 1,
+    },
+  };
+
+  const runIn = (dir: string) => async (...args: string[]): Promise<{ code: number; stdout: string; stderr: string; json: any }> => {
+    try {
+      const result = await exec(process.execPath, [unassignTsx, unassignCli, ...args], { cwd: dir, env: { ...process.env, J01N_KEY_DIR: dir } });
+      return { code: 0, stdout: result.stdout, stderr: result.stderr, json: JSON.parse(result.stdout) };
+    } catch (error) {
+      const failure = error as { code?: number; stdout?: string; stderr?: string };
+      return { code: failure.code ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "", json: undefined };
+    }
+  };
+  const host = runIn(hostDir);
+  const worker = runIn(workerDir);
+
+  const route = async (req: { url?: string; method?: string; headers?: Record<string, string | string[] | undefined> }, res: { statusCode: number; end: (body: string) => void }) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req as unknown as AsyncIterable<Buffer>) chunks.push(chunk as Buffer);
+    const body: unknown = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
+    const url = req.url || "";
+    const path = url.split("?")[0];
+    const reply = (value: unknown) => res.end(JSON.stringify(value));
+
+    if (req.method === "POST" && path === "/rooms") {
+      const api = (suffix: string) => `${roomUrl()}/${suffix}`;
+      return reply({
+        intro: "intro", next_step: "join", room_id: unassignRoomId,
+        room: { name: "unassign", purpose: "unassign", host_id: "host", max_participants: 8 },
+        join_secret: unassignSecret, room_url: roomUrl(),
+        api: { join: api("participants/{id}"), send: roomUrl(), read: roomUrl(), read_all: `${roomUrl()}?view=all`, events: api("events"), board: api("board"), participants: api("participants"), status: api("status"), extend: api("extend"), export: api("export"), leave: api("participants/{id}"), kick: api("participants/{id}"), close: roomUrl() },
+        skill: "skill", expires_at: new Date(Date.now() + 600_000).toISOString(),
+      });
+    }
+    if (path.startsWith(`/r/${unassignRoomId}/participants/`)) {
+      const id = decodeURIComponent(path.slice(`/r/${unassignRoomId}/participants/`.length));
+      if (tokens[id]) return reply({ ok: true, cursor: 0, participant_token: tokens[id], peers: [] });
+    }
+    if (path === `/r/${unassignRoomId}/participants`) {
+      return reply({
+        room: { room_id: unassignRoomId, name: "unassign", purpose: "unassign", host_id: "host", max_participants: 8 },
+        participants: [
+          { id: "host", role: "host", state: "free", status: "joined" },
+          { id: "worker", role: "builder", state: "free", status: "joined" },
+        ],
+      });
+    }
+    if (path === `/r/${unassignRoomId}/status`) {
+      return reply({
+        room: { room_id: unassignRoomId, name: "unassign", purpose: "unassign", host_id: "host", max_participants: 8 },
+        participants: [],
+        message_count: 0, last_seq: 0, oldest_seq: 0,
+        expires_at: new Date(Date.now() + 600_000).toISOString(),
+        closed: false,
+      });
+    }
+    if (path === `/r/${unassignRoomId}/board` && req.method === "GET") {
+      return reply({ board: structuredClone(board), board_schema: null });
+    }
+    if (path === `/r/${unassignRoomId}/asks`) return reply({ asks: [] });
+    if (path.startsWith(`/r/${unassignRoomId}/board/`) && req.method === "PUT") {
+      const key = decodeURIComponent(path.slice(`/r/${unassignRoomId}/board/`.length));
+      const ifVersion = url.includes("if_version=") ? Number(url.split("if_version=")[1]) : undefined;
+      const current = board[key];
+      if (ifVersion !== undefined && current && current.version !== ifVersion) {
+        res.statusCode = 409;
+        return reply({ error: "version conflict" });
+      }
+      board[key] = { value: body, version: (current?.version ?? 0) + 1 };
+      return reply({ ok: true, key, entry: board[key] });
+    }
+    if (path === `/r/${unassignRoomId}` && req.method === "POST") return reply({ ok: true, id: "msg-1", seq: 1 });
+    if (path === `/r/${unassignRoomId}` && req.method === "GET") return reply({ cursor: 0, messages: [] });
+    res.statusCode = 404;
+    res.end("not found");
+  };
+
+  beforeAll(async () => {
+    unassignServer = createServer((req, res) => { void route(req, res); });
+    await new Promise<void>((done) => unassignServer.listen(0, "127.0.0.1", done));
+    unassignPort = (unassignServer.address() as { port: number }).port;
+    const created = await host("create", `http://127.0.0.1:${unassignPort}`, JSON.stringify({ host_id: "host", room_name: "unassign" }));
+    expect(created.code, created.stderr).toBe(0);
+    writeFileSync(join(hostDir, "invite.json"), created.stdout);
+    writeFileSync(join(workerDir, "invite.json"), created.stdout);
+    const joinedHost = await host("join", "invite.json", "host");
+    expect(joinedHost.code, joinedHost.stderr).toBe(0);
+    const joinedWorker = await worker("join", "invite.json", "worker");
+    expect(joinedWorker.code, joinedWorker.stderr).toBe(0);
+  });
+
+  afterAll(async () => {
+    if (unassignServer?.listening) await new Promise<void>((done) => unassignServer.close(() => done()));
+  });
+
+  it("unassigns a task that was assigned without evidence", async () => {
+    const result = await host("unassign", "assigned-no-evidence", "releasing for testing");
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.json.task).toMatchObject({
+      status: "open",
+      assigned_reason: "releasing for testing",
+    });
+    expect(result.json.task.owner).toBeUndefined();
+    expect(result.json.task.assigned).toBeUndefined();
+    expect(result.json.task.assigned_by).toBeUndefined();
+  });
+
+  it("refuses to unassign a task that has evidence", async () => {
+    const result = await host("unassign", "assigned-with-evidence");
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/has evidence/);
+  });
+
+  it("refuses to unassign a task that was not assigned", async () => {
+    const result = await host("unassign", "not-assigned");
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/was not assigned/);
+  });
+
+  it("refuses unassign from a non-host", async () => {
+    const result = await worker("unassign", "assigned-no-evidence");
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/host only/);
+  });
+
+  it("lists unassign in the command usage", async () => {
+    const unknown = await host("unassign-not-a-command");
+    expect(unknown.code).not.toBe(0);
+    expect(unknown.stderr).toMatch(/Usage: [^\n]*\bunassign\b/);
+  });
+});

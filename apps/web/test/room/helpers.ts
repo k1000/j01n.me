@@ -125,10 +125,11 @@ export async function getRoomJson<T>(fixture: RoomFixture, path: string, partici
   return await res.json() as T;
 }
 
-export async function joinParticipant(fixture: RoomFixture, participantId: string): Promise<Response> {
+export async function joinParticipant(fixture: RoomFixture, participantId: string, profile?: Record<string, unknown>): Promise<Response> {
   const response = await fixture.session.fetch(new Request(`https://room${fixture.roomPath}/participants/${encodeURIComponent(participantId)}`, {
     method: "PUT",
     headers: { ...authHeaders(fixture.joinSecret), "content-type": "application/json" },
+    body: profile ? JSON.stringify(profile) : undefined,
   }));
   if (response.ok) {
     const body = await response.clone().json() as { participant_token?: string };

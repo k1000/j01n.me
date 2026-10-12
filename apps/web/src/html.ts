@@ -297,7 +297,7 @@ function roomPageStyles(): string {
   .kanban-card-owner { display: block; font-size: 0.85rem; opacity: 0.6; margin-top: 0.15rem; }
   .sprint-task-board { margin-bottom: 1rem; }
   .sprint-task-waiting { display: block; margin-top: 0.35rem; font-size: 0.85rem; }
-  .sprint-task-board .kanban-card-details > summary, .sprint-task-board .kanban-done-more > summary { min-height: 44px; display: flex; align-items: center; }
+  .sprint-task-board .kanban-done-more > summary { min-height: 44px; display: flex; align-items: center; }
   .sprint-task-board .kanban-card > .button { margin-top: 0.35rem; }
   .kanban-card-priority { display: block; width: fit-content; margin-top: 0.3rem; padding: 0 0.35rem; border: 1px solid currentColor; font-size: 0.75rem; opacity: 0.8; }
   .kanban-card-priority[data-priority="low"] { opacity: 0.55; }
@@ -317,8 +317,8 @@ function roomPageStyles(): string {
   .board-entry .board-value { grid-column: 1 / -1; }
   .board-value { min-width: 0; overflow-wrap: anywhere; }
   /* Secondary board detail sits behind toggles: the task editor, task descriptions and structured board keys. */
-  .task-editor-toggle, .board-entry-details, .kanban-card-details { min-width: 0; }
-  .task-editor-toggle > summary, .board-entry-details > summary, .kanban-card-details > summary { cursor: pointer; }
+  .task-editor-toggle, .board-entry-details { min-width: 0; }
+  .task-editor-toggle > summary, .board-entry-details > summary { cursor: pointer; }
   .task-editor-toggle { margin: 0 0 1rem; }
   .task-editor-toggle > summary { font-weight: 700; padding: 0.4rem 0; }
   .task-editor-toggle[open] > summary { margin-bottom: 0.75rem; }
@@ -332,8 +332,6 @@ function roomPageStyles(): string {
   .board-entry > .button { align-self: start; }
   .board-entry-details .board-meta { display: block; margin-left: 1.5rem; }
   .board-entry-details[open] > .board-value { margin-top: 0.5rem; }
-  .kanban-card-details { margin-top: 0.4rem; font-size: 0.85rem; }
-  .kanban-card-details > summary { opacity: 0.72; }
   .json-object { display: grid; gap: 0.4rem; margin: 0; }
   .json-object > div { display: grid; grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr); gap: 0.15rem 1rem; }
   .json-object dt { font-weight: 700; opacity: 0.72; }

@@ -5,7 +5,7 @@
 // and join the room as the host, seed worker identities into their own worktrees, give each worker a Herdr workspace
 // plus pane and an explicit task prompt carrying its board brief, optionally route role-tagged tasks to the free panes
 // that announce that role (--roster), hand the raw invite link to the owner as a file
-// body, keep the room invite alive while the host runs status, then rebase the reviewed task branches in dependency
+// body, top the room invite up from status while the board still holds work, then rebase the reviewed task branches in dependency
 // order onto main and open a merge request. With --ui-tester the room also gets one non-git participant: an inbox
 // identity, a private room profile in the keys dir and one Herdr pane polling the room in the ui-tester role.
 // Rules: never print a room credential, never integrate a dirty checkout, persist every step in sprint.json so an
@@ -25,9 +25,14 @@ const PARTICIPANT_ID = /^[a-z][a-z0-9_-]{0,31}$/;
 const MIN_GIT_MAJOR = 2;
 const MIN_GIT_MINOR = 25;
 // The 11.10 sprint board died silently: the invite TTL caps at 1h and nobody extended it. A host run of status is the
-// documented duty loop, so it tops the invite up whenever less than this window is left.
-const KEEPALIVE_WINDOW_MS = 15 * 60_000;
-const KEEPALIVE_EXTEND_MINUTES = 30;
+// documented duty loop, so every tick of it tops the invite up for as long as the board holds live work - the clock
+// alone says nothing about whether somebody is still working. An invite below this window is always topped, whatever
+// the tick says, so a loop that was interrupted cannot leave the room to expire mid-work.
+const KEEPALIVE_TICK_MS = 10 * 60_000;
+const KEEPALIVE_EXTEND_MINUTES = 60;
+// The room hears about the keepalive once an hour, not once a tick: workers need to know the room is alive, not read
+// the same line every 10 minutes. Both stamps live in sprint.json, so a crashed loop resumes without a second notice.
+const KEEPALIVE_NOTICE_MS = 60 * 60_000;
 // A prompt carries the board brief inline; the board key is named too so a worker can re-read the full text.
 const MAX_PROMPT_BRIEF = 900;
 // Generated outputs belong to integration, never to a task's files[].
@@ -589,7 +594,7 @@ async function start() {
   if (!gitSoft(process.cwd(), "rev-parse", "--verify", "--quiet", `${from}^{commit}`)) fail(`--from ${from} does not name a commit here`);
   const wtRoot = internal(worktreeRoot);
   if (dry) {
-    console.log(`Plan: preflight passed (git >= ${MIN_GIT_MAJOR}.${MIN_GIT_MINOR}, herdr socket, free worker names, private keys dir, internal worktree root); prune stale pointers in ${join(keys, ".j01n-rooms")}; create+join "${name}" as ${host} from ${basename(spec)} on ${base}; ${workers} worker(s) ${prefix}-1..${prefix}-${workers} in ${wtRoot}/<room>/<worker> off ${from}, each with its own Herdr workspace + pane carrying BASE_URL/J01N_TASK/J01N_WORKER/J01N_WORKER_CAPABILITIES in its env and prompted to open with /j01n tasks (listen ${prefix}-N --capabilities ${capabilities} only as the fallback when the pane did not auto-join), its task id and its board brief; register+invite each worker, seed its identity file into its worktree${uiTester ? `; then register+invite ${uiTester.name} as the ${UI_TESTER_ROLE}, join it on its own behalf into a private profile at ${join(keys, `${safeName(uiTester.name)}-profile.json`)} and start one more Herdr pane (cwd ${uiTester.cwd}) running python3 ${uiTester.script} --profile <that file> --interval ${uiTester.interval}, recorded in workers with role ${UI_TESTER_ROLE} so status shows it` : ""}; route open tasks with a role to free panes announcing that role when --roster auto (or by default once a role-tagged worker joins), leave claiming to the workers on --roster manual and stay silent about routing on --roster off; deliver the raw invite link as a file via ${inviteTo === "none" ? "(skipped)" : inviteTo}; status tops the invite up while under ${Math.round(KEEPALIVE_WINDOW_MS / 60_000)} minutes; state in ${stateFile()}. Nothing changed.`);
+    console.log(`Plan: preflight passed (git >= ${MIN_GIT_MAJOR}.${MIN_GIT_MINOR}, herdr socket, free worker names, private keys dir, internal worktree root); prune stale pointers in ${join(keys, ".j01n-rooms")}; create+join "${name}" as ${host} from ${basename(spec)} on ${base}; ${workers} worker(s) ${prefix}-1..${prefix}-${workers} in ${wtRoot}/<room>/<worker> off ${from}, each with its own Herdr workspace + pane carrying BASE_URL/J01N_TASK/J01N_WORKER/J01N_WORKER_CAPABILITIES in its env and prompted to open with /j01n tasks (listen ${prefix}-N --capabilities ${capabilities} only as the fallback when the pane did not auto-join), its task id and its board brief; register+invite each worker, seed its identity file into its worktree${uiTester ? `; then register+invite ${uiTester.name} as the ${UI_TESTER_ROLE}, join it on its own behalf into a private profile at ${join(keys, `${safeName(uiTester.name)}-profile.json`)} and start one more Herdr pane (cwd ${uiTester.cwd}) running python3 ${uiTester.script} --profile <that file> --interval ${uiTester.interval}, recorded in workers with role ${UI_TESTER_ROLE} so status shows it` : ""}; route open tasks with a role to free panes announcing that role when --roster auto (or by default once a role-tagged worker joins), leave claiming to the workers on --roster manual and stay silent about routing on --roster off; deliver the raw invite link as a file via ${inviteTo === "none" ? "(skipped)" : inviteTo}; status keeps the invite topped up by ${KEEPALIVE_EXTEND_MINUTES} minutes on every ${Math.round(KEEPALIVE_TICK_MS / 60_000)} minute tick while the board holds live work (one room notice per hour, and no extension once the board is done and integrated so idle rooms expire); state in ${stateFile()}. Nothing changed.`);
     return;
   }
   assertClean();
@@ -606,7 +611,8 @@ async function start() {
     state = saveState({
       version: 1, created_at: nowIso(), state_file: stateFile(), host_checkout: repoDir, keys_dir: keys, helper: helperPath, base,
       room_pointer: basename(pointerFiles(keys).at(-1) ?? ""), room_id: roomId, room_url: roomUrl, invite_link: created.invite_link,
-      // The keepalive loop needs the invite deadline the server handed back; a successful extend refreshes it.
+      // The keepalive loop needs the invite deadline the server handed back; each extend refreshes it, and
+      // last_extend_at is the tick stamp that keeps a resumed loop from re-extending early or re-announcing.
       expires_at: typeof created.expires_at === "string" ? created.expires_at : "",
       host, name, spec, from, remote: option("--remote", "origin"), capabilities, invite_to: inviteTo, worktree_root: wtRoot,
       agent_kind: process.env.J01N_AGENT_KIND || "pi", workers: [], delivered: false, assigns: {},
@@ -716,19 +722,68 @@ function openAsks(messages) {
 }
 const compactAsks = (asks) => (asks.length ? `asks:${asks.length} ${asks.map((ask) => `#${ask.seq ?? String(ask.ask_id).slice(0, 8)} ${ask.from}->${ask.owed_by}${ask.overdue ? " OVERDUE" : ""}`).join(",")}` : "asks:none");
 /**
- * Host keepalive: the room dies when its invite expires, and only the host can extend it, which is exactly who runs
- * status in the documented duty loop. Anything older than the window gets topped up and the new deadline is recorded.
+ * Board activity, read off the decrypted board: anything that is not `done` is work the room must survive. A blocked
+ * task counts while its dependencies are unresolved - and a blocked task whose deps are done still waits on the host
+ * to unblock it, so it is unfinished work too. Anything the board spells differently than these four statuses counts
+ * as open rather than silently stopping the keepalive.
  */
-function keepalive(state) {
+function boardActivity(tasks) {
+  const counts = { open: 0, claimed: 0, blocked: 0, done: 0 };
+  for (const task of tasks ?? []) {
+    const status = String(task?.status ?? "");
+    if (status === "done") counts.done++;
+    else if (status === "claimed") counts.claimed++;
+    else if (status === "blocked") counts.blocked++;
+    else counts.open++;
+  }
+  return counts;
+}
+const activityLine = (counts) => `open ${counts.open} claimed ${counts.claimed} blocked ${counts.blocked} done ${counts.done}`;
+/** finish records its push, its merge request and its decision, so any one of them means the work is integrated. */
+const isIntegrated = (state) => Boolean(state?.finish?.pushed || state?.finish?.mr || state?.finish?.reported);
+/**
+ * Host keepalive, driven by the board instead of the clock: the room must never expire while a peer is working, and
+ * must not be kept alive forever once nobody is. A tick of the documented duty loop (`status`, every ~10 minutes)
+ * tops the invite up by KEEPALIVE_EXTEND_MINUTES while the board holds live work - any open, claimed or blocked task.
+ * The server caps the invite, so re-running each tick just keeps it topped; an invite already inside the tick window
+ * is topped immediately whatever the last tick did, and between ticks a healthy invite is left alone so a host
+ * running status twice in a minute does not hammer the room. Once nothing on the board is live - every task done, or
+ * no tasks at all - extending stops and an idle room expires on its own, and the status line says whether integration
+ * is still owed, so the host knows what it is letting expire. Each top-up gets one in-room notice per hour, never one
+ * per tick. The deadline and both stamps live in sprint.json, so a crashed loop resumes without re-extending early
+ * and without a duplicate notice: the stamps are written before the send, which costs at most one notice instead of
+ * repeating one.
+ */
+function keepalive(state, tasks) {
   if (!state?.room_id) return "keepalive:no sprint state";
+  const counts = boardActivity(tasks);
+  const live = counts.open + counts.claimed + counts.blocked;
+  const activity = `activity:${activityLine(counts)}`;
+  if (!live) {
+    if (!tasks.length) return `keepalive:stopped, ${activity}, empty board; the room may expire`;
+    return `keepalive:stopped, ${activity}, ${isIntegrated(state) ? "integrated" : "all done, integration still owed"}; the room may expire`;
+  }
   const left = Date.parse(state.expires_at ?? "") - Date.now();
-  if (Number.isFinite(left) && left > KEEPALIVE_WINDOW_MS) return `keepalive:${Math.round(left / 60_000)}m left`;
+  const since = Date.parse(state.last_extend_at ?? "") - Date.now();
+  // Top the invite up once per duty-loop tick, and immediately when the deadline is unknown or about to lapse. A lost
+  // last_extend_at (crash, or a state file from before this loop) therefore reads as "extend now", never as "skip".
+  const topped = Number.isFinite(left) && left >= KEEPALIVE_TICK_MS;
+  const withinTick = Number.isFinite(since) && -since < KEEPALIVE_TICK_MS;
+  if (topped && withinTick) return `keepalive:live, ${Math.round(left / 60_000)}m left, ${activity}`;
   const extended = soft(state, ["extend", String(KEEPALIVE_EXTEND_MINUTES)]);
   const next = Date.parse(extended?.expires_at ?? "");
-  if (!Number.isFinite(next)) return `keepalive:EXTEND FAILED (invite ${Number.isFinite(left) ? `expires in ${Math.round(left / 60_000)}m` : "has no recorded deadline"}; extend is host-only, so run status as ${state.host ?? "the host"} or extend by hand)`;
+  if (!Number.isFinite(next)) {
+    return `keepalive:EXTEND FAILED with live work (${activity}; invite ${Number.isFinite(left) ? `expires in ${Math.round(left / 60_000)}m` : "has no recorded deadline"}; extend is host-only, so run status as ${state.host ?? "the host"} or extend by hand)`;
+  }
+  const at = nowIso();
   state.expires_at = extended.expires_at;
+  state.last_extend_at = at;
+  const noticed = Date.parse(state.keepalive_notice_at ?? "");
+  const notice = !Number.isFinite(noticed) || Date.now() - noticed >= KEEPALIVE_NOTICE_MS;
+  if (notice) state.keepalive_notice_at = at;
   saveState(state);
-  return `keepalive:extended, ${Math.round((next - Date.now()) / 60_000)}m left`;
+  if (notice) announce(state, `host keepalive: room extended to ${extended.expires_at}, ${activity}`);
+  return `keepalive:extended to ${extended.expires_at}, ${Math.round((next - Date.now()) / 60_000)}m left, ${activity}${notice ? ", noticed" : ""}`;
 }
 function compactUsage(usage) {
   if (!usage) return "usage:unavailable";
@@ -748,7 +803,7 @@ async function status() {
   const roles = roleRoster(state);
   // The routed column is the host's answer to "who was this handed to": read off the board, hidden when roster is off.
   const routed = state.roster?.mode === "off" ? null : routedTasks(state, summary.tasks ?? []);
-  console.log(`[${slug(state.room_id ?? "")} ${(state.name ?? "?").trim()}] ${compactTasks(summary.tasks ?? [])}${routed ? ` | ${compactRouted(routed)}` : ""} | ${compactAsks(asks)} | ${compactUsage(usage)} | report:${summary.report ? "yes" : "no"} decisions:${(summary.decisions ?? []).length} | ${participants.length} in, ${owner}${roles ? ` | roles:${roles}` : ""} | ${keepalive(state)}`);
+  console.log(`[${slug(state.room_id ?? "")} ${(state.name ?? "?").trim()}] ${compactTasks(summary.tasks ?? [])}${routed ? ` | ${compactRouted(routed)}` : ""} | ${compactAsks(asks)} | ${compactUsage(usage)} | report:${summary.report ? "yes" : "no"} decisions:${(summary.decisions ?? []).length} | ${participants.length} in, ${owner}${roles ? ` | roles:${roles}` : ""} | ${keepalive(state, summary.tasks ?? [])}`);
 }
 
 // ── answer ─────────────────────────────────────────────────────────────────────────────────────

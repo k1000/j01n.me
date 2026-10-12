@@ -11,6 +11,8 @@ export const LIVE_ROOM_STYLES = `
     --live-amber: #e9bc76;
     --live-gap: 2rem;
     --live-mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --live-state-top: 0.9rem;
+    --live-state-right: 0.75rem;
     color-scheme: dark;
     max-width: 72rem;
     padding: 2.5rem clamp(1rem, 3vw, 3rem) 4rem;
@@ -82,22 +84,29 @@ export const LIVE_ROOM_STYLES = `
     & .kanban-column:first-child { padding-left: 0; border-left: 0; }
     & .kanban-column-title { opacity: 1; color: var(--live-muted); font-size: 0.75rem; font-weight: 500; }
     & .kanban-column-title::before { content: none; }
-    & .kanban-card { padding: 0.4rem 0; border: 0; background: transparent; color: var(--live-ink); overflow-wrap: anywhere; }
+    & .kanban-card { position: relative; padding: 0.4rem 0.75rem 0.4rem 0; border: 0; background: transparent; color: var(--live-ink); overflow-wrap: anywhere; }
     & .kanban-card-title { font-size: 0.85rem; font-weight: 500; }
     & .kanban-card-owner { opacity: 1; color: var(--live-muted); font-size: 0.75rem; }
     & .live-people { display: grid; gap: 0; }
-    & .live-person { padding: 0.75rem 0; border-bottom: 1px dashed var(--live-line); }
-    & .live-person:first-child { padding-top: 0; }
+    & .live-person { position: relative; --live-state-top: 1.05rem; padding: 0.75rem 4.5rem 0.75rem 0.75rem; border-bottom: 1px dashed var(--live-line); }
+    & .live-person:first-child { padding-top: 0; --live-state-top: 0.35rem; }
     & .live-person:last-child { padding-bottom: 0; border-bottom: 0; }
+    // Busy reads at a glance: accent wash on the card plus a brighter rule, so the eye lands on who is working.
+    & .live-person[data-state="busy"] { padding-block: 0.85rem; background: color-mix(in srgb, var(--live-accent) 6%, transparent); border-left: 2px solid var(--live-accent); border-bottom: 1px solid color-mix(in srgb, var(--live-accent) 40%, transparent); }
     & .live-person header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
     & .live-person strong { color: var(--live-accent); font-size: 0.85rem; font-weight: 500; overflow-wrap: anywhere; }
     & .live-person p { margin: 0.25rem 0; color: var(--live-ink); font-size: 0.8125rem; overflow-wrap: anywhere; }
     & .live-person small { color: var(--live-muted); font-size: 0.75rem; }
-    & .live-state { color: var(--live-muted); font-size: 0.75rem; }
-    & .live-state::before { content: "["; }
-    & .live-state::after { content: "]"; }
-    & .live-state[data-state="free"] { color: var(--live-success); }
-    & .live-state[data-state="busy"] { color: var(--live-amber); }
+    & .live-state { position: absolute; top: var(--live-state-top); right: var(--live-state-right); display: inline-flex; align-items: center; gap: 0.3rem; color: var(--live-muted); font-size: 0.625rem; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; }
+    & .live-state.live-state-inline { position: static; }
+    & .live-state::before { content: ""; flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--live-line); }
+    & .live-state[data-state="busy"] { color: var(--live-accent); }
+    & .live-state[data-state="busy"]::before { background: var(--live-accent); animation: live-state-pulse 2s ease-in-out infinite; }
+    & .live-state[data-state="free"] { color: var(--live-muted); }
+    & .live-state[data-state="free"]::before { background: transparent; outline: 1px solid var(--live-muted); outline-offset: -1px; }
+    & .live-state[data-state="left"] { color: var(--live-muted); opacity: 0.7; }
+    & .live-state[data-state="left"]::before { background: var(--live-line); }
+    @media (prefers-reduced-motion: reduce) { & .live-state[data-state="busy"]::before { animation: none; transform: none; outline: 0; } }
     & .message-entry { padding: 1rem 1.25rem; border: 0; border-bottom: 1px dashed var(--live-line); }
     & .message-entry:last-child { border-bottom: 0; }
     & .message-entry summary { display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 2.5fr); gap: 0.35rem 1.5rem; align-items: baseline; }
@@ -122,5 +131,9 @@ export const LIVE_ROOM_STYLES = `
       & .message-entry summary { display: block; }
       & .message-route { display: block; margin: 0.25rem 0 0.5rem; }
     }
+  }
+  @keyframes live-state-pulse {
+    0%, 100% { transform: scale(1); outline: 1px solid transparent; outline-offset: 0; }
+    50% { transform: scale(1.3); outline: 1px solid color-mix(in srgb, var(--live-accent) 55%, transparent); outline-offset: 3px; }
   }
 `;

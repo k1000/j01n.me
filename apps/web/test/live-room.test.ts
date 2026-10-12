@@ -29,7 +29,8 @@ describe("optional live room view", () => {
     expect(LIVE_ROOM_STYLES).toContain('--live-bg: var(--console-ink)');
     expect(LIVE_ROOM_STYLES).toContain('--live-accent: var(--console-cream)');
     expect(LIVE_ROOM_STYLES).toContain('font-family: var(--live-mono)');
-    expect([...LIVE_ROOM_STYLES.matchAll(/border-radius:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['0']);
+    // Square and flat, with one deliberate exception: the 8px participant state dot.
+    expect([...LIVE_ROOM_STYLES.matchAll(/border-radius:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['0', '50%']);
     expect([...LIVE_ROOM_STYLES.matchAll(/box-shadow:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['none']);
     expect(LIVE_ROOM_STYLES).not.toContain('prefers-color-scheme');
   });
@@ -265,7 +266,8 @@ describe("live room usage display", () => {
     for (const token of new Set([...LIVE_ROOM_STYLES.matchAll(/var\((--live-[a-z-]+)\)/g)].map(match => match[1]))) {
       expect(LIVE_ROOM_STYLES).toContain(`${token}:`);
     }
-    expect([...LIVE_ROOM_STYLES.matchAll(/border-radius:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['0']);
+    // Square and flat, with one deliberate exception: the 8px participant state dot.
+    expect([...LIVE_ROOM_STYLES.matchAll(/border-radius:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['0', '50%']);
     expect([...LIVE_ROOM_STYLES.matchAll(/box-shadow:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['none']);
   });
 
@@ -469,5 +471,68 @@ describe("live room usage display", () => {
     expect(root.innerHTML).not.toContain("Room tokens");
     expect(root.innerHTML).toContain("Participant usage");
     expect(root.innerHTML).toContain("no usage reported");
+  });
+});
+
+describe("live participant state", () => {
+  async function renderPeople(participants: Record<string, Record<string, unknown>>) {
+    const root = { innerHTML: "", querySelectorAll: () => [] };
+    const { renderLiveRoom } = browserFunctions("  async function renderLiveRoom(", "  function subscribeRoomEvents(", {
+      root, esc: escape, escAttr: escape, extractValue: (value: unknown) => value,
+      renderBoardValue: () => "", renderKanbanBoard: () => "", renderMessage: async () => "",
+      liveActivity: [], participantId: "viewer", updateConnectionStatus: vi.fn(), connectionState: "connected",
+      document: { activeElement: null },
+    }, "return { renderLiveRoom };");
+    await renderLiveRoom({ room: {}, phase: "open", board: {}, participants, messages: [] });
+    return root.innerHTML;
+  }
+
+  it("marks the busy card with data-state, a state dot and an accessible label", async () => {
+    const html = await renderPeople({ agent: { id: "agent", display_name: "Agent", state: "busy", status: "Testing", role: "builder" } });
+    expect(html).toContain('<article class="live-person" data-state="busy"');
+    expect(html).toContain('<span class="live-state" data-state="busy" aria-hidden="true">Busy</span>');
+    expect(html).toContain('aria-label="Agent · Busy — Testing"');
+  });
+
+  it("renders free, left and unknown states, and left_at wins over the last known state", async () => {
+    const html = await renderPeople({
+      free: { id: "free", state: "free" },
+      gone: { id: "gone", state: "busy", left_at: "2026-01-01" },
+      odd: { id: "odd", state: "waiting" },
+    });
+    expect(html).toContain('<article class="live-person" data-state="free"');
+    expect(html).toContain(">Available</span>");
+    expect(html).toContain('<article class="live-person" data-state="left"');
+    expect(html).toContain(">Left</span>");
+    expect(html).toContain('data-state="waiting"');
+    expect((html.match(/<article class="live-person"/g) ?? []).length).toBe(3);
+    // Every card carries the state twice: on the article for the wash, on the dot for the pulse.
+    expect((html.match(/data-state="/g) ?? []).length).toBe(6);
+  });
+
+  it("escapes the accessible label so a display name cannot open a new attribute", async () => {
+    const html = await renderPeople({ agent: { id: "agent", display_name: 'A" onmouseover="alert(1)', state: "busy" } });
+    expect(html).toContain('aria-label="A&quot; onmouseover=&quot;alert(1) · Busy"');
+    expect(html).not.toContain('onmouseover="alert');
+  });
+
+  it("styles the dot as the only round surface and pauses it under prefers-reduced-motion", () => {
+    expect(LIVE_ROOM_STYLES).toMatch(/& \.live-person \{[^}]*position: relative/);
+    expect(LIVE_ROOM_STYLES).toMatch(/& \.live-state \{[^}]*position: absolute[^}]*top: var\(--live-state-top\)[^}]*right: var\(--live-state-right\)/);
+    // Reusable off the people list too: task cards are positioned hosts, and .live-state-inline opts out of the corner.
+    expect(LIVE_ROOM_STYLES).toMatch(/& \.kanban-card \{[^}]*position: relative/);
+    expect(LIVE_ROOM_STYLES).toContain('& .live-state.live-state-inline { position: static; }');
+    expect(LIVE_ROOM_STYLES).toMatch(/& \.live-state::before \{[^}]*width: 8px[^}]*height: 8px[^}]*border-radius: 50%/);
+    expect(LIVE_ROOM_STYLES).toContain('& .live-state[data-state="busy"]::before { background: var(--live-accent); animation: live-state-pulse 2s ease-in-out infinite; }');
+    expect(LIVE_ROOM_STYLES).toContain('& .live-person[data-state="busy"] { padding-block: 0.85rem; background: color-mix(in srgb, var(--live-accent) 6%, transparent); border-left: 2px solid var(--live-accent);');
+    // A resting room stays quiet: dim outline for free, flat gray for left.
+    expect(LIVE_ROOM_STYLES).toMatch(/& \.live-state\[data-state="free"\]::before \{ background: transparent; outline: 1px solid var\(--live-muted\)/);
+    expect(LIVE_ROOM_STYLES).toMatch(/& \.live-state\[data-state="left"\]::before \{ background: var\(--live-line\); \}/);
+    const pulse = LIVE_ROOM_STYLES.slice(LIVE_ROOM_STYLES.indexOf("@keyframes live-state-pulse"));
+    expect(pulse).toMatch(/transform: scale\(1\)[^}]*outline: 1px solid transparent/);
+    // The glow is an animated outline, so the page keeps its flat, shadowless terminal look.
+    expect(pulse).toMatch(/transform: scale\(1\.3\)[^}]*outline: 1px solid color-mix\(in srgb, var\(--live-accent\) 55%, transparent\)/);
+    expect(LIVE_ROOM_STYLES).toMatch(/@media \(prefers-reduced-motion: reduce\) \{ & \* \{ animation: none !important; \} \}/);
+    expect(LIVE_ROOM_STYLES).toMatch(/@media \(prefers-reduced-motion: reduce\) \{ & \.live-state\[data-state="busy"\]::before \{ animation: none; transform: none; outline: 0; \} \}/);
   });
 });

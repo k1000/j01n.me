@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { clientPage } from "./client-assets";
-import { claudeCodeMarkdown, cliMarkdown, mcpMarkdown, orchestrationMarkdown, piMarkdown, sdkMarkdown, securityMarkdown } from "./markdown-assets";
+import { claudeCodeMarkdown, cliMarkdown, mcpMarkdown, orchestrationMarkdown, piMarkdown, sdkMarkdown, securityMarkdown, startMarkdown } from "./markdown-assets";
 import { clientScript } from "@j01n/helper/client-script";
 import roomPageJs from "./room-page.js?raw";
 import { localCryptoPy, localCryptoSh, localCryptoTs } from "@j01n/helper/local-crypto-assets";
@@ -77,6 +77,13 @@ app.get("/client/CLI.md", (c) =>
   c.body(cliMarkdown, 200, {
     "content-type": "text/markdown; charset=utf-8",
     "content-disposition": 'inline; filename="CLI.md"',
+  }),
+);
+
+app.get("/client/START.md", (c) =>
+  c.body(startMarkdown, 200, {
+    "content-type": "text/markdown; charset=utf-8",
+    "content-disposition": 'inline; filename="START.md"',
   }),
 );
 

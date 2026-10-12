@@ -1,11 +1,12 @@
 // Sprint orchestrator flow end-to-end: scripts/sprint.mjs start/status/answer/finish against a real room,
 // on throwaway repos, with faked herdr/glab/hermes so no real Herdr session, ~/.hermes or Telegram is touched.
-// Covers the doctor preflight (refusal before any side effect), the board brief in worker prompts and the host
-// keepalive that extends a room whose invite is about to expire.
+// Covers the doctor preflight (refusal before any side effect), the board brief in worker prompts, the host
+// keepalive that extends a room whose invite is about to expire, and the opt-in --ui-tester wiring: inbox identity,
+// private snake_case profile in the keys dir, one python pane, the role recorded in sprint.json and shown by status.
 // Usage: node scripts/e2e/sprint.mjs <base> [helper]
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { delimiter } from "node:path";
@@ -54,6 +55,8 @@ if(argv[0]==="status"){
   print({id:"cli:agent:start",result:{agent:{name:argv[2],pane_id:flag("--pane"),agent:flag("--kind"),agent_status:"idle"}}});
 } else if(argv[0]==="agent"&&argv[1]==="prompt"){
   print({id:"cli:agent:prompt",result:{submitted:true,pane_id:argv[2]}});
+} else if(argv[0]==="pane"&&argv[1]==="run"){
+  print({id:"cli:pane:run",result:{ok:true,pane_id:argv[2],command:argv.slice(3)}});
 } else {
   print({id:"cli:fake",result:{ok:true,argv}});
 }`);
@@ -137,12 +140,12 @@ for (const [name, body] of [
 }
 const refusals = [];
 // Each case runs a real start against a scratch key directory, so a refusal proves itself by leaving nothing behind.
-const refuse = (label, patterns, patch = {}, prepare) => {
+const refuse = (label, patterns, patch = {}, prepare, extra = []) => {
   const keys2 = join(dir, `refuse-keys-${refusals.length}`);
   const state2 = join(keys2, "sprint.json");
   mkdirSync(keys2, { recursive: true, mode: 0o700 });
   if (prepare) prepare(keys2);
-  const stderr = bad(host, [orchestrator, "start", "--spec", "spec.md", "--name", `refuse ${refusals.length} ${tag}`, "--workers", "1", "--host", `${tag}-refuse-${refusals.length}`, "--worker-prefix", tag, "--invite-to", "none", "--from", "main", "--state", state2, "--helper", wrapper], { ...env, J01N_KEY_DIR: keys2, ...patch });
+  const stderr = bad(host, [orchestrator, "start", "--spec", "spec.md", "--name", `refuse ${refusals.length} ${tag}`, "--workers", "1", "--host", `${tag}-refuse-${refusals.length}`, "--worker-prefix", tag, "--invite-to", "none", "--from", "main", "--state", state2, "--helper", wrapper, ...extra], { ...env, J01N_KEY_DIR: keys2, ...patch });
   refusals.push({ state2, stderr });
   check(`${label}: refused before any side effect, one line per fix`, patterns.every((pattern) => pattern.test(stderr)), stderr.split("\n").filter(Boolean)[0] ?? "no refusal message");
 };
@@ -155,6 +158,10 @@ refuse("another live room owns the key directory", [/preflight: 1 other room\(s\
   mkdirSync(join(keys2, ".j01n-rooms"), { recursive: true, mode: 0o700 });
   writeFileSync(join(keys2, ".j01n-rooms", `${"f".repeat(64)}.json`), JSON.stringify({ room_url: "http://127.0.0.1:1/r/aaaa", participant_id: "other-room" }));
 });
+// The tester pane boots into a fixed script and cwd, so a missing pair must be caught before a room is wasted. The
+// problem count is 2 or 3 depending on whether the machine running this check has python3 at all.
+refuse("--ui-tester without its tester script or pane cwd", [/preflight: ui-tester script not found/, /preflight: the ui-tester pane cwd .+ is not a directory/, /preflight refused with [23] problem\(s\)/],
+  { J01N_UI_TESTER_SCRIPT: join(dir, "no-such-tester.py"), J01N_UI_TESTER_CWD: join(dir, "no-such-cwd") }, undefined, ["--ui-tester"]);
 check("a refused start leaves no state file, no room and no pane behind",
   refusals.every((entry) => !existsSync(entry.state2)) && !calls().some((call) => call.argv[0] === "create") &&
   !calls().some((call) => call.bin === "herdr" && call.argv[0] === "workspace"), JSON.stringify(calls().map((call) => `${call.bin}:${call.argv[0]}`)));
@@ -291,6 +298,78 @@ const resumed = sprint("start", "--spec", "spec.md", "--name", `e2e sprint ${tag
 check("start resumes the recorded room instead of creating a second one", state().room_id === first.room_id && /Resuming sprint/.test(resumed));
 check("resume repeats no side effects", herdrCalls().filter((call) => call.argv[0] === "workspace").length === 2 &&
   calls().filter((call) => call.bin === "hermes").length === 1 && jso(host, [helper, "tasks"], env).tasks.every((task) => task.status === "done"));
+
+// ── --ui-tester: one non-git participant, its private profile in the keys dir, one python pane ─────
+// The wiring is opt-in, so the plain sprint above proves the default: no role worker, no extra pane, no profile.
+check("a start without --ui-tester records no role peer, no profile and no python pane",
+  first.workers.every((worker) => !worker.role) && herdrCalls().filter((call) => call.argv[0] === "pane").length === 0 &&
+  !existsSync(join(keys, "ui-tester-profile.json")), JSON.stringify(first.workers.map((worker) => worker.id)));
+const orchestratorSource = readFileSync(orchestrator, "utf8");
+check("the ui-tester defaults to the ui-tester role, the host tester script, its pane cwd and a 20s poll",
+  orchestratorSource.includes('const UI_TESTER_ROLE = "ui-tester";') &&
+  orchestratorSource.includes('const UI_TESTER_SCRIPT = "/home/ubuntu/.hermes/scripts/j01n_ui_tester.py";') &&
+  orchestratorSource.includes('const UI_TESTER_CWD = "/home/ubuntu/.hermes/j01n";') &&
+  orchestratorSource.includes('option("--ui-tester-name", UI_TESTER_ROLE)') &&
+  orchestratorSource.includes("const UI_TESTER_INTERVAL = 20;") &&
+  orchestratorSource.includes('"python3", plan.script') && orchestratorSource.includes('"--interval", String(plan.interval)'));
+const testerDir = join(dir, "tester-cwd");
+mkdirSync(testerDir, { recursive: true, mode: 0o700 });
+const testerScript = join(dir, "j01n_ui_tester.py");
+writeFileSync(testerScript, "#!/usr/bin/env python3\n# fake tester: the pane start is recorded against fakes, never run\n");
+// Agent inbox names are global and first-come-first-served, so the check runs its tester under a throwaway name.
+const uiName = `${tag}-ui`;
+const uiArgs = ["start", "--spec", "spec.md", "--name", `e2e sprint ${tag}`, "--workers", "2", "--host", `${tag}-host`, "--worker-prefix", tag,
+  "--invite-to", "none", "--from", "main", "--remote", "origin", "--ui-tester", "--ui-tester-name", uiName];
+const uiRun = (extra = []) => out(host, [orchestrator, ...uiArgs, ...extra, "--helper", wrapper], { ...env, J01N_UI_TESTER_SCRIPT: testerScript, J01N_UI_TESTER_CWD: testerDir });
+const paneRuns = () => herdrCalls().filter((call) => call.argv[0] === "pane" && call.argv[1] === "run");
+const testerPanes = () => herdrCalls().filter((call) => call.argv[0] === "workspace" && call.argv[call.argv.indexOf("--cwd") + 1] === testerDir);
+const helperCalls = (command, who) => calls().filter((call) => call.bin === "helper" && call.argv[0] === command && (who ? call.argv.includes(who) : true));
+const uiCounts = () => [helperCalls("register", uiName).length, helperCalls("invite", uiName).length, helperCalls("join", uiName).length, testerPanes().length, paneRuns().length].join(",");
+const uiStarted = uiRun();
+const uiState = state();
+const ui = uiState.workers.at(-1);
+const profileFile = join(keys, `${uiName}-profile.json`);
+const profile = JSON.parse(readFileSync(profileFile, "utf8"));
+const uiSecret = (uiState.invite_link ?? "").split("#")[1] ?? "";
+check("--ui-tester registers the inbox identity into the keys dir and invites it by name",
+  existsSync(join(keys, `.j01n-agent-${uiName}.json`)) && helperCalls("register", uiName).length === 1 &&
+  helperCalls("invite", uiName).some((call) => call.argv[1] === uiState.host), JSON.stringify(helperCalls("register", uiName).map((call) => call.argv)));
+check("--ui-tester joins the room in its own name and announces the ui-tester role without a workspace",
+  helperCalls("join", uiName).length === 1 && helperCalls("join", uiName)[0].argv.includes("--no-workspace") &&
+  helperCalls("join", uiName)[0].argv.slice(-2).join(" ") === "--role ui-tester", JSON.stringify(helperCalls("join", uiName).map((call) => call.argv)));
+const uiTeam = () => (jso(host, [helper, "team", profileFile, uiName], env).team ?? []);
+check("the ui-tester is a room participant with the announced role",
+  uiTeam().some((peer) => peer.id === uiName && peer.role === "ui-tester"), JSON.stringify(uiTeam().map((peer) => [peer.id, peer.role ?? ""])));
+check("the tester profile is the snake_case room profile, private and without the join secret",
+  Object.keys(profile).sort().join(",") === "access,participant_id,participant_token" && profile.access === uiState.room_url &&
+  profile.participant_id === uiName && String(profile.participant_token ?? "").length > 8 && !profile.access.includes("#") &&
+  (statSync(profileFile).mode & 0o777) === 0o600, JSON.stringify({ keys: Object.keys(profile), access: profile.access?.slice(0, 24) }));
+// The join would leave a second active-room pointer in the keys dir; the host's own bare helper calls need exactly one.
+check("the keys dir keeps one unambiguous room pointer after the tester joined",
+  readdirSync(join(keys, ".j01n-rooms")).filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).length === 1,
+  JSON.stringify(readdirSync(join(keys, ".j01n-rooms"))));
+check("the tester gets one unfocused pane in the tester cwd that reads its keys from the sprint's keys dir",
+  testerPanes().length === 1 && testerPanes()[0].argv.includes("--no-focus") &&
+  testerPanes()[0].argv[testerPanes()[0].argv.indexOf("--label") + 1] === uiName &&
+  paneEnvs(testerPanes()[0]).includes(`J01N_KEY_DIR=${keys}`) && paneEnvs(testerPanes()[0]).some((value) => value.startsWith("BASE_URL=")) &&
+  paneEnvs(testerPanes()[0]).some((value) => value.startsWith("J01N_HELPER=")), JSON.stringify(testerPanes().map(paneEnvs)));
+check("herdr starts the python tester in that pane with the profile path and a 20s interval",
+  paneRuns().length === 1 && paneRuns()[0].argv[2] === ui.pane_id &&
+  paneRuns()[0].argv.slice(3).join(" ") === `python3 ${testerScript} --profile ${profileFile} --interval 20`, JSON.stringify(paneRuns().map((call) => call.argv)));
+check("sprint.json records the tester among the workers with its role and no task",
+  ui.id === uiName && ui.role === "ui-tester" && ui.task === null && ui.started === true && Boolean(ui.pane_id) &&
+  Boolean(ui.workspace_id) && ui.profile === profileFile && uiState.workers.slice(0, 2).every((worker) => !worker.role), JSON.stringify(ui));
+check("status shows the recorded ui-tester", new RegExp(`roles:ui-tester=${uiName}`).test(sprint("status")), sprint("status").trim());
+check("the wiring neither prints nor panes a room credential",
+  !uiStarted.includes(uiSecret) && !uiStarted.includes(uiState.invite_link) && !JSON.stringify(paneRuns()).includes(uiSecret) &&
+  !JSON.stringify(paneRuns()).includes(profile.participant_token) && !JSON.stringify(ui).includes(profile.participant_token) &&
+  !JSON.stringify(uiState.workers.slice(0, 2)).includes(profile.participant_token), uiStarted.split("\n").slice(-2)[0]?.slice(0, 90));
+const uiBefore = uiCounts();
+const uiAgain = (() => { try { return uiRun(); } catch (error) { return `ERROR ${String(error.stderr || error.message)}`; } })();
+check("a resumed --ui-tester start repeats no register, invite, join or pane",
+  /Resuming sprint/.test(uiAgain) && state().room_id === uiState.room_id && state().workers.at(-1).pane_id === ui.pane_id &&
+  uiCounts() === uiBefore, `${uiBefore} != ${uiCounts()} | ${uiAgain.slice(0, 160)}`);
+check("status still reads the room with the tester wired in", new RegExp(`roles:ui-tester=${uiName}`).test(sprint("status")), sprint("status").trim());
 
 console.log(results.every(Boolean) ? "SPRINT FLOW OK" : "SPRINT FLOW FAILED");
 if (!results.every(Boolean)) process.exitCode = 1;

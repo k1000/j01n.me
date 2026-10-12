@@ -3,7 +3,8 @@
 // It owns the canonical host flow so a host never improvises room setup: doctor the toolchain and the directory
 // (git, Herdr socket, free worker names, private keys dir, internal worktree root), prune stale room pointers, create
 // and join the room as the host, seed worker identities into their own worktrees, give each worker a Herdr workspace
-// plus pane and an explicit task prompt carrying its board brief, hand the raw invite link to the owner as a file
+// plus pane and an explicit task prompt carrying its board brief, optionally route role-tagged tasks to the free panes
+// that announce that role (--roster), hand the raw invite link to the owner as a file
 // body, keep the room invite alive while the host runs status, then rebase the reviewed task branches in dependency
 // order onto main and open a merge request. With --ui-tester the room also gets one non-git participant: an inbox
 // identity, a private room profile in the keys dir and one Herdr pane polling the room in the ui-tester role.
@@ -41,7 +42,13 @@ const UI_TESTER_ROLE = "ui-tester";
 const UI_TESTER_SCRIPT = "/home/ubuntu/.hermes/scripts/j01n_ui_tester.py";
 const UI_TESTER_CWD = "/home/ubuntu/.hermes/j01n";
 const UI_TESTER_INTERVAL = 20;
-const VALUED_FLAGS = ["--spec", "--name", "--workers", "--host", "--worker-prefix", "--from", "--remote", "--invite-to", "--capabilities", "--server", "--state", "--helper", "--title", "--kind", "--ui-tester-name"];
+const VALUED_FLAGS = ["--spec", "--name", "--workers", "--host", "--worker-prefix", "--from", "--remote", "--invite-to", "--capabilities", "--server", "--state", "--helper", "--title", "--kind", "--ui-tester-name", "--roster"];
+// Roster modes say who puts a task in front of a pane. `auto`: after the panes are up the host assigns every open,
+// unblocked task carrying a `role:` to a joined free pane announcing that role (an offer - the worker still claims).
+// `manual`: today's flow, workers claim off the board themselves. `off`: no routing, no routing log, no routed column.
+// Without the flag the default is auto as soon as the room has a role-tagged worker matching an open task's role,
+// and manual while it does not, so an existing sprint keeps behaving exactly as it did.
+const ROSTER_MODES = ["auto", "manual", "off"];
 const secrets = new Set();
 function fail(message, detail) { const error = new Error(message); if (detail) error.detail = detail; throw error; }
 /** Remember a value so it can be scrubbed even when another program echoes it back in an error. */
@@ -337,6 +344,127 @@ const roster = (state) => (state.workers ?? []).map((worker) => (worker.role ? `
 /** The role peers only: status gets this segment when a sprint runs with --ui-tester, and nothing otherwise. */
 const roleRoster = (state) => (state.workers ?? []).filter((worker) => worker.role).map((worker) => `${worker.role}=${worker.id}${worker.started ? "" : "(pending pane)"}`).join(",");
 /**
+ * Which role a worker pane answers to: what it announced in the room. Role peers (the ui-tester) are not candidates at
+ * all - they own no task - so the routing role always comes from the peer's own announcement.
+ */
+const workerRole = (worker, team) => {
+  const announced = team.find((peer) => peer.id === worker.id)?.role;
+  return typeof announced === "string" ? announced : "";
+};
+/** An open task's role only routes if some worker pane actually announces that role; that is what "role-tagged" means. */
+function rosterPlan(state, tasks, team, explicit) {
+  const roles = new Set((state.workers ?? []).filter((worker) => !worker.role).map((worker) => workerRole(worker, team)).filter(Boolean));
+  const matched = (tasks ?? []).some((task) => typeof task.role === "string" && task.role && task.status === "open" && roles.has(task.role));
+  if (explicit) return { mode: explicit, source: "flag", why: "--roster flag" };
+  // A mode the host chose with the flag sticks across resumes; a defaulted one is re-read, because workers join later.
+  if (state.roster?.source === "flag") return { mode: state.roster.mode, source: "flag", why: "recorded from --roster" };
+  return matched ? { mode: "auto", source: "default", why: "role-tagged workers in the room" }
+    : { mode: "manual", source: "default", why: "no worker announces a role an open task asks for" };
+}
+/**
+ * Host routing: offer every open, unblocked task carrying a role to a joined, free pane announcing that role, the
+ * pane paired with the task at start first. An assign is an offer, never a force - the worker still claims - so a
+ * refusal must not abort a start: each offer is soft, logged, and recorded in sprint.json under `assigns` so status
+ * can show the routed column and finish can hand an untouched offer back to the board.
+ */
+function routeRoster(state, summary) {
+  const team = summary.participants ?? [];
+  const tasks = summary.tasks ?? [];
+  const offers = (state.assigns ??= {});
+  const taken = new Set(Object.entries(offers).filter(([, offer]) => !offer.released).map(([, offer]) => offer.worker));
+  // A pane holding an unfinished claim is not idle, whatever its turn state says; our own offer already covers its task.
+  const busy = new Set(tasks.filter((task) => ["claimed", "blocked"].includes(task.status) && task.owner).map((task) => task.owner));
+  const routed = [];
+  const unrouted = [];
+  for (const task of orderedTasks(tasks)) {
+    if (typeof task.role !== "string" || !task.role || task.status !== "open" || (task.blocked_by ?? []).length) continue;
+    const prior = offers[task.id];
+    if (prior && !prior.released) continue; // the offer still stands, do not spam the pane with a second one
+    const worker = (state.workers ?? [])
+      .filter((entry) => !entry.role && !taken.has(entry.id) && !busy.has(entry.id) && workerRole(entry, team) === task.role &&
+        team.some((peer) => peer.id === entry.id && (peer.state || "free") === "free"))
+      .sort((a, b) => Number(b.task === task.id) - Number(a.task === task.id))[0];
+    if (!worker) { unrouted.push(`${task.id} has no free ${task.role} pane; left open`); continue; }
+    const offered = soft(state, ["assign", task.id, worker.id, `roster:auto: ${task.role} pane ${worker.id}`]);
+    if (!offered) { unrouted.push(`${task.id} was not offered to ${worker.id}: assign refused (or this helper build has no assign verb)`); continue; }
+    offers[task.id] = { worker: worker.id, role: task.role, at: nowIso(), released: null };
+    taken.add(worker.id);
+    routed.push(`${task.id}->${worker.id}`);
+    console.log(`${task.id} routed to ${worker.id} (role: ${task.role})`);
+  }
+  saveState(state);
+  for (const line of unrouted) console.log(`roster:auto: ${line}`);
+  // One finding for the room, and only when this run actually handed something over: workers claim from the board anyway.
+  if (routed.length) announce(state, `Sprint routing (roster:auto): offered ${routed.join(", ")}${unrouted.length ? `; ${unrouted.join("; ")}` : ""}. Claim to accept.`);
+  return { routed, unrouted };
+}
+/** Resolve the mode for this run and route when it is auto; `off` stays completely silent about routing. */
+function applyRoster(state, explicit) {
+  const summary = soft(state, ["summary"]);
+  if (!summary) { if (explicit !== "off") console.log("roster: the room is not readable right now, nothing was routed"); return; }
+  const plan = rosterPlan(state, summary.tasks, summary.participants ?? [], explicit);
+  state.roster = { ...plan, at: nowIso() };
+  saveState(state);
+  if (plan.mode === "off") return;
+  console.log(`roster:${plan.mode} (${plan.why})`);
+  if (plan.mode === "auto") routeRoster(state, summary);
+}
+/**
+ * Routed column for status: task.id -> the worker the board hands it to. `assigned` is exactly what the assign verb
+ * writes (and what a routed task.unblocked notice carries), so the board alone answers the question; the sprint's own
+ * still-standing offer covers a helper build whose assign verb writes only owner+status.
+ */
+function assignedWorker(state, task) {
+  if (typeof task.assigned === "string" && task.assigned) return task.assigned;
+  const offer = (state?.assigns ?? {})[task.id];
+  return offer && !offer.released && task.status === "claimed" && task.owner === offer.worker ? offer.worker : "";
+}
+const routedTasks = (state, tasks) => (tasks ?? []).filter((task) => task.status !== "done")
+  .map((task) => [task.id, assignedWorker(state, task)]).filter(([, worker]) => worker);
+const compactRouted = (entries) => `routed:${entries.length ? entries.map(([id, worker]) => `${id}@${worker}`).join(",") : "none"}`;
+/**
+ * Was an offer taken up? The assign verb marks its own write (`assigned` plus `assigned_by`), so an offer still stands
+ * while both name the same worker and that worker wrote nothing of their own on the key: no evidence, no summary, no
+ * block, no handover, and no file reservation under "task <id>" from the claim that accepts it. Without the verb's own
+ * mark the claim belongs to the worker and is never ours to hand back.
+ */
+function assignTaken(task, id, offer, reservations) {
+  if (!task || task.owner !== offer.worker) return true; // gone, or handed to somebody else: nothing to release
+  if (["done", "blocked"].includes(task.status) || task.summary || task.evidence) return true;
+  if ((reservations ?? []).some((entry) => entry.by === offer.worker && entry.reason === `task ${id}`)) return true;
+  return !(typeof task.assigned === "string" && task.assigned === offer.worker && typeof task.assigned_by === "string" && task.assigned_by);
+}
+/**
+ * Finish releases the offers nobody accepted back to open, with a note, so the task is claimable again instead of
+ * sitting claimed-by-host forever. `unassign <id> <note>` is the host-side inverse of the assign verb that the CLI task
+ * routes; on a helper build without it the release is REPORTED and never faked - the host is told which task key to set
+ * back to open by hand, and sprint.json keeps the offer live so the next finish retries it. A dry run only reports.
+ */
+function releaseStaleAssigns(state, summary, dry) {
+  const pending = Object.entries(state.assigns ?? {}).filter(([, offer]) => !offer.released);
+  if (!pending.length) return { released: [], stuck: [] };
+  const released = [];
+  const stuck = [];
+  for (const [id, offer] of pending) {
+    const task = (summary.tasks ?? []).find((entry) => entry.id === id);
+    if (assignTaken(task, id, offer, summary.reservations)) continue;
+    const note = `roster:auto offer to ${offer.worker} at ${offer.at} was not accepted`;
+    if (dry) { released.push(`${id}->${offer.worker}`); continue; }
+    if (!soft(state, ["unassign", id, note])) {
+      stuck.push(`${id}->${offer.worker}`);
+      console.log(`roster: ${id} stays claimed by ${offer.worker}: this helper build has no unassign verb, set task.${id} back to open by hand`);
+      continue;
+    }
+    offer.released = nowIso();
+    saveState(state);
+    released.push(`${id}->${offer.worker}`);
+    console.log(`${id} released to open: offer to ${offer.worker} was not accepted`);
+  }
+  if (released.length && !dry) announce(state, `Sprint finish: released the unaccepted assign(s) ${released.join(", ")} back to open with a note on each task.`);
+  if (stuck.length && !dry) announce(state, `Sprint finish: ${stuck.join(", ")} still holds an unaccepted assign this helper build cannot release; set those task keys back to open by hand.`);
+  return { released, stuck };
+}
+/**
  * The ui-tester wiring, run after the workers and recorded step by step so a resume repeats none of it: register the
  * inbox identity into the keys dir, invite it, join the room *on its behalf* (only the host holds the invitation, so
  * only it can hand out a participant token) and write the snake_case profile the python pane reads by path, then open
@@ -403,7 +531,7 @@ function installDeps(worktree) {
   finally { if (before && (!existsSync(manifest) || !readFileSync(manifest).equals(before))) writeFileSync(manifest, before); }
 }
 async function start() {
-  checkFlags(["--spec", "--name", "--workers", "--host", "--worker-prefix", "--from", "--remote", "--invite-to", "--capabilities", "--server", "--state", "--helper", "--dry-run", "--ui-tester", "--ui-tester-name"]);
+  checkFlags(["--spec", "--name", "--workers", "--host", "--worker-prefix", "--from", "--remote", "--invite-to", "--capabilities", "--server", "--state", "--helper", "--dry-run", "--ui-tester", "--ui-tester-name", "--roster"]);
   if (positional().length) fail("start takes flags only; see the usage line");
   const specArg = option("--spec", "");
   const name = option("--name", "").trim();
@@ -418,6 +546,8 @@ async function start() {
   const prefix = option("--worker-prefix", "worker");
   if (!PARTICIPANT_ID.test(`${prefix}-1`)) fail("--worker-prefix must produce valid participant ids");
   const capabilities = option("--capabilities", process.env.J01N_WORKER_CAPABILITIES || "code,files");
+  const rosterArg = option("--roster", undefined);
+  if (rosterArg !== undefined && !ROSTER_MODES.includes(rosterArg)) fail(`--roster must be one of ${ROSTER_MODES.join(", ")}`);
   const uiTesterFlag = args.includes("--ui-tester");
   const uiTesterName = option("--ui-tester-name", UI_TESTER_ROLE).trim();
   if (!uiTesterFlag && args.includes("--ui-tester-name")) fail("--ui-tester-name needs --ui-tester");
@@ -459,7 +589,7 @@ async function start() {
   if (!gitSoft(process.cwd(), "rev-parse", "--verify", "--quiet", `${from}^{commit}`)) fail(`--from ${from} does not name a commit here`);
   const wtRoot = internal(worktreeRoot);
   if (dry) {
-    console.log(`Plan: preflight passed (git >= ${MIN_GIT_MAJOR}.${MIN_GIT_MINOR}, herdr socket, free worker names, private keys dir, internal worktree root); prune stale pointers in ${join(keys, ".j01n-rooms")}; create+join "${name}" as ${host} from ${basename(spec)} on ${base}; ${workers} worker(s) ${prefix}-1..${prefix}-${workers} in ${wtRoot}/<room>/<worker> off ${from}, each with its own Herdr workspace + pane carrying BASE_URL/J01N_TASK/J01N_WORKER/J01N_WORKER_CAPABILITIES in its env and prompted to open with /j01n tasks (listen ${prefix}-N --capabilities ${capabilities} only as the fallback when the pane did not auto-join), its task id and its board brief; register+invite each worker, seed its identity file into its worktree${uiTester ? `; then register+invite ${uiTester.name} as the ${UI_TESTER_ROLE}, join it on its own behalf into a private profile at ${join(keys, `${safeName(uiTester.name)}-profile.json`)} and start one more Herdr pane (cwd ${uiTester.cwd}) running python3 ${uiTester.script} --profile <that file> --interval ${uiTester.interval}, recorded in workers with role ${UI_TESTER_ROLE} so status shows it` : ""}; deliver the raw invite link as a file via ${inviteTo === "none" ? "(skipped)" : inviteTo}; status tops the invite up while under ${Math.round(KEEPALIVE_WINDOW_MS / 60_000)} minutes; state in ${stateFile()}. Nothing changed.`);
+    console.log(`Plan: preflight passed (git >= ${MIN_GIT_MAJOR}.${MIN_GIT_MINOR}, herdr socket, free worker names, private keys dir, internal worktree root); prune stale pointers in ${join(keys, ".j01n-rooms")}; create+join "${name}" as ${host} from ${basename(spec)} on ${base}; ${workers} worker(s) ${prefix}-1..${prefix}-${workers} in ${wtRoot}/<room>/<worker> off ${from}, each with its own Herdr workspace + pane carrying BASE_URL/J01N_TASK/J01N_WORKER/J01N_WORKER_CAPABILITIES in its env and prompted to open with /j01n tasks (listen ${prefix}-N --capabilities ${capabilities} only as the fallback when the pane did not auto-join), its task id and its board brief; register+invite each worker, seed its identity file into its worktree${uiTester ? `; then register+invite ${uiTester.name} as the ${UI_TESTER_ROLE}, join it on its own behalf into a private profile at ${join(keys, `${safeName(uiTester.name)}-profile.json`)} and start one more Herdr pane (cwd ${uiTester.cwd}) running python3 ${uiTester.script} --profile <that file> --interval ${uiTester.interval}, recorded in workers with role ${UI_TESTER_ROLE} so status shows it` : ""}; route open tasks with a role to free panes announcing that role when --roster auto (or by default once a role-tagged worker joins), leave claiming to the workers on --roster manual and stay silent about routing on --roster off; deliver the raw invite link as a file via ${inviteTo === "none" ? "(skipped)" : inviteTo}; status tops the invite up while under ${Math.round(KEEPALIVE_WINDOW_MS / 60_000)} minutes; state in ${stateFile()}. Nothing changed.`);
     return;
   }
   assertClean();
@@ -479,7 +609,7 @@ async function start() {
       // The keepalive loop needs the invite deadline the server handed back; a successful extend refreshes it.
       expires_at: typeof created.expires_at === "string" ? created.expires_at : "",
       host, name, spec, from, remote: option("--remote", "origin"), capabilities, invite_to: inviteTo, worktree_root: wtRoot,
-      agent_kind: process.env.J01N_AGENT_KIND || "pi", workers: [], delivered: false,
+      agent_kind: process.env.J01N_AGENT_KIND || "pi", workers: [], delivered: false, assigns: {},
     });
     const ordered = orderedTasks(helper(state, ["tasks"], { echoError: false }).tasks ?? []);
     if (!ordered.length) fail(`the room has no tasks; ${basename(spec)} needs a "## Tasks" section`);
@@ -561,6 +691,8 @@ async function start() {
   // Room announcements are noise on a no-op resume, so only speak when this run actually did something.
   const branches = state.workers.filter((worker) => !worker.role).map((worker) => worker.branch).join(" ");
   if (acted) announce(state, `Sprint ${state.name} started: ${roster(state)}; branches ${branches} off ${state.from}.`);
+  // Routing runs last: by now the panes exist, were invited and had their first turn, so "free" means idle.
+  applyRoster(state, rosterArg);
   console.log(`Next: status, answer <msg-id> <text>, finish --dry-run.`);
 }
 
@@ -614,7 +746,9 @@ async function status() {
   const participants = summary.participants ?? [];
   const owner = participants.some((participant) => participant.role === "owner") ? "owner" : "no owner";
   const roles = roleRoster(state);
-  console.log(`[${slug(state.room_id ?? "")} ${(state.name ?? "?").trim()}] ${compactTasks(summary.tasks ?? [])} | ${compactAsks(asks)} | ${compactUsage(usage)} | report:${summary.report ? "yes" : "no"} decisions:${(summary.decisions ?? []).length} | ${participants.length} in, ${owner}${roles ? ` | roles:${roles}` : ""} | ${keepalive(state)}`);
+  // The routed column is the host's answer to "who was this handed to": read off the board, hidden when roster is off.
+  const routed = state.roster?.mode === "off" ? null : routedTasks(state, summary.tasks ?? []);
+  console.log(`[${slug(state.room_id ?? "")} ${(state.name ?? "?").trim()}] ${compactTasks(summary.tasks ?? [])}${routed ? ` | ${compactRouted(routed)}` : ""} | ${compactAsks(asks)} | ${compactUsage(usage)} | report:${summary.report ? "yes" : "no"} decisions:${(summary.decisions ?? []).length} | ${participants.length} in, ${owner}${roles ? ` | roles:${roles}` : ""} | ${keepalive(state)}`);
 }
 
 // ── answer ─────────────────────────────────────────────────────────────────────────────────────
@@ -667,7 +801,13 @@ async function finish() {
   const scan = await scanPointers(state.keys_dir ?? keysDir()).catch(() => ({ dead: [] }));
   for (const { file } of scan.dead) rmSync(file, { force: true });
   const summary = helper(state, ["summary"]);
-  const tasks = summary.tasks ?? [];
+  let tasks = summary.tasks ?? [];
+  // Offers nobody took up go back to the board first, so a refused finish leaves the task claimable, not stuck claimed.
+  const { released: stale, stuck } = releaseStaleAssigns(state, summary, dry);
+  if (dry && stale.length) console.log(`Dry run: would release the unaccepted assign(s) ${stale.join(", ")} back to open with a note.`);
+  if (stuck.length) console.log(`Roster: ${stuck.length} unaccepted assign(s) still need a manual release: ${stuck.join(", ")}.`);
+  // A release just changed the board, so re-read the list: the refusal below has to describe what the host can act on.
+  if (stale.length && !dry) tasks = soft(state, ["tasks"])?.tasks ?? tasks;
   const missing = tasks.filter((task) => task.status !== "done" || !task.owner || !task.evidence?.commits?.length || !task.evidence?.tests || !peerContractPassed(task.evidence));
   if (!tasks.length || missing.length) fail(`every task needs done evidence (commits, tests, explicit passed peer contract): ${missing.map((task) => `${task.id}:${task.status}`).join(", ") || "no tasks"}`);
   const openAsksList = openAsks(helper(state, ["inbox"]));
@@ -776,7 +916,7 @@ try {
   else if (action === "status") await status();
   else if (action === "answer") await answer();
   else if (action === "finish") await finish();
-  else fail("Usage: node scripts/sprint.mjs start --spec <spec.md> --name <room> --workers N [--host hermes-bot] [--worker-prefix worker] [--from main] [--remote origin] [--invite-to telegram:chat|none] [--capabilities code,files] [--ui-tester [--ui-tester-name ui-tester]] [--server url] [--state sprint.json] [--helper j01n.js] [--dry-run] | status | answer <msg-id|seq> <text> [--kind finding] | finish [--reviewed] [--title <text>] [--dry-run]");
+  else fail("Usage: node scripts/sprint.mjs start --spec <spec.md> --name <room> --workers N [--host hermes-bot] [--worker-prefix worker] [--from main] [--remote origin] [--invite-to telegram:chat|none] [--capabilities code,files] [--roster auto|manual|off] [--ui-tester [--ui-tester-name ui-tester]] [--server url] [--state sprint.json] [--helper j01n.js] [--dry-run] | status | answer <msg-id|seq> <text> [--kind finding] | finish [--reviewed] [--title <text>] [--dry-run]");
 } catch (error) {
   // SPRINT_DEBUG=1 keeps the stack for operators; the normal message stays one line.
   console.error(redact(process.env.SPRINT_DEBUG && error instanceof Error && error.stack ? error.stack : error?.message ?? String(error)));

@@ -1,8 +1,11 @@
 // Sprint orchestrator flow end-to-end: scripts/sprint.mjs start/status/answer/finish against a real room,
 // on throwaway repos, with faked herdr/glab/hermes so no real Herdr session, ~/.hermes or Telegram is touched.
 // Covers the doctor preflight (refusal before any side effect), the board brief in worker prompts, the host
-// keepalive that extends a room whose invite is about to expire, and the opt-in --ui-tester wiring: inbox identity,
-// private snake_case profile in the keys dir, one python pane, the role recorded in sprint.json and shown by status.
+// keepalive that extends a room whose invite is about to expire, the opt-in --ui-tester wiring: inbox identity,
+// private snake_case profile in the keys dir, one python pane, the role recorded in sprint.json and shown by status,
+// and the --roster modes: auto offers each open role-tagged task to a free pane announcing that role (shown by the
+// status routed column), manual leaves claiming to the workers, off says nothing, and an offer nobody took up is
+// handed back to the board by finish.
 // Usage: node scripts/e2e/sprint.mjs <base> [helper]
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -71,21 +74,70 @@ console.log("Creating merge request for "+(argv[argv.indexOf("--source-branch")+
 console.log("https://gitlab.com/acme/sprint/-/merge_requests/42");`);
 
 // ── helper wrapper: forwards to the real client and stands in for what other task branches own ──
-// `extend` reaches the shipped client only when integration regenerates it, and the board `brief` field belongs to
-// the spec-parser task. Both are answered here so the orchestrator contract (argv, sprint.json and prompts) is
-// checked against this checkout instead of a branch that has not landed yet.
+// `extend` reaches the shipped client only when integration regenerates it, the board `brief` field belongs to the
+// spec-parser task, `assign` belongs to the SDK/CLI task and `unassign` to the CLI board task. All four are answered
+// here so the orchestrator contract (argv, sprint.json, prompts and routing) is checked against this checkout instead
+// of a branch that has not landed. The board writes go straight to the room API with the participant token this keys
+// directory holds - the same PUT client.setBoardKey makes.
 const briefFor = (id) => `BOARD BRIEF ${id}: change only the files the task lists, then report done with evidence.`;
 const wrapper = join(dir, "helper-wrapper.cjs");
-writeFileSync(wrapper, `const cp=require("child_process"),fs=require("fs");
+const wrapperSource = `
+const cp=require("child_process"),fs=require("fs"),P=require("path");
 const briefFor=${briefFor.toString()};
 const argv=process.argv.slice(2);
 const mask=(value)=>typeof value==="string"&&(value.includes("#")||value.length>60)?"<redacted>":value;
 fs.appendFileSync(process.env.FAKE_LOG,JSON.stringify({bin:"helper",argv:argv.map(mask)})+"\\n");
 if(argv[0]==="extend"){const minutes=Number(argv[1]||5);console.log(JSON.stringify({ok:true,expires_at:new Date(Date.now()+minutes*60000).toISOString()}));process.exit(0);}
-const r=cp.spawnSync(process.execPath,[process.env.E2E_REAL_HELPER,...argv],{encoding:"utf8",env:process.env});
-let text=r.stdout||"";
-if(argv[0]==="tasks"&&process.env.FAKE_TASK_BRIEFS){const ids=process.env.FAKE_TASK_BRIEFS.split(",");try{const parsed=JSON.parse(text);for(const task of parsed.tasks||[])if(ids.includes(task.id))task.brief=briefFor(task.id);text=JSON.stringify(parsed);}catch{}}
-process.stdout.write(text);process.stderr.write(r.stderr||"");process.exit(r.status===null?1:r.status);\n`);
+const safe=(value)=>value.replace(/[^a-zA-Z0-9_-]/g,"_");
+// Resolved lazily: a room-create call runs through this wrapper before any pointer exists in the keys directory.
+const room=()=>{const dir=P.join(process.env.J01N_KEY_DIR||".",".j01n-rooms");const name=fs.readdirSync(dir).find((n)=>/^[a-f0-9]{64}\\.json$/.test(n));if(!name)throw Error("no active room pointer in "+dir);return JSON.parse(fs.readFileSync(P.join(dir,name),"utf8"));};
+const api=async(method,path,body)=>{
+  const roomInfo=room();
+  const token=JSON.parse(fs.readFileSync(P.join(process.env.J01N_KEY_DIR,".j01n-"+safe(new URL(roomInfo.room_url).pathname)+"-"+safe(roomInfo.participant_id)+".json"),"utf8")).participantToken;
+  const response=await fetch(roomInfo.room_url+path,{method,headers:Object.assign({authorization:"Bearer "+token},body===undefined?{}:{"content-type":"application/json"}),body:body===undefined?undefined:JSON.stringify(body)});
+  const text=await response.text();
+  if(!response.ok){process.stderr.write("helper-wrapper: room API "+method+" "+path+" -> "+response.status+" "+text+"\\n");process.exit(1);}
+  return text;
+};
+const callerId=()=>room().participant_id;
+const readEntry=async(key)=>JSON.parse(await api("GET","/board")).board[key];
+const writeEntry=(key,value,version)=>api("PUT","/board/"+encodeURIComponent(key)+(version===undefined?"":"?if_version="+version),value);
+const forward=()=>{
+  const r=cp.spawnSync(process.execPath,[process.env.E2E_REAL_HELPER,...argv],{encoding:"utf8",env:process.env});
+  let text=r.stdout||"";
+  if(argv[0]==="tasks"&&process.env.FAKE_TASK_BRIEFS){const ids=process.env.FAKE_TASK_BRIEFS.split(",");try{const parsed=JSON.parse(text);for(const task of parsed.tasks||[])if(ids.includes(task.id))task.brief=briefFor(task.id);text=JSON.stringify(parsed);}catch{}}
+  process.stdout.write(text);process.stderr.write(r.stderr||"");process.exitCode=r.status===null?1:r.status;
+};
+(async()=>{
+  // assign writes the board exactly the way the SDK/CLI verb defines it: claimed, owned, and the verb's own marks the
+  // orchestrator reads back for its routed column and its unaccepted-offer check.
+  if(argv[0]==="assign"){
+    const [id,worker,...reason]=argv.slice(1);
+    const key="task."+id;
+    const current=await readEntry(key);
+    if(!current){process.stderr.write("assign: no "+key+" on the board\\n");process.exit(1);}
+    process.stdout.write(await writeEntry(key,{...current.value,status:"claimed",owner:worker,assigned:worker,assigned_by:callerId(),assigned_at:new Date().toISOString(),assigned_reason:reason.join(" ")},current.version));
+    return;
+  }
+  // unassign is the host-side inverse the CLI board task adds: an offer nobody took goes back to open, every
+  // assignment marker is dropped and the note the host passed survives in assigned_reason.
+  if(argv[0]==="unassign"){
+    const [id,...note]=argv.slice(1);
+    const key="task."+id;
+    const current=await readEntry(key);
+    if(!current){process.stderr.write("unassign: no "+key+" on the board\\n");process.exit(1);}
+    if(!current.value.assigned_by){process.stderr.write("unassign: task "+id+" was not assigned\\n");process.exit(1);}
+    if(current.value.evidence){process.stderr.write("unassign: task "+id+" has evidence\\n");process.exit(1);}
+    const {owner,assigned,assigned_by,assigned_at,assigned_reason,...rest}=current.value;
+    process.stdout.write(await writeEntry(key,{...rest,status:"open",...(note.length?{assigned_reason:note.join(" ")}:{})},current.version));
+    return;
+  }
+  forward();
+})().catch((error)=>{process.stderr.write("helper-wrapper: "+String(error&&error.message||error)+"\\n");process.exit(1);});
+`;
+writeFileSync(wrapper, wrapperSource);
+// The stand-in must be valid JavaScript and must not need the board verbs this checkout's client does not dispatch.
+execFileSync(process.execPath, ["--check", wrapper], { stdio: ["ignore", "ignore", "pipe"] });
 chmodSync(wrapper, 0o755);
 
 // ── fixture repo: a throwaway checkout with a sprint spec and stubbed checks ───────────────────
@@ -370,6 +422,118 @@ check("a resumed --ui-tester start repeats no register, invite, join or pane",
   /Resuming sprint/.test(uiAgain) && state().room_id === uiState.room_id && state().workers.at(-1).pane_id === ui.pane_id &&
   uiCounts() === uiBefore, `${uiBefore} != ${uiCounts()} | ${uiAgain.slice(0, 160)}`);
 check("status still reads the room with the tester wired in", new RegExp(`roles:ui-tester=${uiName}`).test(sprint("status")), sprint("status").trim());
+
+// ── --roster: who puts a task in front of a pane ──────────────────────────────────────────────
+// auto = the host offers each open task carrying a role to a joined, free pane announcing that role; manual = the
+// workers claim off the board (the historical flow); off = no routing and no routed column. A role-tagged room makes
+// the default auto, so the flag only overrides what the room already says. Each case owns a keys directory, because
+// the helper needs exactly one active room pointer per directory. Task values are read back through the shipped
+// `tasks` verb: the board itself is the routing record, so nothing here needs a board read of its own.
+put("spec-roster.md", `# Sprint ${tag} roster\n\nProve the roster modes route tasks to panes.\n\n## Tasks\n\n- t1 API module\n  files: src/api.ts\n  role: builder\n- t2 UI module\n  files: src/ui.ts\n  role: builder\n- t3 Audit pass\n  files: docs/audit.md\n  role: auditor\n`);
+git(host, "add", "spec-roster.md");
+git(host, "commit", "-q", "-m", "Roster spec fixture");
+const rosterRoot = join(dir, "roster");
+mkdirSync(rosterRoot, { recursive: true });
+const assignLog = () => calls().filter((call) => call.bin === "helper" && call.argv[0] === "assign").map((call) => call.argv.join(" "));
+const unassignLog = () => calls().filter((call) => call.bin === "helper" && call.argv[0] === "unassign").map((call) => call.argv.join(" "));
+function rosterCase(label) {
+  const keys3 = join(rosterRoot, label);
+  const env3 = { ...env, J01N_KEY_DIR: keys3, J01N_WORKTREE_ROOT: join(rosterRoot, `wt-${label}`) };
+  mkdirSync(keys3, { recursive: true, mode: 0o700 });
+  const state3 = () => JSON.parse(readFileSync(join(keys3, "sprint.json"), "utf8"));
+  const run3 = (argv, helperArg) => out(host, [orchestrator, ...argv, "--helper", helperArg], env3);
+  return {
+    state: state3,
+    host: () => state3().host,
+    task: (id) => (jso(host, [helper, "tasks"], env3).tasks ?? []).find((task) => task.id === id) ?? {},
+    status: () => run3(["status"], wrapper).trim(),
+    // A worker pane joins for itself and announces the role its panes answer to.
+    join: (worker, role) => jso(worker.worktree, [helper, "join", state3().invite_link, worker.id, "--no-workspace", ...(role ? ["--role", role] : [])], workerEnv),
+    // A pane that holds a claim is busy: the real claim verb reserves its files and takes the task off the board.
+    claim: (worker, id) => jso(worker.worktree, [helper, "claim", id], workerEnv).task,
+    // Room-wide findings are read through a joined worker: the host does not receive its own announcements.
+    notes: (worker) => jso(worker.worktree, [helper, "inbox"], workerEnv)
+      .filter((message) => message.from === state3().host)
+      .map((message) => String(message.text ?? message.body?.text ?? ""))
+      .filter((text) => /rout|assign/i.test(text)).map((text) => text.slice(0, 120)),
+    start: (workers, prefix, extra, helperArg = wrapper) => run3(["start", "--spec", "spec-roster.md", "--name", `roster ${label} ${tag}`, "--workers", String(workers),
+      "--host", `${tag}${label}-host`, "--worker-prefix", prefix, "--invite-to", "none", "--from", "main", ...extra], helperArg),
+    // finish always refuses here (the tasks are unfinished), so both streams of that refusal carry the routing report.
+    attempt: (argv, helperArg = wrapper) => { try { return { ok: true, text: run3(argv, helperArg) }; } catch (error) { return { ok: false, text: `${error.stdout ?? ""}${error.stderr ?? ""}` }; } },
+  };
+}
+
+const autoCase = rosterCase("auto");
+const autoStart = autoCase.start(2, `${tag}ra`, ["--roster", "auto"]);
+const [autoOne, autoTwo] = autoCase.state().workers;
+check("roster:auto is recorded in sprint.json with the reason it chose it", autoCase.state().roster.mode === "auto" && autoCase.state().roster.source === "flag", JSON.stringify(autoCase.state().roster));
+check("roster:auto has nothing to offer before a single worker joined",
+  /roster:auto \(--roster flag\)/.test(autoStart) && assignLog().length === 0 && !autoStart.includes("routed to") && autoCase.task("t1").status === "open",
+  autoStart.split("\n").filter((line) => line.startsWith("roster:")).join(" | "));
+autoCase.join(autoOne, "builder");
+autoCase.join(autoTwo, "builder");
+check("a worker takes a builder task off the board for real", autoCase.claim(autoOne, "t2").owner === autoOne.id && autoCase.task("t2").status === "claimed", autoOne.id);
+const autoRouted = autoCase.start(2, `${tag}ra`, ["--roster", "auto"]);
+check("roster:auto skips the pane that already holds a claim and offers the idle one",
+  new RegExp(`t1 routed to ${autoTwo.id} \\(role: builder\\)`).test(autoRouted) && assignLog().length === 1 &&
+    assignLog()[0].split(" ").slice(0, 3).join(" ") === `assign t1 ${autoTwo.id}` && assignLog()[0].includes("roster:auto"),
+  JSON.stringify({ log: autoRouted.split("\n").filter((line) => /rout/i.test(line)), assigns: assignLog() }));
+check("the offer lands on the board the way the assign verb writes it: claimed, owned and marked",
+  autoCase.task("t1").status === "claimed" && autoCase.task("t1").owner === autoTwo.id && autoCase.task("t1").assigned === autoTwo.id &&
+    autoCase.task("t1").assigned_by === autoCase.host() && /roster:auto/.test(String(autoCase.task("t1").assigned_reason ?? "")),
+  JSON.stringify([autoCase.task("t1").status, autoCase.task("t1").owner, autoCase.task("t1").assigned, autoCase.task("t1").assigned_by]));
+check("an unmatched role leaves its task open and says so", /t3 has no free auditor pane; left open/.test(autoRouted) && autoCase.task("t3").status === "open",
+  autoRouted.split("\n").filter((line) => line.startsWith("roster:auto:")).join(" | "));
+const autoRepeat = autoCase.start(2, `${tag}ra`, ["--roster", "auto"]);
+check("a third auto start repeats no offer to a pane that already holds one", assignLog().length === 1 && !autoRepeat.includes("routed to"), JSON.stringify(assignLog()));
+check("status gains the routed column mapping the task to the worker it was handed to", new RegExp(`routed:t1@${autoTwo.id}`).test(autoCase.status()), autoCase.status());
+check("the routing offer is announced to the room once", autoCase.notes(autoTwo).filter((text) => /Sprint routing/.test(text)).length === 1, JSON.stringify(autoCase.notes(autoTwo)));
+const noVerb = autoCase.attempt(["finish", "--reviewed"], helper);
+check("finish on a helper build without the unassign verb reports the stuck offer instead of faking a release",
+  /every task needs done evidence/.test(noVerb.text) && /no unassign verb/.test(noVerb.text) && assignLog().length === 1 && unassignLog().length === 0 &&
+    autoCase.task("t1").status === "claimed" && !autoCase.state().assigns.t1.released,
+  noVerb.text.split("\n").filter((line) => /roster|evidence/.test(line)).join(" | "));
+const autoFinish = autoCase.attempt(["finish", "--reviewed"]);
+check("finish releases the offer nobody accepted back to open, keeping the note on the task",
+  /every task needs done evidence.*t1:open/.test(autoFinish.text) && unassignLog().length === 1 && /^unassign t1 /.test(unassignLog()[0]) &&
+    autoCase.task("t1").status === "open" && autoCase.task("t1").owner === undefined && autoCase.task("t1").assigned === undefined &&
+    autoCase.task("t1").assigned_by === undefined && /not accepted/.test(String(autoCase.task("t1").assigned_reason ?? "")) &&
+    Boolean(autoCase.state().assigns.t1.released),
+  JSON.stringify({ call: unassignLog(), task: autoCase.task("t1") }));
+check("finish says in the room that it released the unaccepted assign", autoCase.notes(autoTwo).some((text) => /released the unaccepted assign/.test(text)),
+  JSON.stringify(autoCase.notes(autoTwo)));
+check("a released task is no longer shown as routed and the worker's own claim stands", /routed:none/.test(autoCase.status()) && autoCase.task("t2").status === "claimed", autoCase.status());
+
+const defaultCase = rosterCase("default");
+const defaultFirst = defaultCase.start(1, `${tag}rb`, []);
+check("a room with no role-tagged worker defaults to manual and offers nothing",
+  /roster:manual \(no worker announces a role an open task asks for\)/.test(defaultFirst) && assignLog().length === 1 &&
+    defaultCase.state().roster.source === "default" && defaultCase.task("t1").status === "open",
+  defaultFirst.split("\n").filter((line) => line.startsWith("roster:")).join(" | "));
+const [defaultOne] = defaultCase.state().workers;
+defaultCase.join(defaultOne, "builder");
+const defaultAgain = defaultCase.start(1, `${tag}rb`, []);
+check("once a worker announces a matching role the same flagless start routes with it",
+  /roster:auto \(role-tagged workers in the room\)/.test(defaultAgain) && new RegExp(`t1 routed to ${defaultOne.id} \\(role: builder\\)`).test(defaultAgain) &&
+    assignLog().length === 2 && defaultCase.state().roster.mode === "auto" && defaultCase.task("t1").assigned === defaultOne.id,
+  JSON.stringify({ call: assignLog()[1], log: defaultAgain.split("\n").filter((line) => line.startsWith("roster:") || line.includes("routed to")) }));
+check("status shows a defaulted offer exactly like an explicit one", new RegExp(`routed:t1@${defaultOne.id}`).test(defaultCase.status()), defaultCase.status());
+
+const manualCase = rosterCase("manual");
+manualCase.start(2, `${tag}rc`, ["--roster", "manual"]);
+const [manualOne, manualTwo] = manualCase.state().workers;
+manualCase.join(manualOne, "builder");
+manualCase.join(manualTwo, "builder");
+const manualRun = manualCase.start(2, `${tag}rc`, ["--roster", "manual"]);
+check("roster:manual leaves every claim to the workers even with two matching free panes",
+  /roster:manual \(--roster flag\)/.test(manualRun) && !manualRun.includes("routed to") && assignLog().length === 2 &&
+    manualCase.task("t1").status === "open" && manualCase.task("t2").status === "open" && Object.keys(manualCase.state().assigns ?? {}).length === 0,
+  JSON.stringify({ log: manualRun.split("\n").filter((line) => line.startsWith("roster:")), assigns: assignLog().slice(2) }));
+check("manual still reports the routed column, empty until the board carries an assignment", /routed:none/.test(manualCase.status()), manualCase.status());
+const offRun = manualCase.start(2, `${tag}rc`, ["--roster", "off"]);
+check("roster:off routes nothing and logs nothing about routing", !/roster:|routed/i.test(offRun) && assignLog().length === 2,
+  offRun.split("\n").filter((line) => /roster|rout/i.test(line)).join(" | "));
+check("roster:off drops the routed column from status entirely", !manualCase.status().includes("routed"), manualCase.status());
 
 console.log(results.every(Boolean) ? "SPRINT FLOW OK" : "SPRINT FLOW FAILED");
 if (!results.every(Boolean)) process.exitCode = 1;

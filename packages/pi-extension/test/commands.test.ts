@@ -418,6 +418,41 @@ describe("pi-extension sessions", () => {
     expect(JSON.parse(await extension.runj01n(["wait"]))).toEqual({ timeout: true });
   });
 
+  it("ignores server-deleted room records when selecting an active room, without deleting local state", async () => {
+    const extension = await import("../commands");
+    await extension.runj01n(["join", ROOM, "secret", "pi-agent"]);
+    await extension.runj01n(["join", "https://j01n.me/r/room-2", "secret-2", "pi-agent"]);
+    const base = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url).endsWith("/r/room-2/status")
+      ? Promise.resolve(Response.json({ error: "room not found" }, { status: 404 })) : base(url, init));
+    calls.length = 0;
+    expect(JSON.parse(await extension.runj01n(["send", "all", "hi"]))).toMatchObject({ ok: true });
+    expect(calls).toContainEqual(expect.objectContaining({ method: "POST", url: ROOM }));
+    expect(readdirSync(".j01n-rooms")).toHaveLength(2);
+    expect(readdirSync(".").filter((file) => file.startsWith(".j01n-_r_") && file.endsWith("-pi-agent.json"))).toHaveLength(2);
+  });
+
+  it("does not count deleted rooms as active or hide uncertainty during outages", async () => {
+    const extension = await import("../commands");
+    await extension.runj01n(["join", ROOM, "secret", "pi-agent"]);
+    await extension.runj01n(["join", "https://j01n.me/r/room-2", "secret-2", "pi-agent"]);
+    const base = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url).endsWith("/status")
+      ? Promise.resolve(Response.json({ error: "room expired" }, { status: 410 })) : base(url, init));
+    await expect(extension.runj01n(["read"])).rejects.toThrow("no active room");
+    expect(readdirSync(".j01n-rooms")).toHaveLength(2);
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/r/room-2/status")) throw new Error("offline");
+      return base(url, init);
+    });
+    await expect(extension.runj01n(["read"])).rejects.toThrow("multiple rooms");
+  });
+
+  it("rejects a saved private key file as a room selector", async () => {
+    const extension = await import("../commands");
+    await expect(extension.runj01n(["read", ".j01n-_r_room-1-pi-agent.json", "pi-agent"])).rejects.toThrow(/key file.*invitation/);
+  });
+
   it("rejects short commands before a room has been joined", async () => {
     const extension = await import("../commands");
     await expect(extension.runj01n(["wait"])).rejects.toThrow("no active room");

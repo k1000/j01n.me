@@ -1,13 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { buildMinimalInvite, buildRoomClient, createRoom, deleteInvite, getClientUpdateNotice, inviteAgent, inviteLink, joinRoom, normalizeInvite, parseInviteLink, parseSprintSpec, registerAgent, resumeRoom, RoomApiError, SDK_CLIENT_PROTOCOL, sealForRoom, setAcceptFrom, waitForInvites } from "@j01n/sdk";
 import type { AgentIdentity, Workspace } from "@j01n/sdk";
 import { execFileSync } from "node:child_process";
 import { createSdkCryptoSession, type SdkCryptoSession } from "@j01n/sdk/crypto-session";
 import { roomReplyHint, roomReplyHints, runProfileCommand, runReservationCommand, runRoomCommand } from "@j01n/sdk/room-commands";
 import { notesAndDecisions } from "@j01n/sdk/notes";
+import { request } from "@j01n/sdk/transport";
 import { detectWorkspace, localStateDir } from "@j01n/sdk/node";
 import { checkConflicts } from "@j01n/sdk/conflicts-node";
 import type { Invite, RoomClient } from "@j01n/sdk";
@@ -82,9 +83,23 @@ function forgetRoom(invite: Invite, participantId: string): void {
   if (processRoomIdentities.get(invite.room_url) === participantId) processRoomIdentities.delete(invite.room_url);
 }
 
-function activeCommand(cmd: string, rest: string[]): ParsedArgs {
-  const rooms = activeRooms();
-  if (!rooms.length) throw new Error("no active room; join with an invitation first (from this directory)");
+async function activeCommand(cmd: string, rest: string[]): Promise<ParsedArgs> {
+  const savedRooms = activeRooms();
+  // Only disambiguation needs a remote check. A stale local marker is not proof that a room still exists.
+  const checked = savedRooms.length > 1 ? await Promise.all(savedRooms.map(async (room) => {
+    const file = keyFilePath(room.room_url, room.participant_id);
+    const saved: SavedSession = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+    if (!saved.participantToken || saved.roomUrl !== room.room_url) return room; // unknown, not safely discardable
+    try {
+      const invite = { ...buildMinimalInvite(room.room_url, "resume-only"), participant_token: saved.participantToken };
+      const status = await request<{ closed?: boolean; expires_at?: string }>(`${room.room_url}/status`, invite, { participantId: room.participant_id });
+      return status.closed || (status.expires_at && Date.parse(status.expires_at) <= Date.now()) ? null : room;
+    } catch (error) {
+      return error instanceof RoomApiError && (error.status === 404 || error.status === 410) ? null : room;
+    }
+  })) : savedRooms;
+  const rooms = checked.filter((room): room is ActiveRoom => room !== null);
+  if (!rooms.length) throw new Error("no active room; saved rooms are closed or expired. Join with a new invitation.");
   if (rooms.length > 1) throw new Error("multiple rooms are active; specify the invitation and participant_id");
   const room = rooms[0];
   const file = keyFilePath(room.room_url, room.participant_id);
@@ -116,9 +131,12 @@ const ACTIVE_COMMANDS = new Set([
 
 const AGENT_COMMANDS = new Set(["register", "allow", "invite", "listen", "herdr_agents", "invite_herdr", "worktrees", "use"]);
 
-function parseCommand(args: string[]): ParsedArgs {
+async function parseCommand(args: string[]): Promise<ParsedArgs> {
   const cmd = args[0];
   if (AGENT_COMMANDS.has(cmd)) return { cmd, rest: args.slice(1) };
+  if (ACTIVE_COMMANDS.has(cmd) && args[1] && /^\.j01n-.*\.json$/.test(basename(args[1]))) {
+    throw new Error("a saved .j01n-...json key file is not an invitation; pass a room link and participant_id instead");
+  }
   if (!ACTIVE_COMMANDS.has(cmd) || (args[1] && hasExplicitInvite(args[1]))) return parseArgs(args);
   if (process.env.ROOM_URL && process.env.JOIN_SECRET && process.env.ME) {
     return { cmd, roomUrlOrInvite: process.env.ROOM_URL, joinSecret: process.env.JOIN_SECRET,
@@ -804,7 +822,7 @@ export const J01N_HELP = [
 
 export async function runj01n(args: string[]): Promise<string> {
   if (!args.length || args[0] === "help" || args[0] === "--help") return J01N_HELP;
-  const parsed = parseCommand(args);
+  const parsed = await parseCommand(args);
   const handler = COMMANDS[parsed.cmd];
   if (!handler) throw new Error(`unknown command: ${parsed.cmd}. Run /j01n help (or j01n args=["help"]) for commands.`);
   return handler(parsed);

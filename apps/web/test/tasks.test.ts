@@ -163,3 +163,56 @@ describe("task primitives", () => {
     expect((await claimTask(a, "T2", "repo")).status).toBe("claimed");
   });
 });
+
+/** runRoomCommand only sends through the client, so a mocked send is enough to check the sealed request/verdict. */
+function speaker(send: ReturnType<typeof vi.fn>) {
+  const { client } = room();
+  return { ...client("speaker"), send } as unknown as RoomClient;
+}
+
+describe("compare verdicts", () => {
+  it("compare sends a room-wide compare.request that expects a reply", async () => {
+    const send = vi.fn().mockResolvedValue({ ok: true, id: "m-1", seq: 4 });
+    expect(await runRoomCommand(speaker(send), "compare", ["plan-a", "plan-b", "--criteria", "clarity, cost"])).toMatchObject({ ok: true, id: "m-1" });
+    expect(send).toHaveBeenCalledWith("all",
+      { a: "plan-a", b: "plan-b", criteria: ["clarity", "cost"] },
+      { intent: "compare.request", kind: "question", expectsReply: true });
+  });
+
+  it("compare --wait returns the request together with the replies that woke it", async () => {
+    const withWait = {
+      ...speaker(vi.fn()),
+      send: vi.fn().mockResolvedValue({ ok: true, id: "m-1", seq: 4 }),
+      async wait() { return { cursor: 5, event: "message" as const }; },
+      async read() { return [{ id: "m-2", seq: 5, from: "peer", intent: "compare.verdict", body: { of: "m-1", winner: "A", reason: "clearer" } }]; },
+    } as unknown as RoomClient;
+    expect(await runRoomCommand(withWait, "compare", ["x", "y", "--criteria", "cost", "--wait"])).toMatchObject({
+      sent: { id: "m-1" },
+      messages: [{ id: "m-2", reply: "/j01n send peer <text> --reply-to m-2" }],
+    });
+  });
+
+  it("compare refuses a missing candidate or an empty criteria list", async () => {
+    const send = vi.fn();
+    await expect(runRoomCommand(speaker(send), "compare", ["only-one", "--criteria", "cost"])).rejects.toThrow("compare needs: <a> <b> --criteria x,y [--wait]");
+    await expect(runRoomCommand(speaker(send), "compare", ["a", "b", "--criteria", " , "])).rejects.toThrow("compare needs:");
+    await expect(runRoomCommand(speaker(send), "compare", ["a", "b", "--criteria", "cost", "--to", "all"])).rejects.toThrow("compare needs:");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("verdict sends compare.verdict to all and closes the request ask", async () => {
+    const send = vi.fn().mockResolvedValue({ ok: true, id: "m-7", seq: 7 });
+    expect(await runRoomCommand(speaker(send), "verdict", ["m-1", "a", "--reason", "clearer and faster", "--reply-to", "m-1"])).toMatchObject({ ok: true, id: "m-7" });
+    expect(send).toHaveBeenCalledWith("all", { of: "m-1", winner: "A", reason: "clearer and faster" },
+      { intent: "compare.verdict", kind: "finding", replyTo: "m-1" });
+  });
+
+  it("verdict takes a seq, canonicalizes the winner, and validates the winner enum", async () => {
+    const send = vi.fn().mockResolvedValue({ ok: true, id: "m-8", seq: 8 });
+    await runRoomCommand(speaker(send), "verdict", ["12", "TIE", "--reason", "equal on every criterion"]);
+    expect(send).toHaveBeenCalledWith("all", { of: "12", winner: "tie", reason: "equal on every criterion" }, { intent: "compare.verdict", kind: "finding" });
+    await expect(runRoomCommand(speaker(vi.fn()), "verdict", ["12", "C", "--reason", "hmm"])).rejects.toThrow("verdict needs winner: A|B|tie");
+    await expect(runRoomCommand(speaker(vi.fn()), "verdict", ["12", "A"])).rejects.toThrow("verdict needs:");
+    await expect(runRoomCommand(speaker(vi.fn()), "verdict", ["A"])).rejects.toThrow("verdict needs:");
+  });
+});

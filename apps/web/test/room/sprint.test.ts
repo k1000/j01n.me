@@ -88,7 +88,7 @@ describe("sprint template", () => {
     await setTask(fix, "T1", { title: "Build API", files: [], depends_on: [], status: "done", summary: "ready" });
     const read = async (id: string) => (await getRoomJson<{ messages: Array<{ intent: string; to: string; body: { task_id: string } }> }>(fix, "/?view=all", id)).messages;
     expect((await read("agent-a")).filter((message) => message.intent === "task.unblocked")).toEqual([
-      expect.objectContaining({ to: "agent-a", body: { text: "T2 is now unblocked", task_id: "T2" } }),
+      expect.objectContaining({ to: "agent-a", body: { text: "T2 is now unblocked by T1: ready", task_id: "T2", blocked_by: ["T1"], summary: "ready", commit: "" } }),
     ]);
     expect((await read("host")).some((message) => message.intent === "task.unblocked")).toBe(false);
     expect((await read("agent-b")).some((message) => message.intent === "task.unblocked")).toBe(false);
@@ -103,7 +103,7 @@ describe("sprint template", () => {
     for (const id of ["agent-a", "agent-b"]) {
       const { messages } = await getRoomJson<{ messages: Array<{ intent: string; to: string; body: { task_id: string } }> }>(fix, "/?view=all", id);
       expect(messages.filter((message) => message.intent === "task.unblocked")).toEqual([
-        expect.objectContaining({ to: id, body: { text: "T2 is now unblocked", task_id: "T2" } }),
+        expect.objectContaining({ to: id, body: { text: "T2 is now unblocked by T1: ready", task_id: "T2", blocked_by: ["T1"], summary: "ready", commit: "" } }),
       ]);
     }
     const { board } = await getRoomJson<{ board: Record<string, { value: { status: string; waiting_for: string[] } }> }>(fix, "/board", "host");
@@ -122,5 +122,27 @@ describe("sprint template", () => {
     expect(() => applyTemplate("sprint", { tasks: [tasks[0], tasks[0]] })).toThrow("invalid sprint task");
     expect(() => applyTemplate("sprint", { tasks: [{ ...tasks[1], depends_on: ["missing"] }] })).toThrow("unknown or self dependency");
     expect(() => applyTemplate("sprint", { tasks: [{ ...tasks[0], files: ["apps/web/src/markdown-assets.ts"] }] })).toThrow("generated files");
+  });
+
+  it("includes predecessor id, summary and commit in the unblocked notice body", async () => {
+    const fix = await sprintRoom(tasks);
+    await setTask(fix, "T2", { title: "Use API", files: [], depends_on: ["T1"], status: "claimed", owner: "agent-a" });
+    await setTask(fix, "T1", {
+      title: "Build API", files: [], depends_on: [], status: "done", owner: "agent-a",
+      summary: "endpoint shipped",
+      evidence: { commits: ["8569dda1234567890abcdef"], tests: "vitest passed", contract: "passed" },
+    });
+    const { messages } = await getRoomJson<{ messages: Array<{ intent: string; to: string; body: Record<string, unknown> }> }>(fix, "/?view=all", "agent-a");
+    const unblocked = messages.filter((m) => m.intent === "task.unblocked");
+    expect(unblocked).toHaveLength(1);
+    const body = unblocked[0].body;
+    expect(body.task_id).toBe("T2");
+    expect(body.blocked_by).toEqual(["T1"]);
+    expect(body.summary).toBe("endpoint shipped");
+    expect(body.commit).toBe("8569dda1234567890abcdef");
+    expect(typeof body.text).toBe("string");
+    expect((body.text as string)).toContain("T1");
+    expect((body.text as string)).toContain("endpoint shipped");
+    expect((body.text as string)).toContain("8569dda");
   });
 });

@@ -10,6 +10,7 @@ import {
   RESERVATIONS_KEY,
   reservationChangeText,
   setBoardKeyData,
+  unblockedNoticeBody,
 } from "./board";
 import type { RoomEventBus } from "./events";
 import type { BoardChange } from "@j01n/sdk/types";
@@ -28,11 +29,12 @@ export class RoomBoardController {
     let current = await announceSystemMessage(this.storage, this.events, invite, "board.changed",
       { text: boardChangeText(updatedBy, changes, invite.board, board), updated_by: updatedBy, changes },
       { board }, { changes, updatedBy });
-    for (const { id, recipients } of newlyUnblocked(changes, invite.board, board)) {
+    for (const { id, recipients, caused_by } of newlyUnblocked(changes, invite.board, board)) {
       for (const recipient of recipients) {
         if (!current.participants[recipient] || current.participants[recipient].left_at) continue;
+        const body = unblockedNoticeBody(id, caused_by[0], board);
         current = await announceSystemMessage(this.storage, this.events, current, "task.unblocked",
-          { text: `${id} is now unblocked`, task_id: id }, {}, undefined, recipient);
+          body, {}, undefined, recipient);
       }
     }
   }
@@ -119,7 +121,7 @@ function taskValue(entry: BoardEntry | undefined): Record<string, unknown> | und
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-function newlyUnblocked(changes: Record<string, BoardChange>, before: InviteState["board"], after: InviteState["board"]): Array<{ id: string; recipients: string[] }> {
+function newlyUnblocked(changes: Record<string, BoardChange>, before: InviteState["board"], after: InviteState["board"]): Array<{ id: string; recipients: string[]; caused_by: string[] }> {
   const done = Object.keys(changes).filter((key) => key.startsWith("task.") && taskValue(before[key])?.status !== "done" && taskValue(after[key])?.status === "done").map((key) => key.slice(5));
   if (!done.length) return [];
   return Object.entries(after).flatMap(([key, entry]) => {
@@ -130,7 +132,7 @@ function newlyUnblocked(changes: Record<string, BoardChange>, before: InviteStat
       !deps.every((id) => typeof id === "string" && taskValue(after[`task.${id}`])?.status === "done") ||
       deps.every((id) => typeof id === "string" && taskValue(before[`task.${id}`])?.status === "done")) return [];
     const waiters = Array.isArray(task.waiting_for) ? task.waiting_for.filter((id): id is string => typeof id === "string") : [];
-    return [{ id: key.slice(5), recipients: [...new Set([...(typeof task.owner === "string" ? [task.owner] : []), ...waiters])] }];
+    return [{ id: key.slice(5), recipients: [...new Set([...(typeof task.owner === "string" ? [task.owner] : []), ...waiters])], caused_by: done.filter((id) => deps.includes(id)) }];
   });
 }
 
@@ -142,7 +144,9 @@ function boardChangeText(updatedBy: string, changes: Record<string, BoardChange>
     const prior = taskValue(before[key]);
     if (task && task.status !== prior?.status) {
       const id = key.slice(5);
-      if (task.status === "claimed") return `${String(task.owner ?? updatedBy)} claimed ${id}`;
+      // A seeded spec `contract:` is the task's required check: echo it so a late joiner sees it when claimed.
+      const contract = typeof task.contract === "string" && task.contract.trim() ? ` — contract: ${task.contract.trim().slice(0, 300)}` : "";
+      if (task.status === "claimed") return `${String(task.owner ?? updatedBy)} claimed ${id}${contract}`;
       if (task.status === "done") return `${id} done: ${String(task.summary ?? "completed").slice(0, 300)}`;
       if (task.status === "blocked") return `${id} blocked: ${String(task.blocked_reason ?? "no reason given").slice(0, 300)}`;
       if (task.status === "open") return `${id} is open`;

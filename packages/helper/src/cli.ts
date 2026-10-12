@@ -384,7 +384,7 @@ async function main() {
     output({ ok: joined, client_protocol: SDK_CLIENT_PROTOCOL, ...(getClientUpdateNotice() ? { client_update: getClientUpdateNotice() } : {}), open_questions: openQuestions, ...(openQuestionsError ? { open_questions_error: openQuestionsError } : {}), participant_id: me, joined, key_file: keyFile, local_key_created: created, key_announced: messages.some((m) => m.from === me && m.intent === "key.exchange"), known_peers: participants.participants.filter((p) => p.id !== me && p.public_key).map((p) => p.id), encrypted_messages_seen: encrypted.length, encrypted_messages_decryptable: decryptable, key_note: `Reuse this key file from the same directory to retain your ECDH keypair across sessions: ${keyFile}` }); return;
   }
   if (cmd === "kickoff") { if (!rest.length) throw Error("kickoff needs: <text or json>; run it with the room link or invitation (it needs the join secret)"); output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true })); return; }
-  if (["webhook", "tasks", "claim", "done", "block", "unblock", "conflicts", "summary", "note", "decide"].includes(cmd || "")) { output(await roomCommand(client, cmd!, rest)); return; }
+  if (["webhook", "tasks", "claim", "done", "block", "unblock", "conflicts", "summary", "note", "decide", "compare", "verdict"].includes(cmd || "")) { output(await roomCommand(client, cmd!, rest)); return; }
   if (cmd === "profile") {
     output(await runProfileCommand(client, rest, {
       modelFallback: process.env.J01N_MODEL || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || process.env.PI_MODEL || process.env.OPENCLAW_MODEL,
@@ -401,25 +401,96 @@ async function main() {
       repo: id, path: (path) => relative(root, resolve(path)) || ".", requirePaths: true, releaseReasonDelimiter: true,
     })); return;
   }
-  if (cmd === "usage") {
-    // Usage snapshots are room-sealed like the kickoff, workspaces and reservations: the key is always the room
-    // join secret. Whatever a command authenticated with (participant profile, env, active room), take the room key
-    // from the auth form itself or from the join secret saved in the key file - sealing with a participant token
-    // writes a row nobody holding the room link can open, and the room cannot hand that key back to a token.
-    const sealSecret = [joinSecret, state.joinSecret, positionalSecret].find((value) => value && value !== "resume-only") || "";
-    if (!sealSecret) throw Error("usage needs the room link or invitation (usage is sealed with the room key, and a participant token is not one): usage <room link> <me> [report ...], or run it in the directory that joined the room");
+  // Usage snapshots are room-sealed like the kickoff, workspaces and reservations: the key is always the room
+  // join secret. Whatever a command authenticated with (participant profile, env, active room), take the room key
+  // from the auth form itself or from the join secret saved in the key file - sealing with a participant token
+  // writes a row nobody holding the room link can open, and the room cannot hand that key back to a token.
+  // `report` reuses the same client so it can open sealed usage rows.
+  const sealSecret = [joinSecret, state.joinSecret, positionalSecret].find((value) => value && value !== "resume-only") || "";
+  const usageClient = async (missing: string) => {
+    if (!sealSecret) throw Error(missing);
+    if (sealSecret === client.invite.join_secret) return client;
     const sealInvite = buildMinimalInvite(roomUrl, sealSecret);
     sealInvite.participant_token = token || state.participantToken;
-    const usageClient = sealSecret === client.invite.join_secret ? client : await resumeRoom(sealInvite, me, session);
+    return resumeRoom(sealInvite, me, session);
+  };
+  if (cmd === "usage") {
+    if (!sealSecret) throw Error("usage needs the room link or invitation (usage is sealed with the room key, and a participant token is not one): usage <room link> <me> [report ...], or run it in the directory that joined the room");
+    const usageClientInstance = await usageClient("usage needs the room link or invitation (usage is sealed with the room key, and a participant token is not one): usage <room link> <me> [report ...], or run it in the directory that joined the room");
     const [sub, ...args] = rest;
     if (sub === "report") {
-      const row = await usageClient.reportUsage(usageDeltaFromFlags(args));
+      const row = await usageClientInstance.reportUsage(usageDeltaFromFlags(args));
       output({ ok: true, participant: row.participant, key: row.key, version: row.version, snapshot: row.snapshot, line: formatUsageRow(row) });
       return;
     }
     if (sub !== undefined) throw Error(`unknown usage command: ${sub}; expected "report" or nothing\nUsage: ${usageHelp("usage [report]")}`);
-    const { rows, totals, reported, stale } = await usageClient.usageReport();
+    const { rows, totals, reported, stale } = await usageClientInstance.usageReport();
     output({ rows, totals, reported, stale, lines: [...rows.map((row) => formatUsageRow(row)), formatUsage(totals, "room")] });
+    return;
+  }
+  if (cmd === "report") {
+    // One-command run record for the champion loop. Composes summary (tasks + participants) + inbox
+    // (verdicts from compare.verdict messages) + usage (rows + totals) into the schema champion_record.py emits,
+    // so the loop can compare records across sprints. Degrades gracefully: usage is null when the room key is
+    // unavailable (expired room, resume pointer only), verdicts is empty when there are none.
+    let outPath: string | undefined;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--out") {
+        if (outPath !== undefined) throw Error("report takes one --out path");
+        outPath = rest[++i];
+        if (!outPath || outPath.startsWith("--")) throw Error("--out needs a file path");
+      } else throw Error(`report needs: [--out <file>], got "${rest[i]}"`);
+    }
+    const [summary, messages, asks] = await Promise.all([
+      roomCommand(client, "summary", []) as Promise<{ tasks: Array<{ status: string; evidence?: { commits?: string[]; contract?: string } }>; participants: unknown[] }>,
+      client.read({ all: true, includeSelf: true }),
+      client.openQuestions().catch(() => []),
+    ]);
+    const WINNERS = ["A", "B", "tie"];
+    const verdicts = messages.filter((m) => m.intent === "compare.verdict").map((m) => {
+      const body = (m.body ?? {}) as { of?: unknown; winner?: unknown; reason?: unknown };
+      return {
+        seq: Number(m.seq ?? 0),
+        by: m.from,
+        of: typeof body.of === "string" ? body.of : null,
+        winner: WINNERS.includes(String(body.winner)) ? String(body.winner) as "A" | "B" | "tie" : null,
+        reason: typeof body.reason === "string" ? body.reason : null,
+      };
+    });
+    const tasks = summary.tasks;
+    const taskStats = {
+      total: tasks.length,
+      done: tasks.filter((t) => t.status === "done").length,
+      blocked: tasks.filter((t) => t.status === "blocked").length,
+      all_have_evidence: tasks.length ? tasks.every((t) => (t.evidence?.commits?.length ?? 0) > 0) : null,
+      all_contract_phrased: tasks.length ? tasks.every((t) => String(t.evidence?.contract ?? "").includes("check:contract --peer passed")) : null,
+    };
+    let usage: { rows: unknown[]; totals: unknown } | null = null;
+    try {
+      const usageReader = await usageClient("usage needs the room link or invitation (usage is sealed with the room key, and a participant token is not one): usage <room link> <me> [report ...], or run it in the directory that joined the room");
+      const { rows, totals } = await usageReader.usageReport();
+      usage = { rows, totals };
+    } catch { /* degrade to null when the room key is unavailable (expired room, resume pointer only) */ }
+    const { id: repoId, root: repoRoot } = repo();
+    const repoName = repoId ? repoId.split("/").pop()?.replace(/\.git$/, "") || repoId : repoRoot.split("/").pop() || repoRoot;
+    const record = {
+      generated_at: new Date().toISOString(),
+      family: `${repoName}:feature`,
+      room: client.invite.room_id,
+      repo: repoName,
+      workers: summary.participants.length,
+      tasks: taskStats,
+      usage,
+      open_asks: asks.length,
+      verdicts,
+    };
+    if (outPath) {
+      await fs.mkdir(resolve(outPath, ".."), { recursive: true });
+      await fs.writeFile(outPath, JSON.stringify(record, null, 2));
+      output({ ok: true, out: outPath, room: client.invite.room_id });
+    } else {
+      output(record);
+    }
     return;
   }
   if (cmd === "leave") { await client.leave({ release: rest.includes("--release") }); await fs.rm(activePath(roomUrl, me), { force: true }); output({ ok: true, left: true }); return; }
@@ -439,6 +510,6 @@ async function main() {
     output({ ok: true, expires_at: extended.expires_at });
     return;
   }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|extend|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|usage|invite-link|note|decide|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|extend|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|usage|report|invite-link|note|decide|leave`);
 }
 main().catch((error: unknown) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

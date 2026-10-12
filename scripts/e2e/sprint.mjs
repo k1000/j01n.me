@@ -83,17 +83,16 @@ console.log("Creating merge request for "+(argv[argv.indexOf("--source-branch")+
 console.log("https://gitlab.com/acme/sprint/-/merge_requests/42");`);
 
 // ── helper wrapper: forwards to the real client and stands in for what other task branches own ──
-// `extend` reaches the shipped client only when integration regenerates it, the board `brief` field belongs to the
-// spec-parser task, `assign` belongs to the SDK/CLI task and `unassign` to the CLI board task. All four are answered
-// here so the orchestrator contract (argv, sprint.json, prompts and routing) is checked against this checkout instead
-// of a branch that has not landed. The board writes go straight to the room API with the participant token this keys
-// directory holds - the same PUT client.setBoardKey makes.
+// `extend` returns a deterministic deadline; `assign` and `unassign` write through the room API so the test can
+// exercise the orchestrator without depending on a particular helper build. The fixture-only `board_delete` cleans
+// up task keys through that same API; the shipped CLI does not expose that verb.
 const briefFor = (id) => `BOARD BRIEF ${id}: change only the files the task lists, then report done with evidence.`;
 const wrapper = join(dir, "helper-wrapper.cjs");
 const wrapperSource = `
 const cp=require("child_process"),fs=require("fs"),P=require("path");
 const briefFor=${briefFor.toString()};
 const argv=process.argv.slice(2);
+if(argv[0]==="unassign"&&process.env.E2E_NO_UNASSIGN==="1"){process.stderr.write("unknown command: unassign\\n");process.exit(1);}
 const mask=(value)=>typeof value==="string"&&(value.includes("#")||value.length>60)?"<redacted>":value;
 fs.appendFileSync(process.env.FAKE_LOG,JSON.stringify({bin:"helper",argv:argv.map(mask)})+"\\n");
 if(argv[0]==="extend"){const minutes=Number(argv[1]||5);console.log(JSON.stringify({ok:true,expires_at:new Date(Date.now()+minutes*60000).toISOString()}));process.exit(0);}
@@ -141,11 +140,15 @@ const forward=()=>{
     process.stdout.write(await writeEntry(key,{...rest,status:"open",...(note.length?{assigned_reason:note.join(" ")}:{})},current.version));
     return;
   }
+  if(argv[0]==="board_delete"){
+    process.stdout.write(await api("DELETE","/board/"+encodeURIComponent(argv[1])));
+    return;
+  }
   forward();
 })().catch((error)=>{process.stderr.write("helper-wrapper: "+String(error&&error.message||error)+"\\n");process.exit(1);});
 `;
 writeFileSync(wrapper, wrapperSource);
-// The stand-in must be valid JavaScript and must not need the board verbs this checkout's client does not dispatch.
+// The stand-in must be valid JavaScript before any room or worktree is created.
 execFileSync(process.execPath, ["--check", wrapper], { stdio: ["ignore", "ignore", "pipe"] });
 chmodSync(wrapper, 0o755);
 
@@ -657,7 +660,7 @@ function rosterCase(label) {
       .filter((text) => text.startsWith("host keepalive:")),
     report: (worker, id) => jso(worker.worktree, [helper, "done", id, "--summary", `${id} done on the fake board`, "--commit", "0123456",
       "--tests", "unit ok", "--contract", "pnpm check:contract --peer passed"], workerEnv).task,
-    drop: (id) => jso(host, [helper, "board_delete", `task.${id}`], env3),
+    drop: (id) => jso(host, [wrapper, "board_delete", `task.${id}`], env3),
     // finish always refuses here (the tasks are unfinished), so both streams of that refusal carry the routing report.
     attempt: (argv, helperArg = wrapper) => { try { return { ok: true, text: run3(argv, helperArg) }; } catch (error) { return { ok: false, text: `${error.stdout ?? ""}${error.stderr ?? ""}` }; } },
   };
@@ -688,7 +691,11 @@ const autoRepeat = autoCase.start(2, `${tag}ra`, ["--roster", "auto"]);
 check("a third auto start repeats no offer to a pane that already holds one", assignLog().length === 1 && !autoRepeat.includes("routed to"), JSON.stringify(assignLog()));
 check("status gains the routed column mapping the task to the worker it was handed to", new RegExp(`routed:t1@${autoTwo.id}`).test(autoCase.status()), autoCase.status());
 check("the routing offer is announced to the room once", autoCase.notes(autoTwo).filter((text) => /Sprint routing/.test(text)).length === 1, JSON.stringify(autoCase.notes(autoTwo)));
-const noVerb = autoCase.attempt(["finish", "--reviewed"], helper);
+const noVerb = (() => {
+  process.env.E2E_NO_UNASSIGN = "1";
+  try { return autoCase.attempt(["finish", "--reviewed"]); }
+  finally { delete process.env.E2E_NO_UNASSIGN; }
+})();
 check("finish on a helper build without the unassign verb reports the stuck offer instead of faking a release",
   /every task needs done evidence/.test(noVerb.text) && /no unassign verb/.test(noVerb.text) && assignLog().length === 1 && unassignLog().length === 0 &&
     autoCase.task("t1").status === "claimed" && !autoCase.state().assigns.t1.released,
@@ -743,7 +750,8 @@ const keepCase = rosterCase("keep");
 keepCase.start(1, `${tag}rd`, ["--roster", "manual"]);
 const keepOne = keepCase.state().workers[0];
 keepCase.join(keepOne);
-const keepExtend = () => calls().filter((call) => call.bin === "helper" && call.argv[0] === "extend");
+const priorExtensions = calls().filter((call) => call.bin === "helper" && call.argv[0] === "extend").length;
+const keepExtend = () => calls().filter((call) => call.bin === "helper" && call.argv[0] === "extend").slice(priorExtensions);
 const keepNotices = () => keepCase.notices(keepOne);
 const minuteAhead = (minutes) => new Date(Date.now() + minutes * 60_000).toISOString();
 const minutesAgo = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();

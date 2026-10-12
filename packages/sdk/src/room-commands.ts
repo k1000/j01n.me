@@ -213,6 +213,46 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
     if (!key) throw new Error("board_delete needs: <key> [if_version]");
     return client.deleteBoardKey(key, { ifVersion: ifVersion === undefined ? undefined : Number(ifVersion) });
   }
+  if (cmd === "unassign") {
+    const [id, ...noteWords] = rest;
+    if (!id) throw new Error("unassign needs: <task id> [note]");
+    const note = noteWords.join(" ").trim() || undefined;
+    
+    // Host-only check
+    const team = await client.team();
+    const me = team.find((p) => p.id === client.participantId);
+    if (me?.role !== "host") {
+      const hostId = (await client.status()).room.host_id;
+      if (hostId !== client.participantId) throw new Error(`unassign is host only: ask ${hostId} to unassign ${id}`);
+    }
+    
+    // Read the task
+    const board = await client.board();
+    const entry = board.board[`task.${id}`];
+    if (!entry) throw new Error(`task ${id} does not exist`);
+    const task = entry.value as Record<string, unknown>;
+    
+    // Check if task was assigned (has assigned_by)
+    if (!task.assigned_by) {
+      throw new Error(`task ${id} was not assigned (no assigned_by field)`);
+    }
+    
+    // Check if task has evidence (meaning it was completed)
+    if (task.evidence) {
+      throw new Error(`task ${id} has evidence (already completed, cannot unassign)`);
+    }
+    
+    // Write the unassign: remove all assignment markers, set status=open, optionally set assigned_reason=note
+    const { owner, assigned, assigned_by, assigned_at, assigned_reason, ...taskRest } = task;
+    const unassigned = {
+      ...taskRest,
+      status: "open",
+      ...(note ? { assigned_reason: note } : {}),
+    };
+    
+    await client.setBoardKey(`task.${id}`, unassigned, { ifVersion: entry.version });
+    return { task: unassigned };
+  }
   if (cmd === "status") {
     const [state, status] = rest;
     if (!state || !status) throw new Error("status needs: <free|busy> <status_text>");

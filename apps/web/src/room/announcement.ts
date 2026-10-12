@@ -4,7 +4,7 @@ import type { InviteState, Recipient } from "../types";
 import type { RoomEventBus } from "./events";
 import { dispatchWebhooks } from "./hooks";
 import { createRoomMessage } from "./messages";
-import type { RoomStorage } from "./storage";
+import { touchRoomActivity, type RoomStorage } from "./storage";
 
 /** Persist one system announcement and deliver its message and optional board change to listeners. */
 export async function announceSystemMessage(
@@ -19,7 +19,7 @@ export async function announceSystemMessage(
 ): Promise<InviteState> {
   const seq = invite.nextSeq + 1;
   const message = createRoomMessage({ intent, body }, "system", to, seq);
-  const updated = { ...invite, ...patch, nextSeq: seq, messages: [...invite.messages, message].slice(-MAX_MESSAGES) };
+  const updated = touchRoomActivity({ ...invite, ...patch, nextSeq: seq, messages: [...invite.messages, message].slice(-MAX_MESSAGES) });
   await storage.putInvite(updated);
   if (boardChange) events.notifyBoard(Object.keys(boardChange.changes), boardChange.updatedBy, boardChange.changes);
   events.notifyMessage(message, seq);

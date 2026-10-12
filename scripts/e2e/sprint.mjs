@@ -1,7 +1,8 @@
 // Sprint orchestrator flow end-to-end: scripts/sprint.mjs start/status/answer/finish against a real room,
 // on throwaway repos, with faked herdr/glab/hermes so no real Herdr session, ~/.hermes or Telegram is touched.
 // Covers the doctor preflight (refusal before any side effect), the board brief in worker prompts, the host
-// keepalive that extends a room whose invite is about to expire, the opt-in --ui-tester wiring: inbox identity,
+// keepalive that tops the invite up from status while the decrypted board still holds live work (and stops once the
+// board is done and integrated, so idle rooms expire on their own), the opt-in --ui-tester wiring: inbox identity,
 // private snake_case profile in the keys dir, one python pane, the role recorded in sprint.json and shown by status,
 // and the --roster modes: auto offers each open role-tagged task to a free pane announcing that role (shown by the
 // status routed column), manual leaves claiming to the workers, off says nothing, and an offer nobody took up is
@@ -303,21 +304,24 @@ check("answer replies in the ask thread", /answered/.test(sprint("answer", Strin
 check("the ask is closed by that reply in the room history", jso(host, [helper, "inbox"], env).some((message) => message.reply_to === ask.id && message.from === first.host));
 check("status shows no unanswered asks afterwards", /asks:none/.test(sprint("status")));
 
-// ── host keepalive: status extends a room whose invite is about to expire ────────────────────
+// ── host keepalive: an all-done board stops extending so an idle room expires on its own ────────
+// The live-work half of the loop (a claimed task keeps the invite topped, one room notice per hour, no announce
+// spam between ticks) runs in its own room at the end of this file: the room here has already finished both tasks,
+// so status must NOT keep it alive - not even when the recorded deadline is missing or about to lapse.
 const patchState = (patch) => writeFileSync(join(keys, "sprint.json"), JSON.stringify({ ...state(), ...patch }, null, 2), { mode: 0o600 });
 const extendCalls = () => calls().filter((call) => call.bin === "helper" && call.argv[0] === "extend");
-patchState({ expires_at: new Date(Date.now() + 40 * 60_000).toISOString() });
-const healthy = sprint("status").trim();
-check("status leaves a healthy invite alone and reports the time left", /keepalive:40m left/.test(healthy) && extendCalls().length === 0, healthy);
-patchState({ expires_at: new Date(Date.now() + 5 * 60_000).toISOString() });
-const kept = sprint("status").trim();
-check("status extends through the helper while under 15 minutes are left",
-  /keepalive:extended, 30m left/.test(kept) && extendCalls().length === 1 && extendCalls()[0].argv.includes(String(30)), kept);
-check("the new deadline is written back so the next status sees a healthy invite",
-  Date.parse(state().expires_at ?? "") > Date.now() + 25 * 60_000 && !/EXTEND FAILED/.test(sprint("status")) && extendCalls().length === 1, state().expires_at);
-check("keepalive keeps status on one compact line", !kept.includes("\n") && kept.split(" | ").length >= 6, kept);
+const keepaliveNotices = () => jso(one.worktree, [helper, "inbox"], workerEnv)
+  .filter((message) => message.from === first.host)
+  .map((message) => String(message.text ?? message.body?.text ?? ""))
+  .filter((text) => text.startsWith("host keepalive:"));
+patchState({ expires_at: new Date(Date.now() + 5 * 60_000).toISOString(), last_extend_at: "" });
+const idle = sprint("status").trim();
+check("status stops extending a board whose work is all done, whatever the invite window says",
+  /keepalive:stopped, activity:open 0 claimed 0 blocked 0 done 2, all done, integration still owed; the room may expire/.test(idle) && extendCalls().length === 0, idle);
 patchState({ expires_at: "" });
-check("an unknown deadline is treated as urgent, not silently skipped", /keepalive:/.test(sprint("status")) && extendCalls().length === 2, state().expires_at);
+check("an unknown deadline still does not extend an idle board (crash-safe, no announce either)",
+  /keepalive:stopped/.test(sprint("status")) && extendCalls().length === 0 && keepaliveNotices().length === 0, state().expires_at);
+check("keepalive keeps status on one compact line", !idle.includes("\n") && idle.split(" | ").length >= 6, idle);
 
 // ── finish ─────────────────────────────────────────────────────────────────────────────────────
 const integration = `sprint/${(first.room_id ?? "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12)}`;
@@ -344,6 +348,12 @@ check("finish leaves the room open for owner review", /stays open/.test(finished
 check("a second finish repeats no irreversible work", /merge request/.test(sprint("finish", "--reviewed")) &&
   calls().filter((call) => call.bin === "glab").length === 1 && readFileSync(contractLog, "utf8").trim().split("\n").filter(Boolean).length === 1 &&
   /decisions:1/.test(sprint("status")));
+// Integrated and nothing left to do: the keepalive stays stopped, so this room now expires on its own schedule.
+patchState({ expires_at: new Date(Date.now() + 30_000).toISOString(), last_extend_at: "" });
+const afterFinish = sprint("status").trim();
+check("a done and integrated board stops the keepalive instead of topping it up forever",
+  /keepalive:stopped, activity:open 0 claimed 0 blocked 0 done 2, integrated; the room may expire/.test(afterFinish) &&
+    extendCalls().length === 0 && keepaliveNotices().length === 0, afterFinish);
 
 // ── crash-resume: start again against the same state file ──────────────────────────────────────
 const resumed = sprint("start", "--spec", "spec.md", "--name", `e2e sprint ${tag}`, "--workers", "2", "--host", `${tag}-host`, "--worker-prefix", tag, "--invite-to", "telegram:e2e", "--from", "main", "--remote", "origin");
@@ -458,6 +468,15 @@ function rosterCase(label) {
       .filter((text) => /rout|assign/i.test(text)).map((text) => text.slice(0, 120)),
     start: (workers, prefix, extra, helperArg = wrapper) => run3(["start", "--spec", "spec-roster.md", "--name", `roster ${label} ${tag}`, "--workers", String(workers),
       "--host", `${tag}${label}-host`, "--worker-prefix", prefix, "--invite-to", "none", "--from", "main", ...extra], helperArg),
+    // Keepalive is the host's own loop: it patches the case's sprint.json and reads the room through a joined worker.
+    patch: (patch) => writeFileSync(join(keys3, "sprint.json"), JSON.stringify({ ...state3(), ...patch }, null, 2), { mode: 0o600 }),
+    notices: (worker) => jso(worker.worktree, [helper, "inbox"], workerEnv)
+      .filter((message) => message.from === state3().host)
+      .map((message) => String(message.text ?? message.body?.text ?? ""))
+      .filter((text) => text.startsWith("host keepalive:")),
+    report: (worker, id) => jso(worker.worktree, [helper, "done", id, "--summary", `${id} done on the fake board`, "--commit", "0123456",
+      "--tests", "unit ok", "--contract", "pnpm check:contract --peer passed"], workerEnv).task,
+    drop: (id) => jso(host, [helper, "board_delete", `task.${id}`], env3),
     // finish always refuses here (the tasks are unfinished), so both streams of that refusal carry the routing report.
     attempt: (argv, helperArg = wrapper) => { try { return { ok: true, text: run3(argv, helperArg) }; } catch (error) { return { ok: false, text: `${error.stdout ?? ""}${error.stderr ?? ""}` }; } },
   };
@@ -534,6 +553,76 @@ const offRun = manualCase.start(2, `${tag}rc`, ["--roster", "off"]);
 check("roster:off routes nothing and logs nothing about routing", !/roster:|routed/i.test(offRun) && assignLog().length === 2,
   offRun.split("\n").filter((line) => /roster|rout/i.test(line)).join(" | "));
 check("roster:off drops the routed column from status entirely", !manualCase.status().includes("routed"), manualCase.status());
+
+// ── host keepalive while work is live: extend per tick, one room notice per hour ───────────────
+// The other half of the loop needs a board with live work, so it gets its own room: three open tasks, a real claim,
+// and the fake `extend` the wrapper answers for the shipped client. What the host must never do is keep a finished
+// room alive forever, or read the room the same announcement every 10 minutes.
+const keepCase = rosterCase("keep");
+keepCase.start(1, `${tag}rd`, ["--roster", "manual"]);
+const keepOne = keepCase.state().workers[0];
+keepCase.join(keepOne);
+const keepExtend = () => calls().filter((call) => call.bin === "helper" && call.argv[0] === "extend");
+const keepNotices = () => keepCase.notices(keepOne);
+const minuteAhead = (minutes) => new Date(Date.now() + minutes * 60_000).toISOString();
+const minutesAgo = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+// A tick that already ran, with the deadline still far out: report the live board, spend no extend.
+keepCase.patch({ expires_at: minuteAhead(58), last_extend_at: minutesAgo(2) });
+const toppedUp = keepCase.status();
+check("a live board topped up this tick reports the time left instead of hammering extend",
+  /keepalive:live, 58m left, activity:open 3 claimed 0 blocked 0 done 0/.test(toppedUp) && keepExtend().length === 0, toppedUp);
+// The duty-loop tick itself: 60 minutes more invite, the deadline and the tick stamp in sprint.json, one notice.
+keepCase.patch({ last_extend_at: minutesAgo(11) });
+const firstTick = keepCase.status();
+check("a tick of status extends a live board by 60 minutes through the helper",
+  keepExtend().length === 1 && keepExtend()[0].argv.join(" ") === "extend 60" &&
+    /keepalive:extended to \S+, 60m left, activity:open 3 claimed 0 blocked 0 done 0, noticed/.test(firstTick), firstTick);
+check("the extend writes the deadline, the tick stamp and the notice stamp back to sprint.json (crash-safe)",
+  Date.parse(keepCase.state().expires_at) > Date.now() + 55 * 60_000 &&
+    Date.parse(keepCase.state().last_extend_at) > Date.now() - 60_000 &&
+    Number.isFinite(Date.parse(keepCase.state().keepalive_notice_at)), JSON.stringify({ expires: keepCase.state().expires_at, last: keepCase.state().last_extend_at, noticed: keepCase.state().keepalive_notice_at }));
+const notices = keepNotices();
+check("the keepalive notice names the new deadline and the board counts once",
+  notices.length === 1 && /^host keepalive: room extended to \d{4}-\d{2}-\d{2}T\S+, activity:open 3 claimed 0 blocked 0 done 0$/.test(notices[0]), JSON.stringify(notices));
+// Later ticks keep topping the invite up, and say nothing.
+keepCase.patch({ expires_at: minuteAhead(40), last_extend_at: minutesAgo(11) });
+const secondTick = keepCase.status();
+keepCase.patch({ last_extend_at: minutesAgo(11) });
+const thirdTick = keepCase.status();
+check("repeated ticks extend again to keep the room topped without repeating the notice",
+  keepExtend().length === 3 && /keepalive:extended/.test(secondTick) && /keepalive:extended/.test(thirdTick) &&
+    !/, noticed/.test(thirdTick) && keepNotices().length === 1, JSON.stringify({ line: thirdTick, notices: keepNotices().length }));
+// A claimed task is live work, and the counts in the line follow the board.
+keepCase.claim(keepOne, "t1");
+keepCase.patch({ expires_at: minuteAhead(40), last_extend_at: minutesAgo(11) });
+const claimedTick = keepCase.status();
+check("a board with a claimed task keeps the invite topped and shows the claim in the counts",
+  keepExtend().length === 4 && /activity:open 2 claimed 1 blocked 0 done 0/.test(claimedTick), claimedTick);
+// A deadline inside the tick window is topped immediately, whatever the last tick stamped.
+keepCase.patch({ expires_at: minuteAhead(4) });
+const urgentTick = keepCase.status();
+check("an invite about to lapse is topped at once, not left for the next tick",
+  keepExtend().length === 5 && /keepalive:extended/.test(urgentTick) && Date.parse(keepCase.state().expires_at) > Date.now() + 55 * 60_000, urgentTick);
+// The hourly cadence: past an hour since the last notice, the next tick announces once more.
+keepCase.patch({ expires_at: minuteAhead(40), last_extend_at: minutesAgo(11), keepalive_notice_at: minutesAgo(61) });
+const hourlyTick = keepCase.status();
+check("the notice comes once an hour, not once a tick", keepNotices().length === 2 && /, noticed/.test(hourlyTick), JSON.stringify(keepNotices()));
+// Everything done: the loop stops, so the room is free to expire, and it says what is still owed.
+for (const id of ["t1", "t2", "t3"]) {
+  if (keepCase.task(id).status !== "done") { if (keepCase.task(id).status !== "claimed") keepCase.claim(keepOne, id); keepCase.report(keepOne, id); }
+}
+const extendBeforeDone = keepExtend().length;
+keepCase.patch({ expires_at: minuteAhead(3), last_extend_at: minutesAgo(11) });
+const doneBoard = keepCase.status();
+check("an all-done board stops extending so the idle room expires naturally",
+  keepExtend().length === extendBeforeDone &&
+    /keepalive:stopped, activity:open 0 claimed 0 blocked 0 done 3, all done, integration still owed; the room may expire/.test(doneBoard), doneBoard);
+keepCase.patch({ finish: { pushed: "0123456789abcdef", mr: "https://gitlab.example/sprint/-/merge_requests/7" }, expires_at: minuteAhead(2) });
+check("a done and integrated board says the room may expire and spends no extend",
+  keepExtend().length === extendBeforeDone && /keepalive:stopped, activity:open 0 claimed 0 blocked 0 done 3, integrated; the room may expire/.test(keepCase.status()), keepCase.status());
+for (const id of ["t1", "t2", "t3"]) keepCase.drop(id);
+check("a board with no task keys at all is zero open work: nothing to keep alive",
+  keepExtend().length === extendBeforeDone && /keepalive:stopped, activity:open 0 claimed 0 blocked 0 done 0, empty board; the room may expire/.test(keepCase.status()), keepCase.status());
 
 console.log(results.every(Boolean) ? "SPRINT FLOW OK" : "SPRINT FLOW FAILED");
 if (!results.every(Boolean)) process.exitCode = 1;

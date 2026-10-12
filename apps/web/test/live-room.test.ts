@@ -6,6 +6,7 @@ import {
 import { roomPageHtml } from "../src/html";
 import app from "../src/index";
 import { LIVE_ROOM_STYLES } from "../src/live-room-view";
+import { ROOM_CONSOLE_STYLES } from "../src/room-console";
 
 const roomPageScript = await (await app.request("/client/room-page.js")).text();
 
@@ -29,7 +30,8 @@ describe("optional live room view", () => {
     expect(LIVE_ROOM_STYLES).toContain('--live-bg: var(--console-ink)');
     expect(LIVE_ROOM_STYLES).toContain('--live-accent: var(--console-cream)');
     expect(LIVE_ROOM_STYLES).toContain('font-family: var(--live-mono)');
-    expect([...LIVE_ROOM_STYLES.matchAll(/border-radius:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['0']);
+    // Square and flat, with one deliberate exception: the 8px participant state dot.
+    expect([...LIVE_ROOM_STYLES.matchAll(/border-radius:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['0', '50%']);
     expect([...LIVE_ROOM_STYLES.matchAll(/box-shadow:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['none']);
     expect(LIVE_ROOM_STYLES).not.toContain('prefers-color-scheme');
   });
@@ -265,7 +267,8 @@ describe("live room usage display", () => {
     for (const token of new Set([...LIVE_ROOM_STYLES.matchAll(/var\((--live-[a-z-]+)\)/g)].map(match => match[1]))) {
       expect(LIVE_ROOM_STYLES).toContain(`${token}:`);
     }
-    expect([...LIVE_ROOM_STYLES.matchAll(/border-radius:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['0']);
+    // Square and flat, with one deliberate exception: the 8px participant state dot.
+    expect([...LIVE_ROOM_STYLES.matchAll(/border-radius:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['0', '50%']);
     expect([...LIVE_ROOM_STYLES.matchAll(/box-shadow:\s*([^;}]+)/g)].map(match => match[1].trim())).toEqual(['none']);
   });
 
@@ -469,5 +472,289 @@ describe("live room usage display", () => {
     expect(root.innerHTML).not.toContain("Room tokens");
     expect(root.innerHTML).toContain("Participant usage");
     expect(root.innerHTML).toContain("no usage reported");
+  });
+});
+
+describe("live participant state", () => {
+  async function renderPeople(participants: Record<string, Record<string, unknown>>) {
+    const root = { innerHTML: "", querySelectorAll: () => [] };
+    const { renderLiveRoom } = browserFunctions("  async function renderLiveRoom(", "  function subscribeRoomEvents(", {
+      root, esc: escape, escAttr: escape, extractValue: (value: unknown) => value,
+      renderBoardValue: () => "", renderKanbanBoard: () => "", renderMessage: async () => "",
+      liveActivity: [], participantId: "viewer", updateConnectionStatus: vi.fn(), connectionState: "connected",
+      document: { activeElement: null },
+    }, "return { renderLiveRoom };");
+    await renderLiveRoom({ room: {}, phase: "open", board: {}, participants, messages: [] });
+    return root.innerHTML;
+  }
+
+  it("marks the busy card with data-state, a state dot and an accessible label", async () => {
+    const html = await renderPeople({ agent: { id: "agent", display_name: "Agent", state: "busy", status: "Testing", role: "builder" } });
+    expect(html).toContain('<article class="live-person" data-state="busy"');
+    expect(html).toContain('<span class="live-state" data-state="busy" aria-hidden="true">Busy</span>');
+    expect(html).toContain('aria-label="Agent · Busy — Testing"');
+  });
+
+  it("renders free, left and unknown states, and left_at wins over the last known state", async () => {
+    const html = await renderPeople({
+      free: { id: "free", state: "free" },
+      gone: { id: "gone", state: "busy", left_at: "2026-01-01" },
+      odd: { id: "odd", state: "waiting" },
+    });
+    expect(html).toContain('<article class="live-person" data-state="free"');
+    expect(html).toContain(">Available</span>");
+    expect(html).toContain('<article class="live-person" data-state="left"');
+    expect(html).toContain(">Left</span>");
+    expect(html).toContain('data-state="waiting"');
+    expect((html.match(/<article class="live-person"/g) ?? []).length).toBe(3);
+    // Every card carries the state twice: on the article for the wash, on the dot for the pulse.
+    expect((html.match(/data-state="/g) ?? []).length).toBe(6);
+  });
+
+  it("escapes the accessible label so a display name cannot open a new attribute", async () => {
+    const html = await renderPeople({ agent: { id: "agent", display_name: 'A" onmouseover="alert(1)', state: "busy" } });
+    expect(html).toContain('aria-label="A&quot; onmouseover=&quot;alert(1) · Busy"');
+    expect(html).not.toContain('onmouseover="alert');
+  });
+
+  it("styles the dot as the only round surface and pauses it under prefers-reduced-motion", () => {
+    expect(LIVE_ROOM_STYLES).toMatch(/& \.live-person \{[^}]*position: relative/);
+    expect(LIVE_ROOM_STYLES).toMatch(/& \.live-state \{[^}]*position: absolute[^}]*top: var\(--live-state-top\)[^}]*right: var\(--live-state-right\)/);
+    // Reusable off the people list too: task cards are positioned hosts, and .live-state-inline opts out of the corner.
+    expect(LIVE_ROOM_STYLES).toMatch(/& \.kanban-card \{[^}]*position: relative/);
+    expect(LIVE_ROOM_STYLES).toContain('& .live-state.live-state-inline { position: static; }');
+    expect(LIVE_ROOM_STYLES).toMatch(/& \.live-state::before \{[^}]*width: 8px[^}]*height: 8px[^}]*border-radius: 50%/);
+    expect(LIVE_ROOM_STYLES).toContain('& .live-state[data-state="busy"]::before { background: var(--live-accent); animation: live-state-pulse 2s ease-in-out infinite; }');
+    expect(LIVE_ROOM_STYLES).toContain('& .live-person[data-state="busy"] { padding-block: 0.85rem; background: color-mix(in srgb, var(--live-accent) 6%, transparent); border-left: 2px solid var(--live-accent);');
+    // A resting room stays quiet: dim outline for free, flat gray for left.
+    expect(LIVE_ROOM_STYLES).toMatch(/& \.live-state\[data-state="free"\]::before \{ background: transparent; outline: 1px solid var\(--live-muted\)/);
+    expect(LIVE_ROOM_STYLES).toMatch(/& \.live-state\[data-state="left"\]::before \{ background: var\(--live-line\); \}/);
+    const pulse = LIVE_ROOM_STYLES.slice(LIVE_ROOM_STYLES.indexOf("@keyframes live-state-pulse"));
+    expect(pulse).toMatch(/transform: scale\(1\)[^}]*outline: 1px solid transparent/);
+    // The glow is an animated outline, so the page keeps its flat, shadowless terminal look.
+    expect(pulse).toMatch(/transform: scale\(1\.3\)[^}]*outline: 1px solid color-mix\(in srgb, var\(--live-accent\) 55%, transparent\)/);
+    expect(LIVE_ROOM_STYLES).toMatch(/@media \(prefers-reduced-motion: reduce\) \{ & \* \{ animation: none !important; \} \}/);
+    expect(LIVE_ROOM_STYLES).toMatch(/@media \(prefers-reduced-motion: reduce\) \{ & \.live-state\[data-state="busy"\]::before \{ animation: none; transform: none; outline: 0; \} \}/);
+  });
+});
+
+describe("task card details modal", () => {
+  const MODAL_START = "  const TASK_HELD_STATES";
+  const MODAL_END = "  function extractValue(";
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  type CardEvent = { target: { closest: (selector: string) => unknown } };
+  type BoardEntry = { value: unknown; version: number; updated_by?: string };
+
+  function modalHarness(board: Record<string, unknown> = {}, options: { isHost?: boolean; messages?: unknown[]; participants?: Record<string, unknown>; decrypt?: (message: { id?: string }) => Promise<{ ok: boolean; value?: unknown }> } = {}) {
+    const dialogEvents: Record<string, ((event: never) => void)[]> = {};
+    const closeEvents: Record<string, (() => void)[]> = {};
+    const closeButton = { addEventListener: (type: string, handler: () => void) => { (closeEvents[type] ||= []).push(handler); } };
+    const dialog = {
+      open: false,
+      showModal: vi.fn(),
+      focus: vi.fn(),
+      classList: { add: vi.fn() },
+      addEventListener: (type: string, handler: (event: never) => void) => { (dialogEvents[type] ||= []).push(handler); },
+      querySelectorAll: (selector: string) => (selector === "[data-task-modal-close]" ? [closeButton] : []),
+    };
+    const host = {
+      innerHTML: "", dataset: {} as Record<string, string>, className: "",
+      contains: () => false,
+      querySelector: (selector: string) => (selector === "[data-task-modal]" ? dialog : null),
+    };
+    const cardHandlers: Record<string, (event: CardEvent) => void> = {};
+    const card = { dataset: { taskCard: "t4" }, addEventListener: (type: string, handler: (event: CardEvent) => void) => { cardHandlers[type] = handler; } };
+    const returnFocus = { focus: vi.fn() };
+    const document = { activeElement: returnFocus, body: { contains: () => true, appendChild: vi.fn() }, createElement: () => host };
+    const root = { querySelectorAll: (selector: string) => (selector === "[data-task-card]" ? [card] : []) };
+    const latest = { board, participants: options.participants || {}, messages: options.messages || [] };
+    const functions = browserFunctions(MODAL_START, MODAL_END, {
+      document, root, latest, isHost: options.isHost === true,
+      decryptMessageBody: options.decrypt || (async () => ({ ok: false })),
+      esc: escape, escAttr: escape, extractValue: (value: unknown) => value, boardDisplayValue: (value: unknown) => value,
+    }, "return { taskStatusOf, taskStatusDot, taskCanEdit, taskEditHtml, taskCardModel, taskDetailsHtml, taskVerdictLines, buildTaskCardModel, wireTaskCards, openTaskCard, renderTaskModal, closeTaskCard };");
+    return { ...functions, card, cardHandlers, dialog, dialogEvents, closeButton, closeEvents, host, returnFocus };
+  }
+
+  const claimedTask: Record<string, unknown> = {
+    title: "Task details modal", status: "claimed", owner: "worker-4", role: "builder",
+    files: ["apps/web/src/room-page.js"], depends_on: ["t3"], needs: ["frontend"],
+    contract: "Ship <b>the</b> modal contract", brief: "click opens a dialog",
+  };
+
+  it("opens the details modal from a card click, escaped, with the contract and t3's status dot", async () => {
+    const room = modalHarness({ "task.t4": { value: claimedTask, version: 3, updated_by: "worker-4" } });
+    room.wireTaskCards();
+    room.cardHandlers.click({ target: { closest: () => null } });
+    await settle();
+    expect(room.host.innerHTML).toContain('data-task-modal');
+    expect(room.host.innerHTML).toContain("Ship &lt;b>the&lt;/b> modal contract");
+    expect(room.host.innerHTML).not.toContain("<b>the</b>");
+    expect(room.host.innerHTML).toContain("click opens a dialog");
+    expect(room.host.innerHTML).toContain("apps/web/src/room-page.js");
+    expect(room.host.innerHTML).toContain('data-state="busy"');
+    expect(room.host.innerHTML).toContain('class="live-state live-state-inline"');
+    expect(room.host.innerHTML).toContain("v3 · worker-4");
+    expect(room.dialog.showModal).toHaveBeenCalled();
+    expect(room.dialog.focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+
+  it("leaves clicks on card controls to the controls", async () => {
+    const room = modalHarness({ "task.t4": { value: claimedTask, version: 1 } });
+    room.wireTaskCards();
+    room.cardHandlers.click({ target: { closest: (selector: string) => (selector.includes("button") ? {} : null) } });
+    await settle();
+    expect(room.host.innerHTML).toBe("");
+    expect(room.dialog.showModal).not.toHaveBeenCalled();
+  });
+
+  it("closes on Escape, on the backdrop and on the close button, and returns focus", async () => {
+    const room = modalHarness({ "task.t4": { value: { title: "Quiet task", status: "open" }, version: 1 } });
+    room.wireTaskCards();
+    room.cardHandlers.click({ target: { closest: () => null } });
+    await settle();
+    expect(room.host.innerHTML).toContain("data-task-modal");
+    room.dialogEvents.keydown[0]({ key: "Escape" } as never);
+    expect(room.host.innerHTML).toBe("");
+    expect(room.returnFocus.focus).toHaveBeenCalledWith({ preventScroll: true });
+
+    room.cardHandlers.click({ target: { closest: () => null } });
+    await settle();
+    room.dialogEvents.click[0]({ target: room.dialog } as never);
+    expect(room.host.innerHTML).toBe("");
+
+    room.cardHandlers.click({ target: { closest: () => null } });
+    await settle();
+    room.closeEvents.click[0]();
+    expect(room.host.innerHTML).toBe("");
+  });
+
+  it("ignores a click on card content that is not the backdrop", async () => {
+    const room = modalHarness({ "task.t4": { value: { title: "Quiet task", status: "open" }, version: 1 } });
+    room.wireTaskCards();
+    room.cardHandlers.click({ target: { closest: () => null } });
+    await settle();
+    room.dialogEvents.click[0]({ target: { closest: () => null } } as never);
+    expect(room.host.innerHTML).toContain("data-task-modal");
+  });
+
+  it("shows Edit only for open cards, and warns the host before rewriting a claimed contract", () => {
+    const room = modalHarness();
+    expect(room.taskEditHtml(claimedTask, { id: "t4", boardKey: "task.t4", small: true, viewer: { isHost: false } })).toBe("");
+    expect(room.taskEditHtml({ title: "Shipped", status: "done", owner: "worker-4" }, { id: "t1", viewer: { isHost: false } })).toBe("");
+    const open = room.taskEditHtml({ title: "Fresh", status: "open" }, { id: "t5", boardKey: "task.t5", viewer: { isHost: false } });
+    expect(open).toContain('data-edit-board-key="task.t5"');
+    expect(open).not.toContain("task-edit-confirm");
+    const armed = room.taskEditHtml(claimedTask, { id: "t4", boardKey: "task.t4", small: true, viewer: { isHost: true } });
+    expect(armed).toContain('data-task-edit-ask="t4"');
+    expect(armed).toContain("task is claimed by worker-4; editing rewrites their contract");
+    expect(armed).toContain("<span class=\"task-edit-confirm\"");
+    expect(armed).toContain("hidden");
+    expect(armed).toContain('data-edit-board-key="task.t4"');
+    expect(room.taskEditHtml({ title: "Stuck", status: "blocked", owner: "worker-9" }, { id: "t6", viewer: { isHost: true } }))
+      .toContain("task is claimed by worker-9; editing rewrites their contract");
+  });
+
+  it("keeps the sprint board honest: cards are clickable, claimed cards have no Edit for readers", () => {
+    const board = () => [["task.t3", { value: { title: "Busy dot", status: "claimed", owner: "worker-3", files: ["apps/web/src/live-room-view.ts"], depends_on: [] }, version: 2 }],
+      ["task.t5", { value: { title: "Fresh", status: "open", files: [], depends_on: [] }, version: 1 }]];
+    const reader = browserFunctions("  function renderSprintTaskBoard(", MODAL_END, {
+      esc: escape, escAttr: escape, boardDisplayValue: (value: unknown) => value,
+      renderValue: (value: unknown) => escape(JSON.stringify(value)), isHost: false,
+    }, "return { renderSprintTaskBoard };").renderSprintTaskBoard(board() as never);
+    expect(reader).toContain('data-task-card="t3"');
+    expect(reader).toContain('tabindex="0"');
+    expect(reader).not.toContain('data-edit-board-key="task.t3"');
+    expect(reader).toContain('data-edit-board-key="task.t5"');
+    const host = browserFunctions("  function renderSprintTaskBoard(", MODAL_END, {
+      esc: escape, escAttr: escape, boardDisplayValue: (value: unknown) => value,
+      renderValue: (value: unknown) => escape(JSON.stringify(value)), isHost: true,
+    }, "return { renderSprintTaskBoard };").renderSprintTaskBoard(board() as never);
+    expect(host).toContain('data-task-edit-ask="t3"');
+    expect(host).toContain("task is claimed by worker-3; editing rewrites their contract");
+  });
+
+  it("shows a finished task's evidence: summary, commits, tests and the contract check", () => {
+    const room = modalHarness();
+    const done = {
+      title: "Busy dot", status: "done", owner: "worker-3", role: "builder", files: ["apps/web/src/live-room-view.ts"],
+      depends_on: ["t4"], summary: "dot + wash",
+      evidence: { commits: ["77733ed", "abcdef0"], tests: "npx vitest run apps/web/test/live-room.test.ts -> 24 passed", contract: "pnpm check:contract --peer passed" },
+    };
+    const model = room.taskCardModel("t3", { board: { "task.t3": { value: done, version: 4, updated_by: "worker-3" }, "task.t4": { value: { title: "Modal", status: "done" }, version: 2 } }, participants: { "worker-3": { id: "worker-3", display_name: "Wren" } } });
+    const html = room.taskDetailsHtml(model);
+    expect(html).toContain("Done evidence");
+    expect(html).toContain("77733ed");
+    expect(html).toContain("abcdef0");
+    expect(html).toContain("24 passed");
+    expect(html).toContain("pnpm check:contract --peer passed");
+    expect(html).toContain("dot + wash");
+    expect(html).toContain("Wren");
+    expect(html).toContain('data-done="true"');
+    expect(room.taskDetailsHtml({ ...model, status: "claimed", done: null })).not.toContain("Done evidence");
+  });
+
+  it("carries only the compare verdicts that name the task", async () => {
+    const room = modalHarness();
+    const messages = [
+      { id: "m-1", seq: 4, from: "hermes-bot", intent: "compare.request", body: { a: "t4 before the dialog", b: "t4 with a dialog", criteria: ["clarity"] } },
+      { id: "m-2", seq: 5, from: "worker-2", intent: "compare.verdict", body: { of: "m-1", winner: "B", reason: "clearer on both criteria" } },
+      { id: "m-3", seq: 6, from: "worker-1", intent: "compare.verdict", body: { of: "m-9", winner: "A", reason: "unrelated to t9" } },
+      { id: "m-4", seq: 7, from: "worker-3", intent: "task.done", body: { task_id: "t4", text: "names t4 but is not a verdict" } },
+    ];
+    expect(await room.taskVerdictLines("t4", messages, (message: { body: unknown }) => message.body)).toEqual([
+      { seq: 5, from: "worker-2", winner: "B", reason: "clearer on both criteria", of: "m-1", request: 4 },
+    ]);
+    const model = room.taskCardModel("t4", { board: { "task.t4": { value: claimedTask, version: 3 } }, participants: {} });
+    const html = room.taskDetailsHtml({ ...model, verdicts: [{ seq: 5, from: "worker-2", winner: "B", reason: "clearer on both criteria", of: "m-1", request: 4 }] });
+    expect(html).toContain("Compare verdicts");
+    expect(html).toContain("clearer on both criteria");
+    expect(html).toContain("on request #4");
+  });
+
+  it("opens sealed verdicts through the timeline's own decryption path", async () => {
+    const messages = [
+      { id: "m-1", seq: 2, from: "peer", intent: "compare.request", body: { encrypted: true } },
+      { id: "m-2", seq: 3, from: "peer", intent: "compare.verdict", body: { encrypted: true } },
+      { id: "m-3", seq: 4, from: "peer", intent: "compare.verdict", body: { encrypted: true } },
+    ];
+    const room = modalHarness({ "task.t4": { value: { title: "Modal", status: "open" }, version: 1 } }, {
+      messages,
+      decrypt: async (message) => (message.id === "m-2"
+        ? { ok: true, value: { of: "m-1", winner: "B", reason: "task.t4 reads better in a dialog" } }
+        : message.id === "m-1" ? { ok: true, value: { a: "inline details", b: "modal" } } : { ok: false }),
+    });
+    const model = await room.buildTaskCardModel("t4");
+    expect(model.verdicts).toEqual([{ seq: 3, from: "peer", winner: "B", reason: "task.t4 reads better in a dialog", of: "m-1", request: 2 }]);
+    const unreadable = modalHarness({ "task.t4": { value: { title: "Modal", status: "open" }, version: 1 } }, { messages });
+    expect(await unreadable.buildTaskCardModel("t4")).toMatchObject({ verdicts: [] });
+  });
+
+  it("gives the console view the same state dot as the live view, from one @keyframes", () => {
+    expect(ROOM_CONSOLE_STYLES).toMatch(/& \.live-state::before \{[^}]*border-radius: 50%/);
+    expect(ROOM_CONSOLE_STYLES).toMatch(/& \.live-state\[data-state=busy\]::before \{[^}]*animation: live-state-pulse/);
+    expect(ROOM_CONSOLE_STYLES).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?& \.live-state\[data-state=busy\]::before \{ animation: none;/);
+    // Both style strings land in the same <style>, so the pulse animation must stay defined exactly once.
+    expect(ROOM_CONSOLE_STYLES).not.toMatch(/@keyframes live-state-pulse/);
+    expect(LIVE_ROOM_STYLES).toMatch(/@keyframes live-state-pulse/);
+  });
+
+  it("refreshes an open dialog in place and drops it when the task is gone", async () => {
+    const board: Record<string, BoardEntry | undefined> = { "task.t4": { value: claimedTask, version: 3, updated_by: "worker-4" } };
+    const room = modalHarness(board);
+    room.wireTaskCards();
+    room.cardHandlers.click({ target: { closest: () => null } });
+    await settle();
+    const first = room.host.innerHTML;
+    expect(room.host.dataset.taskModalSignature).toBeTruthy();
+    await room.renderTaskModal();
+    expect(room.host.innerHTML).toBe(first);
+    board["task.t4"] = { value: { ...claimedTask, status: "done", summary: "shipped" }, version: 4, updated_by: "worker-4" };
+    await room.renderTaskModal();
+    expect(room.host.innerHTML).toContain("shipped");
+    expect(room.dialog.showModal).toHaveBeenCalledTimes(1);
+    delete board["task.t4"];
+    await room.renderTaskModal();
+    expect(room.host.innerHTML).toBe("");
   });
 });

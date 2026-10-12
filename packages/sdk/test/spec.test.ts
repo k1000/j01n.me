@@ -83,3 +83,37 @@ describe("parseSprintSpec contract field", () => {
     expect(() => parseSprintSpec(specWith(tasks))).toThrow(/invalid spec task line|needs contract/);
   });
 });
+
+describe("parseSprintSpec needs field", () => {
+  it("keeps an optional one-line needs with comma-separated capability tokens", () => {
+    const tasks = parseSprintSpec(specWith([
+      "- t1 Required capabilities", "  files: packages/sdk/src/spec.ts", "  role: builder",
+      "  needs: code, shell, browser",
+      "- t2 No needs here", "  files: packages/sdk/src/tasks.ts",
+    ].join("\n")));
+    expect(tasks).toEqual([
+      {
+        id: "t1", title: "Required capabilities", files: ["packages/sdk/src/spec.ts"], role: "builder",
+        needs: ["code", "shell", "browser"],
+      },
+      { id: "t2", title: "No needs here", files: ["packages/sdk/src/tasks.ts"] },
+    ]);
+  });
+
+  it("accepts needs before the other fields and trims surrounding whitespace only", () => {
+    const [task] = parseSprintSpec(specWith("- t1 A\n  needs:  code , files  \n  files: a.ts"));
+    expect(task.needs).toEqual(["code", "files"]);
+  });
+
+  it("seeds tasks without needs unchanged", () => {
+    expect(parseSprintSpec(specWith("- t1 A\n  files: a.ts\n  brief: just a brief"))).toEqual([
+      { id: "t1", title: "A", files: ["a.ts"], brief: "just a brief" },
+    ]);
+  });
+
+  it.each([
+    ["duplicate needs", "- t1 A\n  needs: code\n  needs: shell\n  files: a.ts"],
+  ])("refuses invalid needs (%s)", (_label, tasks) => {
+    expect(() => parseSprintSpec(specWith(tasks))).toThrow("invalid spec task line");
+  });
+});

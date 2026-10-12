@@ -29,21 +29,28 @@ export class RoomBoardController {
     let current = await announceSystemMessage(this.storage, this.events, invite, "board.changed",
       { text: boardChangeText(updatedBy, changes, invite.board, board), updated_by: updatedBy, changes },
       { board }, { changes, updatedBy });
-    for (const { id, recipients, caused_by, role } of newlyUnblocked(changes, invite.board, board)) {
+    for (const { id, recipients, caused_by, role, needs } of newlyUnblocked(changes, invite.board, board)) {
       const predecessorId = caused_by[0];
       const finishedOwner = taskValue(current.board[`task.${predecessorId}`])?.owner;
       // Role-aware routing: if the dependent task declares a role, try to find a matching free participant.
       if (typeof role === "string" && role) {
-        const assigned = pickAssignmentTarget(current, role, typeof finishedOwner === "string" ? finishedOwner : undefined);
+        const assigned = pickAssignmentTarget(current, role, needs, typeof finishedOwner === "string" ? finishedOwner : undefined);
         if (assigned) {
           const body = unblockedNoticeBody(id, predecessorId, current.board, assigned);
           current = await announceSystemMessage(this.storage, this.events, current, "task.unblocked",
             body, {}, undefined, assigned);
-          const routingText = `${id} routed to ${assigned} (role: ${role})`;
+          const routingText = `${id} routed to ${assigned} (role: ${role}${needs?.length ? `, needs: ${needs.join(",")}` : ""})`;
           current = await announceSystemMessage(this.storage, this.events, current, "task.routed",
-            { text: routingText, task_id: id, assigned, role },
+            { text: routingText, task_id: id, assigned, role, ...(needs?.length ? { needs } : {}) },
             { board: current.board });
           continue;
+        }
+        // No matching participant: post unrouted notice text.
+        if (needs && needs.length > 0) {
+          const unroutedText = `${id} unrouted: needs ${needs.join(",")}, no free capable holder`;
+          current = await announceSystemMessage(this.storage, this.events, current, "task.unrouted",
+            { text: unroutedText, task_id: id, role, needs },
+            { board: current.board });
         }
       }
       // No role or no matching participant: existing bare unblocked notice to recipients.
@@ -138,7 +145,7 @@ function taskValue(entry: BoardEntry | undefined): Record<string, unknown> | und
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-function newlyUnblocked(changes: Record<string, BoardChange>, before: InviteState["board"], after: InviteState["board"]): Array<{ id: string; recipients: string[]; caused_by: string[]; role?: string }> {
+function newlyUnblocked(changes: Record<string, BoardChange>, before: InviteState["board"], after: InviteState["board"]): Array<{ id: string; recipients: string[]; caused_by: string[]; role?: string; needs?: string[] }> {
   const done = Object.keys(changes).filter((key) => key.startsWith("task.") && taskValue(before[key])?.status !== "done" && taskValue(after[key])?.status === "done").map((key) => key.slice(5));
   if (!done.length) return [];
   return Object.entries(after).flatMap(([key, entry]) => {
@@ -150,18 +157,25 @@ function newlyUnblocked(changes: Record<string, BoardChange>, before: InviteStat
       deps.every((id) => typeof id === "string" && taskValue(before[`task.${id}`])?.status === "done")) return [];
     const waiters = Array.isArray(task.waiting_for) ? task.waiting_for.filter((id): id is string => typeof id === "string") : [];
     const role = typeof task.role === "string" ? task.role : undefined;
-    return [{ id: key.slice(5), recipients: [...new Set([...(typeof task.owner === "string" ? [task.owner] : []), ...waiters])], caused_by: done.filter((id) => deps.includes(id)), role }];
+    const needs = Array.isArray(task.needs) ? task.needs.filter((t): t is string => typeof t === "string") : undefined;
+    return [{ id: key.slice(5), recipients: [...new Set([...(typeof task.owner === "string" ? [task.owner] : []), ...waiters])], caused_by: done.filter((id) => deps.includes(id)), role, needs }];
   });
 }
 
 /**
- * Pick the first joined participant whose role matches and state is free.
- * Excludes the just-finished task owner unless they are the sole match.
+ * Pick the first joined participant whose role matches, state is free, and (if needs are specified)
+ * whose announced capabilities include every required token. Excludes the just-finished task owner
+ * unless they are the sole match.
  */
-function pickAssignmentTarget(invite: InviteState, role: string, finishedOwner: string | undefined): string | undefined {
-  const candidates = Object.values(invite.participants).filter((p) =>
-    !p.left_at && p.role === role && p.state === "free"
-  );
+function pickAssignmentTarget(invite: InviteState, role: string, needs: string[] | undefined, finishedOwner: string | undefined): string | undefined {
+  const candidates = Object.values(invite.participants).filter((p) => {
+    if (p.left_at || p.role !== role || p.state !== "free") return false;
+    if (needs && needs.length > 0) {
+      const caps = p.capabilities ?? [];
+      if (!needs.every((token) => caps.includes(token))) return false;
+    }
+    return true;
+  });
   if (candidates.length === 0) return undefined;
   if (candidates.length === 1) return candidates[0].id;
   // Multiple candidates: exclude the just-finished owner.

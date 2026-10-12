@@ -563,7 +563,10 @@
       const state = p.left_at ? "left" : p.state || "free";
       const label = state === "left" ? "Left" : state === "busy" ? "Busy" : state === "free" ? "Available" : state;
       const where = [workspaces[p.id]?.host, checkoutLabel(p, people)].filter(Boolean).join(' · ');
-      return '<article class="live-person"><div><header><strong>' + esc(participantLabel(p)) + '</strong> ' + (p.role ? '<span>' + esc(p.role) + '</span> ' : '') + '<span class="live-state" data-state="' + escAttr(state) + '">' + esc(label) + '</span></header><p>' + esc(p.status || "No status shared") + '</p><small>' + esc(where || [p.provider, p.model].filter(Boolean).join("/") || (p.id === participantId ? "This browser · you" : "Agent")) + '</small></div></article>';
+      const name = participantLabel(p);
+      // The dot and its tiny caption are decorative; the state reads to assistive tech as the card's accessible name.
+      const aria = name + ' · ' + label + (p.status ? ' — ' + p.status : '');
+      return '<article class="live-person" data-state="' + escAttr(state) + '" aria-label="' + escAttr(aria) + '"><div><header><strong>' + esc(name) + '</strong> ' + (p.role ? '<span>' + esc(p.role) + '</span> ' : '') + '<span class="live-state" data-state="' + escAttr(state) + '" aria-hidden="true">' + esc(label) + '</span></header><p>' + esc(p.status || "No status shared") + '</p><small>' + esc(where || [p.provider, p.model].filter(Boolean).join("/") || (p.id === participantId ? "This browser · you" : "Agent")) + '</small></div></article>';
     }).join("");
     const messagesHtml = (await Promise.all(messages.map(m => renderMessage(m, messages, data.participants, workspaces)))).join("");
     const activityHtml = liveActivity.map(item => '<li><span>' + esc(item.text) + '</span><time>' + esc(item.time) + '</time></li>').join("");

@@ -27,13 +27,42 @@ export function formatBatch(client: RoomClient, messages: RoomMessage[]): { text
     const body = m.body as { text?: unknown } | undefined;
     return typeof body?.text === "string" ? body.text : JSON.stringify(m.body);
   };
-  const lines = shown.map((m) => m.from === "system"
-    ? `· ${bodyText(m)}`
-    : `**${m.from}**${m.kind ? ` [${m.kind}]` : ""}${m.expects_reply ? " (asks for a reply)" : ""}: ${bodyText(m)}\n  reply: ${replyHint(m)}`);
+  const lines = shown.map((m) => {
+    // Special format for task.assigned direct to self
+    if (m.intent === "task.assigned" && (m.to === client.participantId || (Array.isArray(m.to) && m.to.includes(client.participantId)))) {
+      const body = m.body as { task?: { id?: string; title?: string }; task_id?: string; title?: string } | undefined;
+      const taskId = body?.task?.id ?? body?.task_id ?? "";
+      const title = body?.task?.title ?? body?.title ?? "";
+      const titlePart = title ? `: ${title}` : "";
+      return `Task ${taskId} assigned to you${titlePart}\n  ready: j01n claim ${taskId}`;
+    }
+    // Special format for task.unblocked with assigned == self
+    if (m.intent === "task.unblocked" && (m.body as { assigned?: unknown })?.assigned === client.participantId) {
+      const body = m.body as { task_id?: string; blocked_by?: string[]; summary?: string; commit?: string };
+      const taskId = body?.task_id ?? "";
+      const predecessor = body?.blocked_by?.[0] ?? "";
+      const summary = body?.summary ?? "";
+      const commit = body?.commit ?? "";
+      const commitShort = commit.length > 7 ? commit.slice(0, 7) : commit;
+      const predecessorPart = predecessor && summary ? `\n  predecessor: ${predecessor} — ${summary}${commitShort ? ` (commit ${commitShort})` : ""}` : "";
+      return `Task ${taskId} unblocked and assigned to you${predecessorPart}\n  ready: j01n claim ${taskId}`;
+    }
+    // Generic format
+    return m.from === "system"
+      ? `· ${bodyText(m)}`
+      : `**${m.from}**${m.kind ? ` [${m.kind}]` : ""}${m.expects_reply ? " (asks for a reply)" : ""}: ${bodyText(m)}\n  reply: ${replyHint(m)}`;
+  });
   return {
     text: `j01n room ${client.invite.room_id} · ${shown.length} new:\n${lines.join("\n")}`,
-    wake: shown.some((m) => (m.from !== "system" && (m.to === client.participantId || (Array.isArray(m.to) && m.to.includes(client.participantId))))
-      || (m.intent === "task.unblocked" && m.to === client.participantId && typeof (m.body as { task_id?: unknown })?.task_id === "string")),
+    wake: shown.some((m) => {
+      // Direct message (not from system) to self
+      if (m.from !== "system" && (m.to === client.participantId || (Array.isArray(m.to) && m.to.includes(client.participantId)))) return true;
+      // task.assigned direct to self
+      if (m.intent === "task.assigned" && (m.to === client.participantId || (Array.isArray(m.to) && m.to.includes(client.participantId)))) return true;
+      // task.unblocked with assigned == self
+      if (m.intent === "task.unblocked" && (m.body as { assigned?: unknown })?.assigned === client.participantId) return true;
+      return false;
+    }),
   };
 }
 

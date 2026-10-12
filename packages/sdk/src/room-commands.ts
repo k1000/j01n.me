@@ -12,6 +12,19 @@ function kinds(value: string): MessageKind[] {
   return values as MessageKind[];
 }
 
+/** Pairwise comparison intents: a request asks the room to judge two options, a verdict answers it with the winner. */
+export const COMPARE_INTENTS = { request: "compare.request", verdict: "compare.verdict" } as const;
+/** Winner vocabulary for compare.verdict; case-insensitive on input, canonical on the wire. */
+export const COMPARE_WINNERS = ["A", "B", "tie"] as const;
+type CompareWinner = typeof COMPARE_WINNERS[number];
+function compareWinner(value: string | undefined): CompareWinner {
+  const winner = value && value.toLowerCase() !== "tie" ? value.toUpperCase() : value?.toLowerCase();
+  if (!winner || !COMPARE_WINNERS.includes(winner as CompareWinner)) throw new Error(`verdict needs winner: ${COMPARE_WINNERS.join("|")}`);
+  return winner as CompareWinner;
+}
+const COMPARE_USAGE = "compare needs: <a> <b> --criteria x,y [--wait]";
+const VERDICT_USAGE = `verdict needs: <msg-id-or-seq> <${COMPARE_WINNERS.join("|")}> --reason <text> [--reply-to <id>]`;
+
 export async function roomSummary(client: RoomClient) {
   // These endpoints inspect state without reading messages or advancing the participant's cursor.
   const [board, tasks, reservations, participants] = await Promise.all([
@@ -128,6 +141,39 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
     const sendOptions = { replyTo, expectsReply: expectsReply || kind === "question" || kind === "blocker", kind };
     const sent = await client.send(to, parseRoomBody(words.join(" ")), sendOptions);
     return andWait ? { sent, ...await waitRoom(client, options.waitDefault, {}, prefix) } : sent;
+  }
+  if (cmd === "compare") {
+    const [a, b, ...args] = rest;
+    let criteria: string[] | undefined;
+    let andWait = false;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === "--criteria") criteria = (args[++i] ?? "").split(",").map((criterion) => criterion.trim()).filter(Boolean);
+      else if (args[i] === "--wait") andWait = true;
+      else throw new Error(COMPARE_USAGE);
+    }
+    if (!a || !b || a.startsWith("--") || b.startsWith("--") || !criteria?.length) throw new Error(COMPARE_USAGE);
+    await options.beforeSend?.();
+    const sent = await client.send("all", { a, b, criteria }, { intent: COMPARE_INTENTS.request, kind: "question", expectsReply: true });
+    return andWait ? { sent, ...await waitRoom(client, options.waitDefault, {}, prefix) } : sent;
+  }
+  if (cmd === "verdict") {
+    const [target, winnerRaw, ...args] = rest;
+    let reason: string | undefined, replyTo: string | undefined;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === "--reason") {
+        const words: string[] = [];
+        for (i++; i < args.length && !args[i].startsWith("--");) words.push(args[i++]);
+        reason = words.join(" ");
+        i--;
+      } else if (args[i] === "--reply-to") replyTo = args[++i];
+      else throw new Error(VERDICT_USAGE);
+    }
+    if (!target || target.startsWith("--") || !winnerRaw || winnerRaw.startsWith("--")) throw new Error(VERDICT_USAGE);
+    const winner = compareWinner(winnerRaw);
+    if (!reason) throw new Error(VERDICT_USAGE);
+    await options.beforeSend?.();
+    // Verdicts carry no reply ask: they answer one, and stay visible to all so every peer sees the comparison result.
+    return client.send("all", { of: target, winner, reason }, { intent: COMPARE_INTENTS.verdict, kind: "finding", ...(replyTo ? { replyTo } : {}) });
   }
   if (cmd === "read" || cmd === "inbox") {
     return roomReplyHints(await client.read({ all: options.readAll || cmd === "inbox", includeSelf: true }), prefix);

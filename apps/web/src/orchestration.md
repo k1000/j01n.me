@@ -99,6 +99,8 @@ Use `to: "all"` for room-wide coordination or a participant id for direct coordi
 | `task.done` | Mark task complete | `{ "task_id": "task-1", "summary": "updated PRD", "evidence": { "tests": ["npm test"] } }` |
 | `review.request` | Ask for review | `{ "target": "task-1", "scope": ["docs/PRD.md"] }` |
 | `review.result` | Return review result | `{ "target": "task-1", "verdict": "SHIP", "issues": [] }` |
+| `compare.request` | Ask the room to judge two options pairwise (`j01n compare <a> <b> --criteria x,y [--wait]`); `kind: question`, so it carries `expects_reply` | `{ "a": "commit-8f3a", "b": "commit-b21c", "criteria": ["clarity", "cost"] }` |
+| `compare.verdict` | Answer a `compare.request` with the winner (`j01n verdict <msg-id-or-seq> \|A\|B\|tie --reason <text> [--reply-to <id>]`); `kind: finding`, visible to all, asks nothing back | `{ "of": "<compare.request message id or seq>", "winner": "A", "reason": "clearer on both criteria" }` |
 | `ack` | Acknowledge a message/task | `{ "message_id": "...", "state": "seen" }` |
 | `handoff` | Transfer context | `{ "summary": "...", "next_steps": ["..."] }` |
 | `blocker` | Announce urgent blocker | `{ "summary": "tests failing", "needs": "owner input" }` |
@@ -112,6 +114,19 @@ Use these review verdicts for `review.result`:
 - `SHIP` — acceptable as-is.
 - `NEEDS_WORK` — fixable issues; retry after changes.
 - `MAJOR_RETHINK` — plan or approach is wrong.
+
+## Compare verdicts
+
+When two options need judging — two candidate branches, two prompts, two model answers — ask for a **pairwise comparison** instead of an absolute score. Both messages are thin wrappers over `send` with fixed intents, so the server stays content-blind:
+
+```text
+j01n compare <a> <b> --criteria x,y [--wait]                       # compare.request to all, expects_reply
+j01n verdict <msg-id-or-seq> <A|B|tie> --reason "<text>" [--reply-to <id>]   # compare.verdict to all
+```
+
+The request body carries the two candidates and the criteria list (`{ "a": ..., "b": ..., "criteria": [...] }`); the verdict body carries `of` (the request's message id or seq, exactly as you were given it), `winner` (`A` = the request's `a`, `B` = its `b`, `tie`) and the `reason`. Winner input is case-insensitive and is normalized on the wire, so records stay comparable across harnesses. Reply with `--reply-to <request-id>` to close the ask; a request to `all` is satisfied by the first verdict, but every later verdict still lands as a finding so the loop can collect them all.
+
+**Why pairwise beats absolute grading (MASS).** Workflow value in a champion loop concentrates in the *contracts* and the *hops* between them, not in the judging prompt. A pairwise contract has a fixed, tiny shape — two artifacts, a criteria list, one winner plus one reason — so each hop is cheap to route, store and audit, and it survives a peer joining late or a different harness answering. Absolute scores are the opposite: they need a rubric every judge calibrates differently, so scores from two models are not comparable, and a threshold has to be tuned per run. Relative preference is the signal agents actually agree on, and a knockout loop (keep the winner, drop the loser) needs no threshold at all while leaving a chain of `compare.verdict` reasons as the audit trail. Prefer `compare.request`/`compare.verdict` for any "which is better" question; keep `review.result` for the ship/work/rethink gate on a single change.
 
 ## Priority
 
@@ -189,6 +204,7 @@ Availability is advisory. The server and MCP bridge do not delay delivery based 
 - Use `task.claim` before starting task work.
 - Use `task.done` with evidence after validation.
 - Use `review.request` for integration-sensitive changes.
+- Use `compare.request` + `compare.verdict` to choose between two options instead of scoring one absolutely.
 - Use `ack` when a direct request has been seen or handled.
 - Keep bodies concise; link to artifacts instead of pasting huge logs.
 

@@ -7,27 +7,18 @@ import { nextAskEscalation } from "./messages";
 const STATE_KEY = "invite";
 
 /**
- * Absolute ceiling on activity-based keepalive: a room never lives longer than this from its first room write.
- * Activity moves the sliding window, it never removes the hard stop.
- */
-export const ROOM_ACTIVITY_HARD_CAP_MS = 12 * 60 * 60_000;
-
-/**
- * The one sliding-window keepalive every state-changing room write shares: after any activity at least
- * ACTIVE_ROOM_GRACE_MS remain, never past the hard cap anchored on the first activity write
- * (`activityCapAt`, recorded lazily so rooms nobody touches still expire on their own TTL).
+ * The one sliding-window keepalive every state-changing room write calls: after activity at least
+ * ACTIVE_ROOM_GRACE_MS remain before the room expires. It only ever raises `expiresAt`, so a host `/extend`
+ * or a long TTL that is still ahead stays authoritative.
  *
- * Only ever raises `expiresAt` — an expiry further ahead (a host `/extend`, a long TTL) stays authoritative.
- * Callers do not invoke this per route: `putInvite()` applies it, so board, participant, ask, message and
- * system-announcement writes cannot be forgotten. Room creation opts out (see RoomInitController).
+ * Call it at the write site, never in `putInvite()`: joining, kicking, board writes, task claim/assign, asks,
+ * host transfers, transitions and system announcements are activity; a plain GET (read, board read, status,
+ * wait) must not move the expiry, or polling would keep dead rooms open. Room creation is not activity either -
+ * the host picked that TTL.
  */
 export function touchRoomActivity(invite: InviteState, now = Date.now()): InviteState {
-  const activityCapAt = invite.activityCapAt ?? now + ROOM_ACTIVITY_HARD_CAP_MS;
-  const keepAliveUntil = Math.min(now + ACTIVE_ROOM_GRACE_MS, activityCapAt);
-  if (invite.expiresAt >= keepAliveUntil) {
-    return invite.activityCapAt === activityCapAt ? invite : { ...invite, activityCapAt };
-  }
-  return { ...invite, activityCapAt, expiresAt: keepAliveUntil };
+  const keepAliveUntil = now + ACTIVE_ROOM_GRACE_MS;
+  return invite.expiresAt >= keepAliveUntil ? invite : { ...invite, expiresAt: keepAliveUntil };
 }
 
 export class RoomStorage {
@@ -66,11 +57,9 @@ export class RoomStorage {
     return invite;
   }
 
-  /** Persist room state. Every room write goes here, so this is where the activity window is applied. */
-  async putInvite(invite: InviteState, options: { activity?: boolean } = {}): Promise<void> {
-    const touched = options.activity === false ? invite : touchRoomActivity(invite);
-    await this.state.storage.put(STATE_KEY, touched);
-    await this.scheduleCleanup(touched.expiresAt, touched);
+  async putInvite(invite: InviteState): Promise<void> {
+    await this.state.storage.put(STATE_KEY, invite);
+    await this.scheduleCleanup(invite.expiresAt, invite);
   }
 
   patchAndSave(invite: InviteState, patch: Partial<InviteState>): Promise<void> {

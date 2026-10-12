@@ -13,8 +13,7 @@ export class RoomInitController {
     const existing = await this.storage.getInvite();
     const initResult = await this.buildState(body, existing);
     if (initResult instanceof Response) return initResult;
-    // Creating the room is not activity: the host picked this TTL, so the sliding window starts with the first real write.
-    await this.storage.putInvite(initResult.state, { activity: false });
+    await this.storage.putInvite(initResult.state);
     await this.storage.scheduleCleanup(body.expiresAt);
     return json({ ok: true, ...(initResult.participantToken ? { participant_token: initResult.participantToken } : {}) });
   }

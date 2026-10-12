@@ -177,7 +177,8 @@ export class RendezvousSession implements DurableObject {
       try { parsedUrl = new URL(url); } catch { return json({ error: "invalid url" }, 400); }
       if (parsedUrl.protocol !== "https:") return json({ error: "webhook url must use https" }, 400);
       const result = createHook(invite, url, body.events);
-      await this.storage.patchAndSave(invite, { hooks: result.hooks });
+      // Registering a hook is a room write, so it shares the activity window with every other mutation.
+      await this.storage.patchAndSave(touchRoomActivity(invite), { hooks: result.hooks });
       return json({ ok: true, hook: result.hook });
     });
   }
@@ -187,7 +188,7 @@ export class RendezvousSession implements DurableObject {
       if (auth.participantId !== invite.hostId) return json({ error: "only host can manage webhooks" }, 403);
       const result = deleteHook(invite, hookId);
       if (!result) return json({ error: "hook not found" }, 404);
-      await this.storage.patchAndSave(invite, { hooks: result.hooks });
+      await this.storage.patchAndSave(touchRoomActivity(invite), { hooks: result.hooks });
       return json({ ok: true, deleted: hookId });
     });
   }
@@ -240,14 +241,11 @@ export class RendezvousSession implements DurableObject {
       const extendMs = Math.min(Math.max(requested, MIN_INVITE_TTL_MS), Math.max(maxExtend, MIN_INVITE_TTL_MS));
 
       const newExpiresAt = invite.expiresAt + extendMs;
-      // Report what actually lands in storage: the shared activity window may hold a short extend at least
-      // ACTIVE_ROOM_GRACE_MS open, and a host keepalive loop announces this timestamp.
-      const extended = touchRoomActivity({ ...invite, expiresAt: newExpiresAt });
-      await this.storage.putInvite(extended, { activity: false });
+      await this.storage.patchAndSave(invite, { expiresAt: newExpiresAt });
       return json({
         ok: true,
         extended_ms: extendMs,
-        expires_at: new Date(extended.expiresAt).toISOString(),
+        expires_at: new Date(newExpiresAt).toISOString(),
       });
     });
   }
@@ -347,7 +345,8 @@ export class RendezvousSession implements DurableObject {
       } satisfies import("./types").RoomMessage;
       const messages = [...invite.messages, transitionMessage].slice(-200);
 
-      await this.storage.patchAndSave(invite, { phase: to, nextSeq: seq, messages });
+      // A room transition is a state-changing write, so it moves the activity window like any other.
+      await this.storage.patchAndSave(touchRoomActivity(invite), { phase: to, nextSeq: seq, messages });
       this.events.notifyMessage(transitionMessage, seq);
 
       return json({ ok: true, from: invite.phase, event, to, ...roomTransitionInfo(nextState) });

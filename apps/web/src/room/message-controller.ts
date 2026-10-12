@@ -5,7 +5,7 @@ import type { RoomEventBus } from "./events";
 import { dispatchWebhooks } from "./hooks";
 import { buildReadResponse, createSentMessage, isReadableMessage, parseReadOptions } from "./messages";
 import { parseParticipantProfile, publicParticipant, withReadReceipt, withUpdatedParticipant } from "./participants";
-import type { RoomStorage } from "./storage";
+import { touchRoomActivity, type RoomStorage } from "./storage";
 
 export class RoomMessageController {
   constructor(
@@ -44,9 +44,8 @@ export class RoomMessageController {
         updatedParticipant = updatedInvite.participants[auth.participantId];
       }
 
-      // The room write funnel (RoomStorage.putInvite) applies the shared activity window, exactly like board,
-      // participant and system-announcement writes: after any message at least ACTIVE_ROOM_GRACE_MS remain.
-      await this.storage.putInvite(updatedInvite);
+      // The shared activity window: after any message at least ACTIVE_ROOM_GRACE_MS remain before the room expires.
+      await this.storage.putInvite(touchRoomActivity(updatedInvite));
       if (updatedParticipant) {
         this.events.notifyParticipant(auth.participantId, "updated", updatedParticipant);
         dispatchWebhooks(updatedInvite, "participant", { participant_id: auth.participantId, action: "updated", participant: updatedParticipant });

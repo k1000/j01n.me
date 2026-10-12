@@ -61,11 +61,6 @@ export interface InviteState {
   roomId: string;
   secretHash: string;
   expiresAt: number;
-  /**
-   * Hard stop for activity-based keepalive: first room write sets it to that moment + ROOM_ACTIVITY_HARD_CAP_MS,
-   * and the sliding window can never push `expiresAt` past it. Absent until the room sees its first activity.
-   */
-  activityCapAt?: number;
   /** State name: built-in ("waiting"|"ready"|"closed") or custom from state machine. */
   phase: string;
   hostId: string;

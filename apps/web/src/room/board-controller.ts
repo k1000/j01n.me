@@ -29,10 +29,27 @@ export class RoomBoardController {
     let current = await announceSystemMessage(this.storage, this.events, invite, "board.changed",
       { text: boardChangeText(updatedBy, changes, invite.board, board), updated_by: updatedBy, changes },
       { board }, { changes, updatedBy });
-    for (const { id, recipients, caused_by } of newlyUnblocked(changes, invite.board, board)) {
+    for (const { id, recipients, caused_by, role } of newlyUnblocked(changes, invite.board, board)) {
+      const predecessorId = caused_by[0];
+      const finishedOwner = taskValue(current.board[`task.${predecessorId}`])?.owner;
+      // Role-aware routing: if the dependent task declares a role, try to find a matching free participant.
+      if (typeof role === "string" && role) {
+        const assigned = pickAssignmentTarget(current, role, typeof finishedOwner === "string" ? finishedOwner : undefined);
+        if (assigned) {
+          const body = unblockedNoticeBody(id, predecessorId, current.board, assigned);
+          current = await announceSystemMessage(this.storage, this.events, current, "task.unblocked",
+            body, {}, undefined, assigned);
+          const routingText = `${id} routed to ${assigned} (role: ${role})`;
+          current = await announceSystemMessage(this.storage, this.events, current, "task.routed",
+            { text: routingText, task_id: id, assigned, role },
+            { board: current.board });
+          continue;
+        }
+      }
+      // No role or no matching participant: existing bare unblocked notice to recipients.
       for (const recipient of recipients) {
         if (!current.participants[recipient] || current.participants[recipient].left_at) continue;
-        const body = unblockedNoticeBody(id, caused_by[0], board);
+        const body = unblockedNoticeBody(id, predecessorId, current.board);
         current = await announceSystemMessage(this.storage, this.events, current, "task.unblocked",
           body, {}, undefined, recipient);
       }
@@ -121,7 +138,7 @@ function taskValue(entry: BoardEntry | undefined): Record<string, unknown> | und
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-function newlyUnblocked(changes: Record<string, BoardChange>, before: InviteState["board"], after: InviteState["board"]): Array<{ id: string; recipients: string[]; caused_by: string[] }> {
+function newlyUnblocked(changes: Record<string, BoardChange>, before: InviteState["board"], after: InviteState["board"]): Array<{ id: string; recipients: string[]; caused_by: string[]; role?: string }> {
   const done = Object.keys(changes).filter((key) => key.startsWith("task.") && taskValue(before[key])?.status !== "done" && taskValue(after[key])?.status === "done").map((key) => key.slice(5));
   if (!done.length) return [];
   return Object.entries(after).flatMap(([key, entry]) => {
@@ -132,8 +149,24 @@ function newlyUnblocked(changes: Record<string, BoardChange>, before: InviteStat
       !deps.every((id) => typeof id === "string" && taskValue(after[`task.${id}`])?.status === "done") ||
       deps.every((id) => typeof id === "string" && taskValue(before[`task.${id}`])?.status === "done")) return [];
     const waiters = Array.isArray(task.waiting_for) ? task.waiting_for.filter((id): id is string => typeof id === "string") : [];
-    return [{ id: key.slice(5), recipients: [...new Set([...(typeof task.owner === "string" ? [task.owner] : []), ...waiters])], caused_by: done.filter((id) => deps.includes(id)) }];
+    const role = typeof task.role === "string" ? task.role : undefined;
+    return [{ id: key.slice(5), recipients: [...new Set([...(typeof task.owner === "string" ? [task.owner] : []), ...waiters])], caused_by: done.filter((id) => deps.includes(id)), role }];
   });
+}
+
+/**
+ * Pick the first joined participant whose role matches and state is free.
+ * Excludes the just-finished task owner unless they are the sole match.
+ */
+function pickAssignmentTarget(invite: InviteState, role: string, finishedOwner: string | undefined): string | undefined {
+  const candidates = Object.values(invite.participants).filter((p) =>
+    !p.left_at && p.role === role && p.state === "free"
+  );
+  if (candidates.length === 0) return undefined;
+  if (candidates.length === 1) return candidates[0].id;
+  // Multiple candidates: exclude the just-finished owner.
+  const nonOwner = candidates.filter((p) => p.id !== finishedOwner);
+  return (nonOwner.length > 0 ? nonOwner : candidates)[0].id;
 }
 
 function boardChangeText(updatedBy: string, changes: Record<string, BoardChange>, before: InviteState["board"], after: InviteState["board"]): string {

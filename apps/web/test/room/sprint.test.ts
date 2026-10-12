@@ -145,4 +145,68 @@ describe("sprint template", () => {
     expect((body.text as string)).toContain("endpoint shipped");
     expect((body.text as string)).toContain("8569dda");
   });
+
+  it("routes a role-tagged dependent to the first free matching participant when its prerequisite finishes", async () => {
+    const fix = await sprintRoom(tasks);
+    await joinParticipant(fix, "builder-a", { role: "builder" });
+    await joinParticipant(fix, "verifier-a", { role: "verifier" });
+    // Set T2 with a role so routing kicks in.
+    await setTask(fix, "T2", { title: "Use API", files: ["src/ui.ts"], depends_on: ["T1"], status: "open", role: "builder" });
+    await setTask(fix, "T1", {
+      title: "Build API", files: [], depends_on: [], status: "done", owner: "host",
+      summary: "api ready", evidence: { commits: ["abc1234567890"] },
+    });
+    const read = async (id: string) => (await getRoomJson<{ messages: Array<{ intent: string; to: string; body: Record<string, unknown> }> }>(fix, "/?view=all", id)).messages;
+    // The builder should receive a targeted task.unblocked with assigned field.
+    const builderMessages = (await read("builder-a")).filter((m) => m.intent === "task.unblocked");
+    expect(builderMessages).toHaveLength(1);
+    expect(builderMessages[0].body).toMatchObject({ task_id: "T2", assigned: "builder-a", summary: "api ready", commit: "abc1234567890" });
+    // The verifier should NOT receive an unblocked notice (role mismatch).
+    const verifierMessages = (await read("verifier-a")).filter((m) => m.intent === "task.unblocked");
+    expect(verifierMessages).toHaveLength(0);
+    // A board.changed with routing text should be present.
+    const allMessages = (await read("host")).filter((m) => m.intent === "task.routed");
+    expect(allMessages).toHaveLength(1);
+    expect(allMessages[0].body.text).toContain("T2 routed to builder-a (role: builder)");
+  });
+
+  it("leaves the notice bare when the only matching participant is busy", async () => {
+    const fix = await sprintRoom(tasks);
+    await joinParticipant(fix, "builder-a", { role: "builder" });
+    // Mark builder-a as busy after joining (join always sets state=free).
+    await roomRequest(fix, `/participants/builder-a`, {
+      method: "PATCH",
+      headers: { ...participantAuthHeaders(fix, "builder-a"), "content-type": "application/json" },
+      body: JSON.stringify({ state: "busy" }),
+    });
+    await setTask(fix, "T2", { title: "Use API", files: ["src/ui.ts"], depends_on: ["T1"], status: "claimed", owner: "builder-a", role: "builder" });
+    await setTask(fix, "T1", {
+      title: "Build API", files: [], depends_on: [], status: "done", owner: "host",
+      summary: "api ready", evidence: { commits: ["def4567890123"] },
+    });
+    const read = async (id: string) => (await getRoomJson<{ messages: Array<{ intent: string; to: string; body: Record<string, unknown> }> }>(fix, "/?view=all", id)).messages;
+    // The busy builder is the owner, so they receive the bare unblocked notice (no assigned field).
+    const builderMessages = (await read("builder-a")).filter((m) => m.intent === "task.unblocked");
+    expect(builderMessages).toHaveLength(1);
+    expect(builderMessages[0].body.assigned).toBeUndefined();
+    // No routing announcement since no free builder matched.
+    const routedMessages = (await read("host")).filter((m) => m.intent === "task.routed");
+    expect(routedMessages).toHaveLength(0);
+  });
+
+  it("leaves the notice bare when no participant matches the required role", async () => {
+    const fix = await sprintRoom(tasks);
+    await joinParticipant(fix, "verifier-a", { role: "verifier" });
+    await setTask(fix, "T2", { title: "Use API", files: ["src/ui.ts"], depends_on: ["T1"], status: "open", role: "builder" });
+    await setTask(fix, "T1", {
+      title: "Build API", files: [], depends_on: [], status: "done", owner: "host",
+      summary: "api ready", evidence: { commits: ["aaa1111111111"] },
+    });
+    const read = async (id: string) => (await getRoomJson<{ messages: Array<{ intent: string; to: string; body: Record<string, unknown> }> }>(fix, "/?view=all", id)).messages;
+    // No builder joined: no targeted notice, no routing announcement.
+    const routedMessages = (await read("host")).filter((m) => m.intent === "task.routed");
+    expect(routedMessages).toHaveLength(0);
+    const unblockedMessages = (await read("verifier-a")).filter((m) => m.intent === "task.unblocked");
+    expect(unblockedMessages).toHaveLength(0);
+  });
 });

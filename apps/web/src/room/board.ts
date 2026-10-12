@@ -96,8 +96,10 @@ export function reservationChangeText(updatedBy: string, before: BoardEntry | un
 /**
  * Build the body for a task.unblocked notice. Copies the predecessor task's
  * summary and commit sha from the board (content-blind: no new fields invented).
+ * When `assigned` is provided, the notice is targeted at that participant and
+ * the body includes the `assigned` field plus a routing hint in the text.
  */
-export function unblockedNoticeBody(taskId: string, predecessorId: string, afterBoard: Record<string, BoardEntry>): Record<string, unknown> {
+export function unblockedNoticeBody(taskId: string, predecessorId: string, afterBoard: Record<string, BoardEntry>, assigned?: string): Record<string, unknown> {
   const predEntry = afterBoard[`task.${predecessorId}`];
   const predValue = predEntry?.value;
   const pred = predValue && typeof predValue === "object" && !Array.isArray(predValue) ? predValue as Record<string, unknown> : {};
@@ -111,7 +113,10 @@ export function unblockedNoticeBody(taskId: string, predecessorId: string, after
   let text = `${taskId} is now unblocked by ${predecessorId}`;
   if (summary) text += `: ${summary}`;
   if (commitShort) text += ` (commit ${commitShort})`;
-  return { text, task_id: taskId, blocked_by: [predecessorId], summary, commit };
+  if (assigned) text += `; assigned to ${assigned}`;
+  const body: Record<string, unknown> = { text, task_id: taskId, blocked_by: [predecessorId], summary, commit };
+  if (assigned) body.assigned = assigned;
+  return body;
 }
 
 export function getBoard(invite: InviteState): Response {

@@ -6,8 +6,10 @@
 // private snake_case profile in the keys dir, one python pane, the role recorded in sprint.json and shown by status,
 // and the --roster modes: auto offers each open role-tagged task to a free pane announcing that role (shown by the
 // status routed column), manual leaves claiming to the workers, off says nothing, and an offer nobody took up is
-// handed back to the board by finish.
-// Usage: node scripts/e2e/sprint.mjs <base> [helper]
+// handed back to the board by finish. The verdict watch (a compare.verdict that buries a done task becomes a ROUTED
+// prompt, and on roster:auto a refine child) is covered by fixture messages and a stub helper: it needs no room and
+// no workerd, so `--decision` runs that part alone.
+// Usage: node scripts/e2e/sprint.mjs <base> [helper] | node scripts/e2e/sprint.mjs --decision
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -15,9 +17,15 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
+import { verdictRework } from "../sprint.mjs";
 
-const base = process.argv[2] ?? "https://j01n.me";
-const helper = process.argv[3] ?? fileURLToPath(new URL("../../packages/helper/client/j01n.js", import.meta.url));
+// The verdict fixtures need no room, and the live flow must never be entered by accident: `--decision` is a mode, not
+// a base URL.
+const flags = process.argv.slice(2);
+const decisionOnly = flags.includes("--decision");
+const positional = flags.filter((value) => !value.startsWith("--"));
+const base = positional[0] ?? "https://j01n.me";
+const helper = positional[1] ?? fileURLToPath(new URL("../../packages/helper/client/j01n.js", import.meta.url));
 const orchestrator = fileURLToPath(new URL("../sprint.mjs", import.meta.url));
 const tag = `w${Math.random().toString(36).slice(2, 7)}`;
 const results = [];
@@ -179,6 +187,179 @@ const { J01N_KEY_DIR: _hostKeys, J01N_WORKTREE_ROOT: _hostWorktrees, ...workerEn
 const calls = () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 const sprint = (...argv) => out(host, [orchestrator, ...argv, "--helper", wrapper], env);
 const state = () => JSON.parse(readFileSync(join(keys, "sprint.json"), "utf8"));
+
+// ── verdict watch: a losing compare verdict on a done task becomes rework ────────────────────────
+// No room and no workerd: the tick's input is fixture messages shaped exactly as packages/sdk/src/room-commands.ts
+// writes them (compare.request {a,b,criteria}, compare.verdict {of,winner,reason}), and the room itself is a stub
+// helper that records every argv it saw. That makes the whole decision checkable here: the ROUTED prompt a manual
+// roster owes the host, the refine call an auto roster runs itself, the once-only stamp in sprint.json, and the fact
+// that a verdict which buries nobody (a tie, an unknown candidate, a task already refined) leaves the board alone.
+const vKeys = join(dir, "verdict-keys");
+mkdirSync(vKeys, { recursive: true, mode: 0o700 });
+const vStateFile = join(vKeys, "sprint.json");
+const vLog = join(vKeys, "calls.jsonl");
+writeFileSync(vLog, "");
+const vStub = join(dir, "verdict-stub.cjs");
+writeFileSync(vStub, `const fs=require("fs");
+const argv=process.argv.slice(2);
+fs.appendFileSync(process.env.VERDICT_LOG,JSON.stringify(argv)+"\\n");
+const print=(value)=>process.stdout.write(JSON.stringify(value));
+const tasks=JSON.parse(process.env.VERDICT_TASKS||"[]");
+const team=JSON.parse(process.env.VERDICT_TEAM||"[]");
+const messages=JSON.parse(process.env.VERDICT_MESSAGES||"[]");
+if(argv[0]==="summary"){print({tasks,participants:team,decisions:[],notes:[],report:null,reservations:[]});return;}
+if(argv[0]==="inbox"){print(messages);return;}
+if(argv[0]==="usage"){print({rows:[],totals:{},reported:0,lines:[]});return;}
+if(argv[0]==="extend"){print({ok:true,expires_at:new Date(Date.now()+3600000).toISOString()});return;}
+if(argv[0]==="send"){print({ok:true,seq:1});return;}
+if(argv[0]==="refine"){if(process.env.VERDICT_NO_REFINE){process.stderr.write("unknown command: refine\\n");process.exit(1);}
+  const parent=argv[1];print({task:{id:parent+"r1",title:"refine "+parent+": the verdict buried it",status:"open",depends_on:[parent],role:"builder",needs:["shell"]}});return;}
+process.stderr.write("verdict stub: unhandled "+argv.join(" ")+"\\n");process.exit(1);
+`);
+execFileSync(process.execPath, ["--check", vStub], { stdio: ["ignore", "ignore", "pipe"] });
+// One done task whose evidence commit is the losing candidate, plus the claim that keeps its worker honest.
+const vDone = { id: "t2", title: "UI module", files: ["src/ui.ts"], depends_on: [], status: "done", owner: "w1", needs: ["shell"], evidence: { commits: ["0123456789abcdef"], tests: "unit ok" } };
+const vClaimed = { id: "t1", title: "API module", files: ["src/api.ts"], depends_on: [], status: "claimed", owner: "w2", needs: ["shell"] };
+const vRequest = { id: "req-7", seq: 7, from: "w2", intent: "compare.request", body: { a: "row style", b: "0123456789abcdef stacked dl", criteria: ["scope"] } };
+const vVerdict = (over = {}) => ({ id: "ver-9", seq: 9, from: "w2", intent: "compare.verdict", body: { of: "req-7", winner: "A", reason: "the row keeps the contract" }, ...over });
+const vFree = { id: "w1", state: "free", capabilities: ["code", "shell"] };
+const vBusy = { id: "w2", state: "working", capabilities: ["code", "shell"] };
+const vCalls = () => readFileSync(vLog, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+/** One duty-loop tick over one fixture board. `again` re-reads the sprint.json the previous tick wrote. */
+function vTick(label, { tasks = [vDone, vClaimed], messages = [vRequest, vVerdict()], team = [vFree, vBusy], workers = [{ id: "w1", task: "t2" }, { id: "w2", task: "t1" }], roster = "manual", again = false, noRefine = false } = {}) {
+  if (!again) writeFileSync(vStateFile, JSON.stringify({
+    version: 1, room_id: "verdict-watch", room_url: "http://127.0.0.1:1/r/verdict-watch", state_file: vStateFile,
+    host_checkout: host, keys_dir: vKeys, helper: vStub, base: "http://127.0.0.1:1", host: "host-bot", name: label,
+    workers, tasks, expires_at: new Date(Date.now() + 3_000_000).toISOString(), last_extend_at: new Date().toISOString(),
+    roster: { mode: roster, source: "flag", why: "fixture" },
+  }, null, 2), { mode: 0o600 });
+  const before = vCalls().length;
+  const room = {
+    VERDICT_LOG: vLog, VERDICT_TASKS: JSON.stringify(tasks), VERDICT_TEAM: JSON.stringify(team), VERDICT_MESSAGES: JSON.stringify(messages),
+    ...(noRefine ? { VERDICT_NO_REFINE: "1" } : {}),
+  };
+  let text = "";
+  try { text = out(host, [orchestrator, "status", "--state", vStateFile, "--helper", vStub], { ...env, J01N_KEY_DIR: vKeys, ...room }); } catch (error) { text = `${error.stdout ?? ""}${error.stderr ?? ""}`; }
+  return { text, calls: vCalls().slice(before), state: JSON.parse(readFileSync(vStateFile, "utf8")) };
+}
+const vRefines = (list) => list.filter((argv) => argv[0] === "refine");
+const vAnnounces = (list) => list.filter((argv) => argv[0] === "send" && /Sprint verdict/.test(String(argv[2] ?? "")));
+const ROUTED = /^ROUTED verdict: row style over 0123456789abcdef stacked dl — refine with: j01n refine t2 --from 9$/m;
+
+const vManual = vTick("verdict manual");
+check("a verdict burying a done task's commit prints the ROUTED refine prompt",
+  ROUTED.test(vManual.text) && /\| verdicts:1 rework:t2#9 /.test(vManual.text) && vManual.text.trim().split("\n").length === 2, vManual.text.trim());
+check("roster:manual never runs the refine verb itself, it hands the host the command",
+  vRefines(vManual.calls).length === 0 && !/claim t2r1/.test(vManual.text), JSON.stringify(vManual.calls));
+const vManualAgain = vTick("verdict manual", { again: true });
+check("a manual prompt repeats every tick until the board carries the child, because nothing else remembers it",
+  ROUTED.test(vManualAgain.text) && vRefines(vManualAgain.calls).length === 0, vManualAgain.text.trim().split("\n")[0]);
+
+const vAuto = vTick("verdict auto", { roster: "auto", team: [vFree, { ...vBusy, state: "free" }] });
+check("roster:auto with one free pane that answers the parent's needs runs the refine verb itself",
+  vRefines(vAuto.calls).length === 1 && vRefines(vAuto.calls)[0].join(" ") === "refine t2 --from 9",
+  JSON.stringify(vRefines(vAuto.calls)));
+check("the refine the tick ran names the winner, the loser, the parent, the child and the free pane in the room",
+  vAnnounces(vAuto.calls).length === 1 && /^Sprint verdict \(roster:auto\): row style over 0123456789abcdef stacked dl — t2 refined as t2r1; w1 is free and answers its needs; claim t2r1 to rebuild\.$/.test(String(vAnnounces(vAuto.calls)[0][2])),
+  String(vAnnounces(vAuto.calls)[0]?.[2] ?? ""));
+check("the tick records the verdict it asked about in sprint.json, parent, seq, worker and child included",
+  vAuto.state.refines?.["ver-9"]?.parent === "t2" && vAuto.state.refines["ver-9"].seq === 9 &&
+    vAuto.state.refines["ver-9"].child === "t2r1" && vAuto.state.refines["ver-9"].worker === "w1",
+  JSON.stringify(vAuto.state.refines));
+check("the auto tick shows the prompt it acted on and what came of it",
+  ROUTED.test(vAuto.text) && /t2 refined as t2r1/.test(vAuto.text), vAuto.text.trim());
+const vAutoAgain = vTick("verdict auto", { roster: "auto", team: [vFree, { ...vBusy, state: "free" }], again: true });
+check("a second auto tick asks about the same verdict once only, however many ticks read it",
+  vRefines(vAutoAgain.calls).length === 0 && /verdicts:1 rework:none/.test(vAutoAgain.text) &&
+    vAutoAgain.state.refines["ver-9"].child === "t2r1", JSON.stringify({ line: vAutoAgain.text.trim(), refines: vAutoAgain.state.refines }));
+const vNoWorker = vTick("verdict auto no free pane", { roster: "auto", team: [{ ...vFree, state: "working" }, vBusy] });
+check("roster:auto with no free pane still prompts the host and asks nobody to rebuild",
+  ROUTED.test(vNoWorker.text) && vRefines(vNoWorker.calls).length === 0 && vAnnounces(vNoWorker.calls).length === 0,
+  JSON.stringify(vNoWorker.calls));
+const vNoCapable = vTick("verdict auto uncapable", { roster: "auto", team: [{ ...vFree, capabilities: ["code"] }, vBusy] });
+check("a free pane that does not answer the parent's needs is not handed the rebuild",
+  ROUTED.test(vNoCapable.text) && vRefines(vNoCapable.calls).length === 0, JSON.stringify(vNoCapable.calls));
+const vSilent = vTick("verdict none", { messages: [] });
+check("no verdict, no call and no prompt: the tick says so in one compact line",
+  !/ROUTED/.test(vSilent.text) && vRefines(vSilent.calls).length === 0 && /verdicts:0 rework:none/.test(vSilent.text) &&
+    vSilent.text.trim().split("\n").length === 1, vSilent.text.trim());
+const vTie = vTick("verdict tie", { messages: [vRequest, vVerdict({ body: { of: "req-7", winner: "tie", reason: "both stand" } })] });
+check("a draw buries nobody, so nothing is rework", !/ROUTED/.test(vTie.text) && /verdicts:1 rework:none/.test(vTie.text) && vRefines(vTie.calls).length === 0, vTie.text.trim());
+const vUntraceable = { ...vRequest, id: "req-8", seq: 8, body: { a: "0123456789abcdef stacked dl", b: "a branch nobody reported", criteria: ["scope"] } };
+const vUnknown = vTick("verdict unknown candidate", { messages: [vUntraceable, vVerdict({ id: "ver-10", seq: 10, body: { of: "req-8", winner: "A", reason: "the named option is the done one" } })] });
+check("a verdict whose loser maps to no done task is counted, not routed", /verdicts:1 rework:none/.test(vUnknown.text) && !/ROUTED/.test(vUnknown.text) && vRefines(vUnknown.calls).length === 0, vUnknown.text.trim());
+const vChild = vTick("verdict already refined", { tasks: [vDone, vClaimed, { id: "t2r1", title: "refine t2: the verdict buried it", files: ["src/ui.ts"], depends_on: ["t2"], status: "open", role: "builder", needs: ["shell"] }] });
+check("a verdict the board already turned into a refine child says nothing twice",
+  !/ROUTED/.test(vChild.text) && /verdicts:1 rework:none/.test(vChild.text) && vRefines(vChild.calls).length === 0, vChild.text.trim());
+const vNoVerb = vTick("verdict without the verb", { roster: "auto", team: [vFree, { ...vBusy, state: "free" }], noRefine: true });
+check("a helper build with no refine verb is reported, never faked, and the host keeps the by-hand command",
+  ROUTED.test(vNoVerb.text) && vRefines(vNoVerb.calls).length === 1 && /was not refined.*run it by hand: j01n refine t2 --from 9/.test(vNoVerb.text) &&
+    vNoVerb.state.refines["ver-9"].child === null && vAnnounces(vNoVerb.calls).length === 0,
+  vNoVerb.text.trim().split("\n").slice(-2).join(" | "));
+const vNoVerbAgain = vTick("verdict without the verb", { roster: "auto", team: [vFree, { ...vBusy, state: "free" }], noRefine: true, again: true });
+check("a failed refine is not retried every tick, and the prompt the host still owes keeps printing",
+  vRefines(vNoVerbAgain.calls).length === 0 && ROUTED.test(vNoVerbAgain.text) && /verdicts:1 rework:t2#9/.test(vNoVerbAgain.text),
+  vNoVerbAgain.text.trim().split("\n").slice(0, 2).join(" | ") + " | " + JSON.stringify(vNoVerbAgain.state.refines));
+
+// The same decision read straight off the function. The ticks above prove the wiring (prompt, call, stamp, announce);
+// these prove the vocabulary - what counts as a named candidate, what counts as already refined, what counts as a
+// verdict that decides nothing - without one subprocess per case.
+const vRework = (over = {}) => verdictRework({
+  messages: over.messages ?? [vRequest, vVerdict()],
+  tasks: over.tasks ?? [vDone, vClaimed],
+  participants: over.participants ?? [vFree, vBusy],
+  workers: over.workers ?? [{ id: "w1", task: "t2" }, { id: "w2", task: "t1" }],
+  roster: over.roster ?? "manual", seen: over.seen ?? {},
+});
+const manualDecision = vRework();
+check("the decision carries the verdict's own words: winner, loser, the done task it maps to and the seq to refine from",
+  manualDecision.decisions.length === 1 && manualDecision.verdicts === 1 &&
+    manualDecision.decisions[0].winner === "row style" && manualDecision.decisions[0].loser === "0123456789abcdef stacked dl" &&
+    manualDecision.decisions[0].taskId === "t2" && manualDecision.decisions[0].seq === 9 &&
+    manualDecision.decisions[0].action === "route" && manualDecision.decisions[0].worker === "",
+  JSON.stringify(manualDecision.decisions));
+const autoRework = () => vRework({ roster: "auto", participants: [vFree, { ...vBusy, state: "free" }] });
+check("on auto the same fixture yields the refine action with the free pane that answers the needs picked",
+  autoRework().decisions[0].action === "refine" && autoRework().decisions[0].worker === "w1",
+  JSON.stringify(autoRework().decisions[0]));
+const asked = vRework({ roster: "auto", participants: [vFree, { ...vBusy, state: "free" }], seen: { "ver-9": { child: "t2r1" } } }).decisions[0];
+check("a verdict sprint.json already asked about decides nothing further",
+  asked.action === "none" && /refined as t2r1/.test(asked.reason), JSON.stringify(asked));
+const shortSha = vRework({
+  messages: [{ ...vRequest, body: { a: "row style", b: "01234567 the UI module retry", criteria: ["scope"] } }, vVerdict({ body: { of: "req-7", winner: "A", reason: "the retry lost the contract" } })],
+}).decisions[0];
+check("an abbreviated sha in the losing candidate still maps to the task that reported it",
+  shortSha.taskId === "t2" && shortSha.action === "route" && /j01n refine t2 --from 9/.test(shortSha.line), JSON.stringify(shortSha));
+const lowercase = vRework({
+  messages: [{ ...vRequest, body: { a: "0123456789abcdef stacked dl", b: "row style", criteria: ["scope"] } }, vVerdict({ body: { of: "req-7", winner: "b", reason: "the row keeps the contract" } })],
+}).decisions[0];
+check("a verdict written in lower case decides exactly like the canonical one the verb sends",
+  lowercase.winner === "row style" && lowercase.loser === "0123456789abcdef stacked dl" &&
+    lowercase.taskId === "t2" && lowercase.action === "route", JSON.stringify(lowercase));
+const vDoneApi = { ...vClaimed, status: "done", evidence: { commits: ["cc3333cc44444444"], tests: "unit ok" } };
+const vBoth = { ...vRequest, body: { a: "0123456789abcdef stacked dl", b: "the UI module or the API module", criteria: ["scope"] } };
+const ambiguous = vRework({ messages: [vBoth, vVerdict({ body: { of: "req-7", winner: "A", reason: "both names are on the board" } })], tasks: [vDone, vDoneApi] }).decisions[0];
+check("a candidate naming two done tasks at once maps to neither and says nothing",
+  ambiguous.action === "none" && ambiguous.taskId === "" && /names t1 and t2 at once/.test(ambiguous.reason) && !ambiguous.line,
+  JSON.stringify(ambiguous));
+const orphan = vRework({ messages: [vVerdict({ body: { of: "req-404", winner: "A", reason: "the request is out of the read window" } })] });
+check("a verdict whose request the room cannot answer decides nothing, but is still counted",
+  orphan.decisions.length === 0 && orphan.verdicts === 1, JSON.stringify(orphan));
+check("no verdict in the room is no decision at all", vRework({ messages: [] }).decisions.length === 0 && vRework({ messages: [] }).verdicts === 0);
+// The watch repeats the room's compare vocabulary rather than importing it, so a drift on either side has to fail here:
+// these are the exact literals packages/sdk/src/room-commands.ts writes for a request and its verdict.
+const compareSource = readFileSync(fileURLToPath(new URL("../../packages/sdk/src/room-commands.ts", import.meta.url)), "utf8");
+check("the SDK still spells the intents and bodies the verdict watch decrypts",
+  compareSource.includes('COMPARE_INTENTS = { request: "compare.request", verdict: "compare.verdict" }') &&
+    compareSource.includes('{ a, b, criteria }, { intent: COMPARE_INTENTS.request') &&
+    compareSource.includes('{ of: target, winner, reason }, { intent: COMPARE_INTENTS.verdict') &&
+    compareSource.includes('COMPARE_WINNERS = ["A", "B", "tie"]'),
+  compareSource.split("\n").filter((line) => /COMPARE_(INTENTS|WINNERS)/.test(line)).join(" | ").slice(0, 200));
+
+if (decisionOnly) {
+  console.log(results.every(Boolean) ? "SPRINT VERDICT DECISIONS OK" : "SPRINT VERDICT DECISIONS FAILED");
+  process.exit(results.every(Boolean) ? 0 : 1);
+}
 
 // ── preflight: a refused start leaves no room, no state and no pane behind ─────────────────────
 const badBin = join(dir, "bin-bad");

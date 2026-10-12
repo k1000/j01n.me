@@ -1,9 +1,25 @@
+import { ACTIVE_ROOM_GRACE_MS } from "../constants";
 import { json } from "../format";
 import type { InviteState } from "../types";
 import { activeParticipants } from "./participants";
 import { nextAskEscalation } from "./messages";
 
 const STATE_KEY = "invite";
+
+/**
+ * The one sliding-window keepalive every state-changing room write calls: after activity at least
+ * ACTIVE_ROOM_GRACE_MS remain before the room expires. It only ever raises `expiresAt`, so a host `/extend`
+ * or a long TTL that is still ahead stays authoritative.
+ *
+ * Call it at the write site, never in `putInvite()`: joining, kicking, board writes, task claim/assign, asks,
+ * host transfers, transitions and system announcements are activity; a plain GET (read, board read, status,
+ * wait) must not move the expiry, or polling would keep dead rooms open. Room creation is not activity either -
+ * the host picked that TTL.
+ */
+export function touchRoomActivity(invite: InviteState, now = Date.now()): InviteState {
+  const keepAliveUntil = now + ACTIVE_ROOM_GRACE_MS;
+  return invite.expiresAt >= keepAliveUntil ? invite : { ...invite, expiresAt: keepAliveUntil };
+}
 
 export class RoomStorage {
   constructor(private readonly state: DurableObjectState) {}

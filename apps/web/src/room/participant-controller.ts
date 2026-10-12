@@ -21,7 +21,7 @@ import {
 } from "./participants";
 import { normalizeParticipantId } from "../validation";
 import type { RoomEventBus } from "./events";
-import type { RoomStorage } from "./storage";
+import { touchRoomActivity, type RoomStorage } from "./storage";
 
 /** The body of a `profile.changed` announcement when capabilities, workspace or model changed, else undefined. */
 function profileChangeMessage(before: InviteState, after: InviteState, participantId: string, actorId: string) {
@@ -98,7 +98,8 @@ export class RoomParticipantController {
       seq,
     );
     const messages = [...updated.messages, systemMessage];
-    await this.storage.patchAndSave(updated, { nextSeq: seq, messages });
+    // Joining is a room write: it shares the activity window with messages, board writes and announcements.
+    await this.storage.patchAndSave(touchRoomActivity(updated), { nextSeq: seq, messages });
     this.events.notifyParticipant(participantId, "joined", participants[participantId]);
     this.events.notifyMessage(systemMessage, seq);
     dispatchWebhooks({ ...updated, messages }, "participant", { participant_id: participantId, action: "joined", participant: participants[participantId] });
@@ -141,7 +142,7 @@ export class RoomParticipantController {
         // Capabilities or workspace changed: tell everyone in the chat (the workspace stays sealed in the message).
         await announceSystemMessage(this.storage, this.events, updated, "profile.changed", announcement);
       } else {
-        await this.storage.putInvite(updated);
+        await this.storage.putInvite(touchRoomActivity(updated));
       }
       this.events.notifyParticipant(targetId, "updated", updated.participants[targetId]);
       dispatchWebhooks(updated, "participant", { participant_id: targetId, action: "updated", participant: updated.participants[targetId] });
@@ -188,7 +189,7 @@ export class RoomParticipantController {
       invite = await this.releaseReservations(invite, participantId, participantId, `${participantId} released its reservations and left`);
     }
     const updated = withLeftParticipant(invite, participantId);
-    await this.storage.putInvite(updated);
+    await this.storage.putInvite(touchRoomActivity(updated));
     this.events.notifyParticipant(participantId, "left", updated.participants[participantId]);
     dispatchWebhooks(updated, "participant", { participant_id: participantId, action: "left", participant: updated.participants[participantId] });
     await this.storage.deleteIfEmpty();
@@ -209,7 +210,7 @@ export class RoomParticipantController {
     }
     const updated = withKickedParticipant(invite, targetId);
     if (updated instanceof Response) return updated;
-    await this.storage.putInvite(updated);
+    await this.storage.putInvite(touchRoomActivity(updated));
     this.events.notifyParticipant(targetId, "kicked", updated.participants[targetId]);
     dispatchWebhooks(updated, "participant", { participant_id: targetId, action: "kicked", participant: updated.participants[targetId] });
     return json({ ok: true, kicked: targetId, room: roomInfo(updated) });

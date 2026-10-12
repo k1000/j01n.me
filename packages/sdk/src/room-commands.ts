@@ -1,8 +1,10 @@
 import type { RoomClient } from "./room-client";
 import type { Workspace } from "./crypto";
+import { RoomApiError } from "./errors";
 import { listReservations, releasePaths, reservePaths } from "./reservations";
 import { addDecision, addNote, notesAndDecisions } from "./notes";
-import { blockTask, claimTask, completeTask, listTasks, unblockTask } from "./tasks";
+import { blockTask, claimTask, completeTask, listTasks, taskKey, unblockTask, type Task } from "./tasks";
+import type { CompareVerdictBody, RefineOptions, RoomMessage, SendResult, TaskRefinedBody, TaskRouting } from "./types";
 
 const MESSAGE_KINDS = ["finding", "question", "decision", "blocker", "handoff"] as const;
 type MessageKind = typeof MESSAGE_KINDS[number];
@@ -24,6 +26,89 @@ function compareWinner(value: string | undefined): CompareWinner {
 }
 const COMPARE_USAGE = "compare needs: <a> <b> --criteria x,y [--wait]";
 const VERDICT_USAGE = `verdict needs: <msg-id-or-seq> <${COMPARE_WINNERS.join("|")}> --reason <text> [--reply-to <id>]`;
+
+/** The verdict loop: a losing verdict turns into rework as a child task of the task it judged. */
+export const REFINE_INTENT = "task.refined";
+const REFINE_USAGE = "refine needs: <task id> [--from <verdict seq|id>] [--note text]";
+/** How much of a verdict reason a follow-up title carries. */
+const REFINE_TITLE_CHARS = 60;
+/** A board task plus the routing fields the sprint spec writes into it (see types.ts TaskRouting). */
+type BoardTask = Task & TaskRouting;
+
+/** Host by announced role, or by the room record when the role row never landed: the same rule assign follows. */
+async function isRoomHost(client: RoomClient): Promise<boolean> {
+  if ((await client.team()).find((p) => p.id === client.participantId)?.role === "host") return true;
+  return (await client.status()).room.host_id === client.participantId;
+}
+
+/** The compare.verdict a refine leans on: `from` names its seq or message id, otherwise the newest verdict wins.
+ * Reading messages advances this participant's cursor, the same tradeoff `report` accepts to see verdicts. */
+async function verdictToRefine(client: RoomClient, from?: string): Promise<RoomMessage> {
+  const messages = await client.read({ all: true, includeSelf: true });
+  const verdicts = messages.filter((message) => message.intent === COMPARE_INTENTS.verdict);
+  if (!verdicts.length) throw new Error(`refine needs a ${COMPARE_INTENTS.verdict} message to point at: post one, or pass --from <seq>`);
+  if (from === undefined) return verdicts.reduce((latest, message) => (message.seq > latest.seq ? message : latest));
+  const found = verdicts.find((message) => String(message.seq) === from || message.id === from);
+  if (!found) throw new Error(`refine --from ${from} is not a ${COMPARE_INTENTS.verdict} message in this room`);
+  return found;
+}
+
+/**
+ * Open one follow-up task from a verdict, so a losing comparison turns into routed rework instead of a chat thread.
+ * Reads `task.<taskId>`, takes the newest (or `--from`) `compare.verdict` as its reason, and seeds a NEW board key
+ * `task.<parentId>r<n>` - n one past the parent's existing numbered children, refused when that key already exists
+ * (and guarded by if_version 0, so a concurrent refine cannot clobber it) - with status open, the parent's files,
+ * role and needs copied, depends_on [parentId] and the reason `verdict <seq>` in the brief. Then posts a sealed
+ * task.refined notice to all with the new id. Only the verdict's author may refine, the host always may.
+ */
+export async function refineTask(client: RoomClient, taskId: string, options: RefineOptions = {}): Promise<{ id: string; task: BoardTask; notice: SendResult }> {
+  taskKey(taskId);
+  const tasks = await listTasks(client);
+  const parent = tasks.find((task) => task.id === taskId) as BoardTask | undefined;
+  if (!parent) throw new Error(`task ${taskId} does not exist`);
+
+  const verdict = await verdictToRefine(client, options.from === undefined ? undefined : String(options.from));
+  if (!(await isRoomHost(client)) && verdict.from !== client.participantId) {
+    throw new Error(`refine ${taskId}: verdict ${verdict.seq} is ${verdict.from}'s to refine, or ask the host`);
+  }
+  const note = options.note?.trim() ?? "";
+  const opened = verdict.body as CompareVerdictBody | undefined;
+  const reasonText = typeof opened?.reason === "string" ? opened.reason.trim() : "";
+  const detail = note || reasonText.slice(0, REFINE_TITLE_CHARS);
+  if (!detail) throw new Error(`refine ${taskId} needs --note, or a verdict reason this client can open`);
+
+  // t1 -> t1r1, t1r2, ... one past the parent's numbered children; the slot must be free, refine never rewrites
+  // a task somebody already holds (a gap in the sequence is a collision, not an invitation).
+  const childPattern = new RegExp(`^${taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}r\\d+$`);
+  const children = tasks.filter((task) => childPattern.test(task.id));
+  const id = `${taskId}r${children.length + 1}`;
+  if (children.some((task) => task.id === id)) throw new Error(`refine ${taskId} cannot seed task ${id}: it already exists`);
+  const reason = `verdict ${verdict.seq}`;
+  const task: BoardTask = {
+    title: `refine ${taskId}: ${detail}`,
+    files: [...parent.files],
+    depends_on: [taskId],
+    status: "open",
+    brief: [`${reason}${reasonText ? `: ${reasonText}` : ""}`, note ? `note: ${note}` : "", parent.brief ? `${taskId}: ${parent.brief}` : ""]
+      .filter(Boolean).join("; "),
+    ...(parent.role ? { role: parent.role } : {}),
+    ...(parent.needs?.length ? { needs: [...parent.needs] } : {}),
+    ...(parent.contract ? { contract: parent.contract } : {}),
+  };
+  try {
+    await client.setBoardKey(taskKey(id), task, { ifVersion: 0 });
+  } catch (error) {
+    if (error instanceof RoomApiError && error.status === 409) throw new Error(`refine ${taskId} cannot seed task ${id}: it already exists`);
+    throw error;
+  }
+  // The same vocabulary task.assigned uses, so one notice reader covers both, plus the lineage a modal shows.
+  const body: TaskRefinedBody = {
+    text: `${id} opened from ${taskId}: ${detail}`,
+    task: id, task_id: id, title: task.title, refines: taskId, reason, by: client.participantId,
+  };
+  const notice = await client.send("all", body, { intent: REFINE_INTENT });
+  return { id, task, notice };
+}
 
 export async function roomSummary(client: RoomClient) {
   // These endpoints inspect state without reading messages or advancing the participant's cursor.
@@ -102,6 +187,22 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
     if (!id || !worker || id.startsWith("--") || worker.startsWith("--")) throw new Error("assign needs: <task id> <participant> [reason]");
     const reason = reasonWords.join(" ").trim();
     return { task: await client.assign(id, worker, reason ? { reason } : {}) };
+  }
+  if (cmd === "refine") {
+    const [id, ...args] = rest;
+    if (!id || id.startsWith("--")) throw new Error(REFINE_USAGE);
+    const flags: RefineOptions = {};
+    for (let i = 0; i < args.length; i++) {
+      const name = args[i];
+      const value = args[i + 1];
+      if (name !== "--from" && name !== "--note") throw new Error(REFINE_USAGE);
+      const already = name === "--from" ? flags.from : flags.note;
+      if (!value || value.startsWith("--") || already !== undefined) throw new Error(REFINE_USAGE);
+      if (name === "--from") flags.from = value; else flags.note = value;
+      i++;
+    }
+    await options.beforeSend?.();
+    return refineTask(client, id, flags);
   }
   if (cmd === "done") {
     const [id, ...args] = rest;

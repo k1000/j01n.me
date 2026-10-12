@@ -220,6 +220,11 @@
       next_seq: readBody.cursor,
       expires_at: statusBody.expires_at,
     }, invite);
+    // Task cards are part of both views, and an open modal follows the room: wired once per card, refreshed in
+    // place so the reader keeps their focus.
+    wireTaskCards();
+    wireTaskEditConfirm();
+    await renderTaskModal();
     if (roomEvents && roomEvents.readyState === EventSource.OPEN) updateConnectionStatus("connected");
   }
 
@@ -481,14 +486,14 @@
         const task = tasks[id];
         const title = task ? (typeof task === "object" ? (task.title || id) : String(task)) : id;
         const owner = task && typeof task === "object" && task.owner ? esc(task.owner) : "";
-        return '<div class="kanban-card" data-task-id="' + escAttr(id) + '">' +
+        return '<div class="kanban-card" data-task-id="' + escAttr(id) + '" data-task-card="' + escAttr(id) + '" tabindex="0" title="Open task details">' +
           '<span class="kanban-card-title">' + esc(title) + '</span>' +
           (owner ? '<span class="kanban-card-owner">Owner: ' + owner + '</span>' : '') +
           (task?.priority === "high" || task?.priority === "low" ? '<span class="kanban-card-priority" data-priority="' + task.priority + '">' + task.priority + ' priority</span>' : '') +
           (task?.description || taskExtras(task) ? '<details class="kanban-card-details" data-collapse="' + escAttr('task:' + id) + '"><summary>Details</summary>' +
             (task?.description ? '<p>' + esc(task.description) + '</p>' : '') +
             (taskExtras(task) ? '<div class="board-value">' + renderValue(taskExtras(task)) + '</div>' : '') + '</details>' : '') +
-          (!liveView ? '<button class="button" type="button" data-edit-task="' + escAttr(id) + '" aria-label="' + escAttr('Edit ' + title) + '">Edit</button>' : '') +
+          (!liveView ? taskEditHtml(task, { id, aria: 'Edit ' + title, viewer: { isHost } }) : '') +
         '</div>';
       };
       // Done only grows: keep the three most recent cards in view and fold the older ones.
@@ -506,12 +511,12 @@
       const task = value && typeof value === "object" && !Array.isArray(value) ? value : {};
       const waiting = Array.isArray(task.depends_on) ? task.depends_on.filter(dep => !done.has(dep)) : [];
       const details = Object.fromEntries(Object.entries(task).filter(([field]) => !["title", "status", "owner"].includes(field)));
-      return '<article class="kanban-card" data-sprint-task-id="' + escAttr(id) + '">' +
+      return '<article class="kanban-card" data-sprint-task-id="' + escAttr(id) + '" data-task-card="' + escAttr(id) + '" tabindex="0" title="Open task details">' +
         '<span class="kanban-card-title">' + esc(id) + ' · ' + esc(task.title || id) + '</span>' +
         (task.owner ? '<span class="kanban-card-owner">Owner: ' + esc(task.owner) + '</span>' : '') +
         (waiting.length ? '<span class="sprint-task-waiting">waits for ' + esc(waiting.join(', ')) + '</span>' : '') +
         '<details class="kanban-card-details" data-collapse="' + escAttr('key:' + key) + '"><summary>Details</summary><div class="board-value">' + renderValue(details) + '</div></details>' +
-        '<button class="button button-small" type="button" data-edit-board-key="' + escAttr(key) + '" aria-label="' + escAttr('Edit board key ' + key) + '">Edit</button></article>';
+        taskEditHtml(task, { id, boardKey: key, small: true, aria: 'Edit board key ' + key, viewer: { isHost } }) + '</article>';
     };
     return '<div class="kanban-board sprint-task-board" aria-label="Sprint tasks">' + ["open", "claimed", "blocked", "done"].map(status => {
       const inColumn = tasks.filter(({ value }) => value?.status === status || (status === "open" && !["open", "claimed", "blocked", "done"].includes(value?.status)));
@@ -519,6 +524,282 @@
       const cards = (older.length ? '<details class="kanban-done-more" data-collapse="sprint-done-more"><summary>Show ' + older.length + ' more</summary>' + older.map(card).join('') + '</details>' : '') + inColumn.slice(older.length).map(card).join('');
       return '<div class="kanban-column"><h3 class="kanban-column-title">' + status[0].toUpperCase() + status.slice(1) + '</h3><div class="kanban-cards">' + cards + '</div></div>';
     }).join('') + '</div>';
+  }
+
+  // ── Task card details: modal, and Edit gated by status and host ──────────────
+  // A click anywhere on a task card (outside its buttons and toggles) opens a dialog with what the card cannot
+  // fit: the contract its owner works to, the evidence a finished task left, and the compare.verdict lines that
+  // name it. Edit is no longer a free-for-all: an open card stays editable by anyone, a claimed, blocked or done
+  // card only by the host — and the host confirms first, because that edit rewrites somebody else's contract.
+  // The dialog lives in a host element on document.body, so a room re-render never closes it or steals focus.
+  const TASK_HELD_STATES = ["blocked", "claimed", "doing", "done", "in_progress", "review"];
+  const TASK_BUSY_STATES = ["blocked", "claimed", "doing", "in_progress", "review"];
+  let openTaskCardId = "";
+  let taskModalReturnFocus = null;
+  let taskModalHostEl = null;
+
+  function taskStatusOf(task) {
+    return String(task?.status ?? task?.state ?? "").trim() || "open";
+  }
+
+  // t3's dot vocabulary is presence-shaped (busy/free); the header reuses it and still prints the real status.
+  function taskStatusDot(status) {
+    return TASK_BUSY_STATES.includes(status) ? "busy" : "free";
+  }
+
+  function taskCanEdit(task, viewer) {
+    return !TASK_HELD_STATES.includes(taskStatusOf(task)) || viewer?.isHost === true;
+  }
+
+  function taskEditWarning(task) {
+    return "task is claimed by " + (String(task?.owner || "").trim() || "another participant") + "; editing rewrites their contract";
+  }
+
+  // The Edit affordance of a card. A host editing a claimed or blocked card gets an ask button plus a hidden
+  // inline confirm; the real editor hook (data-edit-task / data-edit-board-key) only exists inside that confirm,
+  // so nobody can reach the board editor without seeing whose contract they are about to overwrite.
+  function taskEditHtml(task, options) {
+    const viewer = options.viewer || {};
+    const status = taskStatusOf(task);
+    if (!taskCanEdit(task, viewer)) return "";
+    const size = "button" + (options.small ? " button-small" : "");
+    const target = options.boardKey
+      ? 'data-edit-board-key="' + escAttr(options.boardKey) + '"'
+      : 'data-edit-task="' + escAttr(options.id) + '"';
+    if (viewer.isHost && (status === "claimed" || status === "blocked")) {
+      const confirmId = "task-edit-confirm-" + options.id;
+      return '<button class="' + size + '" type="button" data-task-edit-ask="' + escAttr(options.id) + '" aria-expanded="false" aria-controls="' + escAttr(confirmId) + '">Edit</button>' +
+        '<span class="task-edit-confirm" id="' + escAttr(confirmId) + '" data-task-edit-confirm="' + escAttr(options.id) + '" hidden>' +
+        '<span class="task-edit-confirm-text" role="status">' + esc(taskEditWarning(task)) + '</span> ' +
+        '<button class="button button-small" type="button" ' + target + ' data-task-edit-continue="' + escAttr(options.id) + '">Confirm edit</button> ' +
+        '<button class="button button-small" type="button" data-task-edit-dismiss="' + escAttr(options.id) + '">Cancel</button>' +
+        '</span>';
+    }
+    return '<button class="' + size + '" type="button" ' + target + ' aria-label="' + escAttr(options.aria || ("Edit " + options.id)) + '">Edit</button>';
+  }
+
+  // One task, whichever board shape wrote it: a sprint `task.<id>` key or a Kanban `tasks[id]` entry.
+  function taskCardModel(id, data) {
+    const board = data?.board || {};
+    const boardKey = "task." + id;
+    const entry = board[boardKey];
+    const kanban = extractValue(board.tasks?.value);
+    const raw = entry ? boardDisplayValue(entry.value)
+      : kanban && typeof kanban === "object" && kanban[id] && typeof kanban[id] === "object" ? kanban[id] : null;
+    if (!raw || typeof raw !== "object") return null;
+    const status = taskStatusOf(raw);
+    const doneIds = Object.entries(board)
+      .filter(([key, item]) => key.startsWith("task.") && taskStatusOf(boardDisplayValue(item?.value)) === "done")
+      .map(([key]) => key.slice(5));
+    const evidence = raw.evidence && typeof raw.evidence === "object" ? raw.evidence : null;
+    const commits = Array.isArray(evidence?.commits) ? evidence.commits.map(String).filter(Boolean) : [];
+    const tests = evidence?.tests ? String(evidence.tests) : "";
+    const evidenceContract = evidence?.contract ? String(evidence.contract) : "";
+    const owner = String(raw.owner || "");
+    const firstText = (...values) => values.map(value => String(value ?? "").trim()).filter(Boolean)[0] || "";
+    return {
+      id,
+      boardKey: entry ? boardKey : "",
+      title: String(raw.title || id),
+      status,
+      dot: taskStatusDot(status),
+      role: raw.role ? String(raw.role) : "",
+      owner,
+      ownerLabel: owner ? String(data?.participants?.[owner]?.display_name || owner) : "",
+      files: Array.isArray(raw.files) ? raw.files.map(String) : [],
+      dependsOn: Array.isArray(raw.depends_on) ? raw.depends_on.map(dep => ({ id: String(dep), done: doneIds.includes(String(dep)) })) : [],
+      contract: firstText(raw.contract, raw.description),
+      brief: raw.brief ? String(raw.brief) : "",
+      needs: Array.isArray(raw.needs) ? raw.needs.map(String) : [],
+      blockedReason: raw.blocked_reason ? String(raw.blocked_reason) : "",
+      summary: raw.summary ? String(raw.summary) : "",
+      done: status === "done" && (raw.summary || commits.length || tests || evidenceContract)
+        ? { commits, tests, contract: evidenceContract } : null,
+      updated: entry?.version != null ? "v" + entry.version + (entry.updated_by ? " · " + entry.updated_by : "") : "",
+      verdicts: [],
+    };
+  }
+
+  function taskDetailsHtml(model) {
+    if (!model) return "";
+    const text = (value) => '<span class="json-text">' + esc(value) + '</span>';
+    const code = (value) => '<code class="json-text">' + esc(value) + '</code>';
+    const row = (term, value) => value ? '<div><dt>' + esc(term) + '</dt><dd>' + value + '</dd></div>' : "";
+    const list = (items) => items.length ? '<ul class="json-list">' + items.map(item => '<li>' + code(item) + '</li>').join("") + '</ul>' : "";
+    const depends = model.dependsOn.length
+      ? '<ul class="json-list">' + model.dependsOn.map(dep => '<li>' + code(dep.id) +
+        ' <span class="task-dep-state" data-done="' + escAttr(dep.done ? "true" : "false") + '">' + (dep.done ? "done" : "open") + '</span></li>').join("") + '</ul>'
+      : "";
+    const evidence = model.done
+      ? '<section class="live-task-modal-evidence"><h3>Done evidence</h3><dl>' +
+        row("summary", model.summary ? text(model.summary) : "") + row("commits", list(model.done.commits)) +
+        row("tests", model.done.tests ? text(model.done.tests) : "") +
+        row("contract", model.done.contract ? text(model.done.contract) : "") + '</dl></section>'
+      : "";
+    const verdicts = model.verdicts.length
+      ? '<section class="live-task-modal-verdicts"><h3>Compare verdicts</h3><ul class="json-list">' + model.verdicts.map(verdict =>
+        '<li>' + text(verdict.winner || "tie") + ' by ' + esc(verdict.from) +
+        (verdict.request ? ' on request #' + esc(verdict.request) : '') + (verdict.seq ? ' · #' + esc(verdict.seq) : '') +
+        (verdict.reason ? ': ' + esc(verdict.reason) : '') + '</li>').join("") + '</ul></section>'
+      : "";
+    return '<dialog class="live-task-modal" data-task-modal aria-labelledby="live-task-modal-title" tabindex="-1" style="width:calc(100% - 2rem);max-width:44rem;max-height:calc(100vh - 4rem);overflow:auto;padding:0;margin:auto;border:2px solid var(--console-cream);background:var(--console-panel);color:var(--console-text)">' +
+      '<header class="live-task-modal-head" style="display:flex;flex-wrap:wrap;gap:0.5rem 0.75rem;align-items:baseline;justify-content:space-between;padding:0.75rem 1rem;border-bottom:1px dashed var(--console-rule)">' +
+      '<h2 id="live-task-modal-title" style="margin:0;font-size:0.95rem"><span class="live-marker" aria-hidden="true">## </span>' + esc(model.id) + ' · ' + esc(model.title) + '</h2>' +
+      '<span class="live-state live-state-inline" data-state="' + escAttr(model.dot) + '" aria-hidden="true"><span class="live-state-text">' + esc(model.status) + '</span></span>' +
+      '<button class="button button-small" type="button" data-task-modal-close>Close</button></header>' +
+      '<div class="live-task-modal-panel" style="padding:1rem">' +
+      '<dl class="live-task-modal-fields">' +
+      row("id", code(model.id)) + row("status", text(model.status)) + row("role", model.role ? text(model.role) : "") +
+      row("owner", model.owner ? text(model.ownerLabel) : "") + row("files", list(model.files)) +
+      row("depends_on", depends) + row("needs", list(model.needs)) +
+      row("contract", model.contract ? text(model.contract) : "") + row("brief", model.brief ? text(model.brief) : "") +
+      row("blocked", model.blockedReason ? text(model.blockedReason) : "") +
+      '</dl>' + evidence + verdicts +
+      (model.updated ? '<p class="live-task-modal-meta"><small>' + esc(model.updated) + '</small></p>' : "") +
+      '</div></dialog>';
+  }
+
+  // compare.verdict answers that name this task — in their own reason, or in the compare.request candidates they
+  // settle. Bodies open through the same path the timeline uses, so no second decryption route is added here.
+  async function taskVerdictLines(id, messages, openBody) {
+    const list = Array.isArray(messages) ? messages : [];
+    const mentions = (value) => String(value ?? "").split(/[^A-Za-z0-9_.-]+/).some(token => token === id || token === "task." + id);
+    const lines = [];
+    for (const message of list) {
+      if (message?.intent !== "compare.verdict") continue;
+      const body = await Promise.resolve(openBody(message, list)).catch(() => null);
+      if (!body || typeof body !== "object") continue;
+      const request = list.find(candidate => String(candidate.id) === String(body.of) || String(candidate.seq) === String(body.of)) || null;
+      const requested = request ? await Promise.resolve(openBody(request, list)).catch(() => null) : null;
+      const haystack = [body.of, body.reason, body.winner, requested?.a, requested?.b, request?.id].map(value =>
+        typeof value === "string" ? value : value == null ? "" : JSON.stringify(value)).join(" ");
+      if (!mentions(haystack)) continue;
+      lines.push({ seq: message.seq, from: message.from, winner: String(body.winner || ""), reason: String(body.reason || ""), of: String(body.of || ""), request: request?.seq ?? "" });
+    }
+    return lines.slice(-6);
+  }
+
+  function taskModalHost() {
+    if (taskModalHostEl && document.body?.contains(taskModalHostEl)) return taskModalHostEl;
+    const host = document.createElement("div");
+    host.className = "live-task-modal-host";
+    host.dataset.taskModalHost = "";
+    document.body?.appendChild(host);
+    taskModalHostEl = host;
+    return host;
+  }
+
+  function clearTaskModal() {
+    if (taskModalHostEl) taskModalHostEl.innerHTML = "";
+  }
+
+  function closeTaskCard() {
+    const focusTarget = taskModalReturnFocus;
+    openTaskCardId = "";
+    taskModalReturnFocus = null;
+    if (taskModalHostEl) delete taskModalHostEl.dataset.taskModalSignature;
+    clearTaskModal();
+    if (focusTarget && typeof focusTarget.focus === "function") focusTarget.focus({ preventScroll: true });
+  }
+
+  function showTaskDialog(dialog) {
+    // Native <dialog> gives the backdrop, Escape and focus containment; engines without it fall back to the
+    // board editor's is-visible convention.
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else { dialog.open = true; dialog.classList.add("is-visible"); }
+    dialog.focus({ preventScroll: true });
+  }
+
+  function wireTaskModal(dialog) {
+    if (!dialog) return;
+    for (const control of Array.from(dialog.querySelectorAll("[data-task-modal-close]"))) control.addEventListener("click", closeTaskCard);
+    // A click that lands on the dialog box itself is the backdrop or its padding ring, never the content.
+    dialog.addEventListener("click", (event) => { if (event.target === dialog) closeTaskCard(); });
+    dialog.addEventListener("cancel", closeTaskCard);
+    dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") closeTaskCard(); });
+  }
+
+  async function buildTaskCardModel(id) {
+    const model = taskCardModel(id, latest || {});
+    if (!model) return null;
+    model.verdicts = await taskVerdictLines(id, latest?.messages, async (message, messages) => {
+      if (message?.body?.encrypted === true) {
+        const opened = await decryptMessageBody(message, messages);
+        return opened.ok ? opened.value : null;
+      }
+      return message?.body ?? null;
+    });
+    return model;
+  }
+
+  async function openTaskCard(id) {
+    if (!id || !latest) return;
+    const active = document.activeElement;
+    if (!openTaskCardId && active && active !== document.body) taskModalReturnFocus = active;
+    openTaskCardId = id;
+    await renderTaskModal({ focus: true });
+  }
+
+  // Refresh the open dialog with the room. Same task, same version and same verdict count means the DOM is left
+  // alone, so a reader working through a contract never loses their place or their focus mid-sentence.
+  async function renderTaskModal(options = {}) {
+    if (!openTaskCardId) { clearTaskModal(); return; }
+    const model = await buildTaskCardModel(openTaskCardId).catch(() => null);
+    if (!model) { openTaskCardId = ""; clearTaskModal(); return; }
+    const host = taskModalHost();
+    const signature = [model.boardKey, model.status, model.owner, model.updated, model.verdicts.length].join("|");
+    if (!options.focus && host.dataset.taskModalSignature === signature) return;
+    const hadFocus = host.contains(document.activeElement);
+    host.dataset.taskModalSignature = signature;
+    host.innerHTML = taskDetailsHtml(model);
+    const dialog = host.querySelector("[data-task-modal]");
+    if (!dialog) return;
+    wireTaskModal(dialog);
+    if (options.focus) showTaskDialog(dialog);
+    else if (hadFocus) dialog.focus({ preventScroll: true });
+  }
+
+  // Card click: anything interactive keeps its own meaning (Edit, the Details toggle, links, the board editor);
+  // the rest of the card opens the modal. Enter and Space do the same from the keyboard.
+  function wireTaskCards() {
+    for (const card of Array.from(root?.querySelectorAll("[data-task-card]") || [])) {
+      if (card.dataset.taskCardWired === "1") continue;
+      card.dataset.taskCardWired = "1";
+      card.addEventListener("click", (event) => {
+        if (event?.target?.closest?.("button, a, summary, details, input, select, textarea, label")) return;
+        openTaskCard(card.dataset.taskCard);
+      });
+      card.addEventListener("keydown", (event) => {
+        if (event.target !== card || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        openTaskCard(card.dataset.taskCard);
+      });
+    }
+  }
+
+  function wireTaskEditConfirm() {
+    for (const button of Array.from(root?.querySelectorAll("[data-task-edit-ask]") || [])) {
+      if (button.dataset.taskAskWired === "1") continue;
+      button.dataset.taskAskWired = "1";
+      button.addEventListener("click", () => {
+        const panel = root?.querySelector('[data-task-edit-confirm="' + button.dataset.taskEditAsk + '"]');
+        if (!panel) return;
+        panel.hidden = false;
+        button.setAttribute("aria-expanded", "true");
+        panel.querySelector("[data-task-edit-continue]")?.focus({ preventScroll: true });
+      });
+    }
+    for (const button of Array.from(root?.querySelectorAll("[data-task-edit-continue],[data-task-edit-dismiss]") || [])) {
+      if (button.dataset.taskConfirmWired === "1") continue;
+      button.dataset.taskConfirmWired = "1";
+      button.addEventListener("click", () => {
+        const panel = button.closest?.("[data-task-edit-confirm]");
+        if (panel) panel.hidden = true;
+        if (button.hasAttribute?.("data-task-edit-dismiss")) {
+          root?.querySelector('[data-task-edit-ask="' + button.dataset.taskEditDismiss + '"]')?.focus({ preventScroll: true });
+        }
+      });
+    }
   }
 
   function extractValue(v) {
@@ -556,7 +837,7 @@
     const boardKeys = Object.entries(board).filter(([key]) => !usageParticipant(key));
     const entries = boardKeys.filter(([key]) => !isKanban || !["columns", "tasks"].includes(key));
     const boardHtml = (isKanban ? renderKanbanBoard(board, columns, "h3") : "") + '<div class="live-board-entries">' + entries.map(([key, entry]) =>
-      '<article class="live-board-card"><header><h3>' + esc(key) + '</h3><span class="live-version">v' + esc(entry.version ?? 0) + '</span></header><div class="board-value">' + renderBoardValue(entry.value) + '</div><small>Updated by ' + esc(entry.updated_by || "—") + '</small></article>'
+      '<article class="live-board-card"' + (key.startsWith("task.") ? ' data-task-card="' + escAttr(key.slice(5)) + '" tabindex="0" title="Open task details"' : '') + '><header><h3>' + esc(key) + '</h3><span class="live-version">v' + esc(entry.version ?? 0) + '</span></header><div class="board-value">' + renderBoardValue(entry.value) + '</div><small>Updated by ' + esc(entry.updated_by || "—") + '</small></article>'
     ).join("") + '</div>';
     const workspaces = Object.fromEntries(await Promise.all(people.map(async p => [p.id, p.workspace ? await openSealedKickoff(p.workspace).catch(() => null) : null])));
     const peopleHtml = people.map(p => {

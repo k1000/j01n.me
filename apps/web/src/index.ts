@@ -136,6 +136,9 @@ for (const file of clientFiles) {
     c.body(file.body, 200, {
       "content-type": file.type,
       "content-disposition": `inline; filename="${file.filename}"`,
+      // No ETag/Last-Modified: heuristic freshness made browsers reuse stale
+      // copies across deploys. The body is version-pinned by the Worker bundle.
+      "cache-control": "no-cache",
     }),
   );
 }

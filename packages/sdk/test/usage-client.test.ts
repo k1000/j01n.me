@@ -5,7 +5,7 @@ import { buildMinimalInvite } from "../src/invite";
 import { buildRoomClient } from "../src/room-client";
 import type { RoomClient } from "../src/room-client";
 import { sealForRoom } from "../src/crypto";
-import { RESERVATIONS_KEY } from "../src/reservations";
+import { listReservations, RESERVATIONS_KEY } from "../src/reservations";
 import { runRoomCommand } from "../src/room-commands";
 import {
   sealUsage,
@@ -614,6 +614,20 @@ describe("assign", () => {
     // And holding the path for this exact task is not a conflict with yourself.
     expect(await host.assign("t3", "worker-1")).toMatchObject({ status: "claimed", owner: "worker-1", files: ["packages/sdk/src/metrics.ts"] });
     expect(room.writes.map((w) => w.key)).toEqual(["task.t2", "task.t3"]);
+  });
+
+  it("accepts an offer with claim, which is what takes the file reservation the assign left alone", async () => {
+    const room = assignRoom();
+    const host = await room.client("hermes-bot");
+    const worker = await room.client("worker-1");
+    await syncKeys(host, worker);
+    await host.assign("t1", "worker-1", { reason: "you are free" });
+
+    const claimed = await runRoomCommand(worker, "claim", ["t1"], { repo: ASSIGN.repo }) as { task: Record<string, unknown> };
+    expect(claimed.task).toMatchObject({ status: "claimed", owner: "worker-1", assigned: "worker-1", assigned_by: "hermes-bot", assigned_reason: "you are free" });
+    expect((await listReservations(worker)).map((r) => `${r.by}:${r.reason}:${r.paths.join(",")}`)).toEqual([`worker-1:task t1:${TASK_FILE}`]);
+    // A taken offer is a taken task: the host cannot hand it to somebody else any more.
+    await expect(host.assign("t1", "worker-2")).rejects.toThrow("task t1 is claimed by worker-1: assign only takes open tasks");
   });
 
   it("puts the task back when the notice cannot be delivered", async () => {

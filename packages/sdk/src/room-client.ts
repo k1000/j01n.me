@@ -16,7 +16,7 @@ import type {
 } from "./types";
 import { RoomApiError } from "./errors";
 import { listReservations, pathsOverlap } from "./reservations";
-import { listTasks } from "./tasks";
+import { listTasks, taskKey } from "./tasks";
 import type { Task } from "./tasks";
 import {
   nextUsage,
@@ -95,28 +95,15 @@ function boardKeyUrl(roomUrl: string, key: string, ifVersion?: number): string {
   return `${roomUrl}/board/${encodeURIComponent(key)}${ifVersion === undefined ? "" : `?if_version=${ifVersion}`}`;
 }
 
-const TASK_ID = /^[a-zA-Z0-9_-]+$/;
-/** The board key holding a task, and the guard that keeps a caller from writing outside `task.*`. */
-function taskKey(id: string): string {
-  if (!TASK_ID.test(id)) throw new Error("invalid task id");
-  return `task.${id}`;
-}
+const TASK_ID = /^[a-z][a-z0-9_-]{0,31}$/;
 
-/** The board marker assign leaves behind: who offered the task, when and why. Flat fields, so a board reader
- * needs no new import to tell an accepted claim from an unaccepted offer (`assigned_by` only exists on offers). */
+/** Why the host is offering this task, handed to the worker with the notice. The offer itself is recorded on the
+ * task (see Task.assigned_by in tasks.ts), so a board reader needs no new import to tell an accepted claim from
+ * an offer nobody took. */
 export interface AssignOptions {
   /** Free text for the worker: why this task, why now, why them. */
   reason?: string;
 }
-
-/** A task as assign writes it: claimed by the worker, with the offer recorded next to the owner. */
-export type AssignedTask = Task & {
-  /** The worker this task was offered to; equals owner while the offer stands. */
-  assigned?: string;
-  assigned_by?: string;
-  assigned_at?: string;
-  assigned_reason?: string;
-};
 
 /** A question waiting for your reply: answer with send(..., { replyTo: id }). */
 export interface OpenQuestion {
@@ -216,10 +203,11 @@ export interface RoomClient {
    * with `owner: <participantId>, status: "claimed", assigned: <participantId>, assigned_by/at/reason` and posts a
    * direct sealed `task.assigned` notice (body: task, from, reason) so the worker wakes with the offer.
    * Refuses a caller who is not the host, a target that is not joined and free, a task that is not open or still
-   * waiting on a dependency, and files covered by a live reservation in this checkout (that task's own pending
-   * reservation aside). An offer, not a force: the worker still reports done themselves.
+   * waiting on a dependency, and files covered by a live reservation in the target's checkout (that task's own
+   * pending reservation aside). An offer, not a force: the worker accepts with claim (tasks.ts keeps the markers
+   * and reserves the files), and still reports done themselves.
    */
-  assign(taskId: string, participantId: string, options?: AssignOptions): Promise<AssignedTask>;
+  assign(taskId: string, participantId: string, options?: AssignOptions): Promise<Task>;
   extend(options?: { extendMs?: number }): Promise<{ ok: true; extended_ms: number; expires_at: string }>;
   export(): Promise<RoomExportResponse>;
   /**
@@ -477,7 +465,7 @@ export async function buildRoomClient(
       return request<{ ok: true; host_id: string }>(`${invite.room_url}/host`, invite, { method: "POST", participantId, body: { to } });
     },
     async assign(taskId: string, workerId: string, options = {}) {
-      if (!TASK_ID.test(taskId)) throw new Error("invalid task id");
+      taskKey(taskId);
       if (!TASK_ID.test(workerId)) throw new Error("invalid participant id");
       const reason = options.reason?.trim() || undefined;
 
@@ -522,7 +510,7 @@ export async function buildRoomClient(
         assigned_by: participantId,
         assigned_at: at,
         ...(reason ? { assigned_reason: reason } : {}),
-      } as AssignedTask;
+      } as Task;
       await client.setBoardKey(taskKey(taskId), next, { ifVersion: entry.version ?? 0 });
       try {
         // task_id and assigned mirror the routed task.unblocked notice vocabulary, so one reader handles both.

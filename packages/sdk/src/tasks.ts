@@ -11,6 +11,13 @@ export interface Task {
   brief?: string;
   status: "open" | "claimed" | "blocked" | "done";
   owner?: string;
+  /** The assign offer (see RoomClient.assign): the worker it was offered to, who offered it, when and why.
+   * A worker accepts with claim, which keeps these markers, so a runner can still tell an offer nobody took
+   * (claimed, assigned_by set, no evidence) from work in progress. */
+  assigned?: string;
+  assigned_by?: string;
+  assigned_at?: string;
+  assigned_reason?: string;
   summary?: string;
   behaviour_changes?: string;
   evidence?: { commits: string[]; tests: string; contract?: string };
@@ -23,6 +30,8 @@ const key = (id: string) => {
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error("invalid task id");
   return `task.${id}`;
 };
+/** The one task-key rule, shared with clients that write `task.*` straight (see RoomClient.assign). */
+export { key as taskKey };
 
 function taskFrom(value: unknown): Task {
   if (!value || typeof value !== "object") throw new Error("invalid task entry");
@@ -62,21 +71,27 @@ export async function claimTask(client: RoomClient, id: string, repo: string): P
     const entry = board[key(id)];
     if (!entry) throw new Error(`task ${id} does not exist`);
     const current = taskFrom(entry.value);
-    if (current.status !== "open") throw new Error(`task ${id} is ${current.status}${current.owner ? ` by ${current.owner}` : ""}`);
-    const unfinished = (entries: typeof board) => current.depends_on.filter((dep) => entries[key(dep)]?.value && taskFrom(entries[key(dep)].value).status === "done" ? false : true);
-    const waiting = unfinished(board);
-    if (waiting.length) {
-      if (!current.waiting_for?.includes(client.participantId)) {
-        try {
-          await client.setBoardKey(key(id), { ...current, waiting_for: [...(current.waiting_for ?? []), client.participantId] }, { ifVersion: entry.version ?? 0 });
-        } catch (error) {
-          if (error instanceof RoomApiError && error.status === 409) continue;
-          throw error;
+    // Accepting an assign offer: the host already wrote owner+status, so claiming it reserves the files, keeps
+    // the owner and leaves assigned_by on the task. Anyone else, and a self-claim with no offer behind it, still
+    // hits the refusal below.
+    const accepting = current.status === "claimed" && current.owner === client.participantId && !!current.assigned_by;
+    if (current.status !== "open" && !accepting) throw new Error(`task ${id} is ${current.status}${current.owner ? ` by ${current.owner}` : ""}`);
+    if (!accepting) {
+      const unfinished = (entries: typeof board) => current.depends_on.filter((dep) => entries[key(dep)]?.value && taskFrom(entries[key(dep)].value).status === "done" ? false : true);
+      const waiting = unfinished(board);
+      if (waiting.length) {
+        if (!current.waiting_for?.includes(client.participantId)) {
+          try {
+            await client.setBoardKey(key(id), { ...current, waiting_for: [...(current.waiting_for ?? []), client.participantId] }, { ifVersion: entry.version ?? 0 });
+          } catch (error) {
+            if (error instanceof RoomApiError && error.status === 409) continue;
+            throw error;
+          }
         }
+        // A dependency may have completed before this waiter was recorded, so its notice could have missed us.
+        if (unfinished((await client.board()).board).length === 0) continue;
+        throw new Error(`task ${id} waits for ${waiting.join(", ")}`);
       }
-      // A dependency may have completed before this waiter was recorded, so its notice could have missed us.
-      if (unfinished((await client.board()).board).length === 0) continue;
-      throw new Error(`task ${id} waits for ${waiting.join(", ")}`);
     }
     task = current;
     version = entry.version ?? 0;

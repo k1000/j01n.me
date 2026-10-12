@@ -18,6 +18,44 @@ export interface RoomMessage {
   decrypt_error?: string;
 }
 
+/** Body of a `compare.verdict` message: it settles one `compare.request` with a winner and the reason. */
+export interface CompareVerdictBody {
+  /** The `compare.request` this answers, as the caller wrote it: message id or seq. */
+  of?: string;
+  winner?: "A" | "B" | "tie";
+  reason?: string;
+}
+
+/** Options for a refine (see room-commands `refineTask`, and the `j01n refine` verb). */
+export interface RefineOptions {
+  /** The `compare.verdict` this rework comes from, by seq or message id. Defaults to the newest verdict in the room. */
+  from?: string | number;
+  /** What to change, in the refiner's own words. Titles the child task instead of the verdict reason. */
+  note?: string;
+}
+
+/** Body of the sealed `task.refined` notice announcing a follow-up task opened from a verdict. */
+export interface TaskRefinedBody {
+  text: string;
+  /** The new follow-up task id, spelled the way `task.assigned` spells it, so one reader handles both. */
+  task: string;
+  task_id: string;
+  title: string;
+  /** The parent task this one refines; also its only `depends_on` entry. */
+  refines: string;
+  /** `verdict <seq>` — the message that turned a losing verdict into this rework. */
+  reason: string;
+  by: string;
+}
+
+/** Routing fields a sprint board task carries that tasks.ts's `Task` does not name (see spec.ts, and the board).
+ * Clients copy them straight through the board, so a task reader that clones a task needs them typed. */
+export interface TaskRouting {
+  role?: string;
+  needs?: string[];
+  contract?: string;
+}
+
 // ── Shared participant/board types used by SDK client and server DO ──
 
 export type SessionPhase = "waiting" | "ready" | "closed";

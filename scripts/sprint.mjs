@@ -5,11 +5,15 @@
 // and join the room as the host, seed worker identities into their own worktrees, give each worker a Herdr workspace
 // plus pane and an explicit task prompt carrying its board brief, optionally route role-tagged tasks to the free panes
 // that announce that role (--roster), hand the raw invite link to the owner as a file
-// body, top the room invite up from status while the board still holds work, then rebase the reviewed task branches in dependency
-// order onto main and open a merge request. With --ui-tester the room also gets one non-git participant: an inbox
-// identity, a private room profile in the keys dir and one Herdr pane polling the room in the ui-tester role.
+// body, top the room invite up from status while the board still holds work, watch the compare verdicts the room
+// judges with (a verdict burying a done task becomes a ROUTED line, and on roster:auto a refine child for it), then
+// rebase the reviewed task branches in dependency order onto main and open a merge request. With --ui-tester the room
+// also gets one non-git participant: an inbox identity, a private room profile in the keys dir and one Herdr pane
+// polling the room in the ui-tester role.
 // Rules: never print a room credential, never integrate a dirty checkout, persist every step in sprint.json so an
 // interrupted start or finish resumes instead of repeating side effects (no duplicate rooms, panes or invites).
+// The verdict-watch decision function is exported for scripts/e2e/sprint.mjs, which exercises it against fixture
+// messages with no room and no workerd; the flow below only runs when this file is the program being run.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -785,6 +789,160 @@ function keepalive(state, tasks) {
   if (notice) announce(state, `host keepalive: room extended to ${extended.expires_at}, ${activity}`);
   return `keepalive:extended to ${extended.expires_at}, ${Math.round((next - Date.now()) / 60_000)}m left, ${activity}${notice ? ", noticed" : ""}`;
 }
+
+// ── verdict watch (status) ─────────────────────────────────────────────────────────────────────
+// A compare.verdict that buries a finished task is rework the board should say out loud, not a line in chat nobody
+// re-reads. Every status tick already decrypts the room's messages to count asks, so the watch reads that same list:
+// no second read, no second decryption path. It never repeats a side effect either: the verdict id, the child it
+// produced and the worker it was offered to live in sprint.json under `refines`, exactly like the keepalive stamps.
+// The two intents, the winner vocabulary and the "refine " title prefix mirror packages/sdk/src/room-commands.ts and
+// the refine verb; this script deliberately imports nothing from the repo, so the spellings are repeated here.
+const COMPARE_INTENTS = { request: "compare.request", verdict: "compare.verdict" };
+const COMPARE_WINNERS = ["A", "B", "tie"];
+const REFINE_PREFIX = "refine ";
+const escapeRe = (value) => String(value).replace(/[.*+?${}()|[\]\\]/g, "\\$&");
+/** A refine child, the way t1 writes it and t3 renders it: it depends on its parent and its title starts with the prefix. */
+const isRefineChild = (task) => String(task?.title ?? "").startsWith(REFINE_PREFIX) && Array.isArray(task?.depends_on) && task.depends_on.length > 0;
+/**
+ * A verdict answers its request by message id or by seq, which is what the CLI passes through from `verdict <target>`.
+ * The intent is the primary key; a peer that posted candidates without it still counts, because the candidates, not
+ * the label, are what the decision needs.
+ */
+function messageByRef(messages, ref, intent = "") {
+  const value = String(ref ?? "").trim();
+  if (!value) return null;
+  const numeric = /^\d+$/.test(value);
+  const matches = (message) => String(numeric ? message.seq : message.id) === value;
+  return messages.find((message) => matches(message) && (!intent || message.intent === intent)) ??
+    messages.find((message) => matches(message) && typeof message.body?.a === "string" && typeof message.body?.b === "string") ?? null;
+}
+/** Candidates are free text; one line, bounded, is what a status log can carry. */
+const candidateLabel = (value) => (typeof value === "string" ? value : value == null ? "" : JSON.stringify(value)).replace(/\s+/g, " ").trim().slice(0, 60);
+/** Does this candidate name that task: the id (or `task.<id>`) as a whole token, or its title verbatim? */
+const namesTask = (needle, task) =>
+  new RegExp(`(?:^|[^a-z0-9_.-])${escapeRe(String(task.id).toLowerCase())}(?:$|[^a-z0-9_.-])`).test(needle) ||
+  needle.includes(`task.${String(task.id).toLowerCase()}`) ||
+  (!!String(task.title ?? "").trim() && needle.includes(String(task.title).toLowerCase().trim()));
+/**
+ * Which done task the losing candidate names. Evidence commits are the strongest match - a peer quotes the sha it
+ * judged, in full or abbreviated; after them the task id as a whole token (or `task.<id>`) and the title count as one
+ * tier. A name that fits two tasks at the same strength maps to neither: the ROUTED line has to carry one task id, and
+ * guessing is how the wrong task gets rebuilt.
+ */
+function loserTask(tasks, candidate) {
+  const needle = String(candidate ?? "").toLowerCase();
+  if (!needle) return { task: null, why: "the verdict names no losing candidate" };
+  const done = (tasks ?? []).filter((task) => typeof task?.id === "string" && task.id && task.status === "done");
+  const namesCommit = (task) => (task.evidence?.commits ?? []).some((commit) => {
+    const sha = String(commit).toLowerCase();
+    return !!sha && (needle.includes(sha) || needle.includes(sha.slice(0, 7)));
+  });
+  const tiers = [
+    done.filter(namesCommit),
+    done.filter((task) => namesTask(needle, task)),
+  ];
+  const matched = tiers.find((tier) => tier.length) ?? [];
+  if (!matched.length) return { task: null, why: "no done task carries that candidate" };
+  if (matched.length > 1) return { task: null, why: `the candidate names ${matched.map((task) => String(task.id)).sort().join(" and ")} at once` };
+  const task = matched[0];
+  const child = (tasks ?? []).find((entry) => isRefineChild(entry) && (entry.depends_on ?? []).includes(task.id));
+  if (child) return { task: null, why: `${task.id} is already refined as ${child.id}` };
+  return { task, why: "" };
+}
+/** Does this worker announce everything the parent asked for? An empty `needs` is answerable by any free pane. */
+function needsMet(capabilities, needs) {
+  const have = new Set((capabilities ?? []).map((name) => String(name).toLowerCase()));
+  return (Array.isArray(needs) ? needs : []).every((need) => have.has(String(need).toLowerCase()));
+}
+/**
+ * The roster's own pane-picking rule, asked about `needs` instead of `role`: a joined, idle task worker that announces
+ * what the parent needed and holds no claim. Role peers (the ui-tester) own no task, so they are never candidates.
+ */
+function freeCapableWorker({ workers, participants, busy, needs }) {
+  return (workers ?? []).find((worker) => !worker.role && !busy.has(worker.id) &&
+    (participants ?? []).some((peer) => peer.id === worker.id && (peer.state || "free") === "free") &&
+    needsMet(participants.find((peer) => peer.id === worker.id)?.capabilities, needs)) ?? null;
+}
+/**
+ * The whole verdict decision, as one pure function so the e2e can drive it with fixture messages: for every
+ * compare.verdict that buries a candidate belonging to a done task it returns what the tick should say (line) and do
+ * (action: "refine" = run t1's verb now, "route" = tell the host the command, "none" = nothing owed).
+ * `roster` is the mode sprint.json recorded, `seen` is sprint.json's `refines` map: on auto a verdict is asked about
+ * once, however many ticks read it, and a call that did not take is never retried - it falls back to the prompt, which
+ * is what the host can act on. On manual the prompt repeats every tick until the board carries the child, because
+ * nothing else remembers that the rework is owed.
+ */
+export function verdictRework({ messages = [], tasks = [], participants = [], workers = [], roster = "manual", seen = {} } = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const verdicts = list.filter((message) => message?.intent === COMPARE_INTENTS.verdict);
+  const busy = new Set(tasks.filter((task) => ["claimed", "blocked"].includes(task.status) && task.owner).map((task) => task.owner));
+  const decisions = [];
+  for (const message of verdicts) {
+    const body = message.body ?? {};
+    // Same vocabulary the `verdict` verb accepts: case-insensitive in, canonical on the wire, nothing else decides.
+    const stated = String(body.winner ?? "");
+    const winner = COMPARE_WINNERS.includes(stated) ? stated : COMPARE_WINNERS.includes(stated.toUpperCase()) ? stated.toUpperCase() : "";
+    if (!winner || winner === "tie") continue; // a draw buries nobody, an unparseable winner decides nothing
+    const request = messageByRef(list, body.of, COMPARE_INTENTS.request);
+    const won = winner === "A" ? "a" : "b";
+    const win = candidateLabel(request?.body?.[won]);
+    const lose = candidateLabel(request?.body?.[won === "a" ? "b" : "a"]);
+    if (!win || !lose) continue; // no request in the room, or a candidate-less one: nothing this tick can say
+    const { task, why } = loserTask(tasks, lose);
+    const worker = task && roster === "auto" ? freeCapableWorker({ workers, participants, busy, needs: task.needs }) : null;
+    const asked = seen[String(message.id)];
+    let action = "route";
+    let reason = why;
+    if (!task) action = "none";
+    else if (roster === "auto" && asked && asked.child) { action = "none"; reason = `verdict #${message.seq} is already refined as ${asked.child}`; }
+    else if (roster === "auto" && asked) { action = "route"; reason = `the refine call for verdict #${message.seq} did not take: ${asked.error ?? "asked once, no child on the board"}`; }
+    else if (roster === "auto" && worker) action = "refine";
+    decisions.push({
+      verdict: String(message.id ?? ""), seq: Number(message.seq ?? 0), winner: win, loser: lose, taskId: task?.id ?? "",
+      worker: worker?.id ?? "", action, reason, needs: Array.isArray(task?.needs) ? task.needs : [],
+      line: task ? `ROUTED verdict: ${win} over ${lose} — refine with: j01n refine ${task.id} --from ${Number(message.seq ?? 0)}` : "",
+    });
+  }
+  return { decisions, verdicts: verdicts.length };
+}
+/**
+ * Run t1's refine verb for one decision and remember that it was run, before anything is announced: an interrupted
+ * tick cannot ask twice. A helper build without the verb, or a refused call, is REPORTED and never faked - the ROUTED
+ * line the tick printed just above still tells the host exactly what to run by hand.
+ */
+function refineFromVerdict(state, decision) {
+  const stamp = (state.refines ??= {});
+  if (stamp[decision.verdict]) return;
+  const created = soft(state, ["refine", decision.taskId, "--from", String(decision.seq)]);
+  const child = created?.task?.id ?? (typeof created?.task === "string" ? created.task : created?.id) ?? "";
+  stamp[decision.verdict] = { at: nowIso(), parent: decision.taskId, seq: decision.seq, worker: decision.worker, child: child || null, ...(child ? {} : { error: "the refine call returned no child" }) };
+  saveState(state);
+  if (!child) {
+    console.log(`roster:auto: ${decision.taskId} was not refined, the call failed (this helper build may have no refine verb); run it by hand: j01n refine ${decision.taskId} --from ${decision.seq}`);
+    return;
+  }
+  console.log(`roster:auto: ${decision.taskId} refined as ${child} by verdict #${decision.seq}${decision.worker ? ` (free ${decision.worker}${decision.needs.length ? ` answers needs ${decision.needs.join(",")}` : ""})` : ""}`);
+  announce(state, `Sprint verdict (roster:auto): ${decision.winner} over ${decision.loser} — ${decision.taskId} refined as ${child}${decision.worker ? `; ${decision.worker} is free and answers its needs` : ""}; claim ${child} to rebuild.`);
+}
+/**
+ * One tick of the watch: say what is owed, do what auto allows, and hand status a compact segment so the duty loop
+ * still ends in exactly one line. Verdicts that decided nothing (a draw, an unknown candidate, an already-refined
+ * task) leave no trace beyond the count.
+ */
+function watchVerdicts(state, summary, messages) {
+  const { decisions, verdicts } = verdictRework({
+    messages, tasks: summary.tasks ?? [], participants: summary.participants ?? [],
+    workers: state.workers ?? [], roster: state.roster?.mode ?? "manual", seen: state.refines ?? {},
+  });
+  for (const decision of decisions) {
+    if (decision.action === "none") continue;
+    console.log(decision.line);
+    if (decision.action === "refine") refineFromVerdict(state, decision);
+  }
+  const owed = decisions.filter((decision) => decision.action !== "none");
+  return `verdicts:${verdicts} rework:${owed.length ? owed.map((decision) => `${decision.taskId}#${decision.seq}${decision.action === "refine" ? `->${decision.worker}` : ""}`).join(",") : "none"}`;
+}
+
 function compactUsage(usage) {
   if (!usage) return "usage:unavailable";
   const rows = usage.rows ?? [];
@@ -796,14 +954,18 @@ async function status() {
   if (positional().length) fail("status takes no arguments");
   const state = loadState() ?? { host_checkout: process.cwd(), keys_dir: keysDir() };
   const summary = helper(state, ["summary"]);
-  const asks = openAsks(helper(state, ["inbox"]));
+  // One decrypted read per tick: the ask count and the verdict watch come from the same messages.
+  const messages = helper(state, ["inbox"]);
+  const asks = openAsks(messages);
   const usage = soft(state, ["usage"]);
   const participants = summary.participants ?? [];
   const owner = participants.some((participant) => participant.role === "owner") ? "owner" : "no owner";
   const roles = roleRoster(state);
   // The routed column is the host's answer to "who was this handed to": read off the board, hidden when roster is off.
   const routed = state.roster?.mode === "off" ? null : routedTasks(state, summary.tasks ?? []);
-  console.log(`[${slug(state.room_id ?? "")} ${(state.name ?? "?").trim()}] ${compactTasks(summary.tasks ?? [])}${routed ? ` | ${compactRouted(routed)}` : ""} | ${compactAsks(asks)} | ${compactUsage(usage)} | report:${summary.report ? "yes" : "no"} decisions:${(summary.decisions ?? []).length} | ${participants.length} in, ${owner}${roles ? ` | roles:${roles}` : ""} | ${keepalive(state, summary.tasks ?? [])}`);
+  // Verdict lines print BEFORE the compact line, so the tick still ends in the one line the duty loop greps.
+  const rework = watchVerdicts(state, summary, messages);
+  console.log(`[${slug(state.room_id ?? "")} ${(state.name ?? "?").trim()}] ${compactTasks(summary.tasks ?? [])}${routed ? ` | ${compactRouted(routed)}` : ""} | ${compactAsks(asks)} | ${compactUsage(usage)} | report:${summary.report ? "yes" : "no"} decisions:${(summary.decisions ?? []).length} | ${participants.length} in, ${owner}${roles ? ` | roles:${roles}` : ""} | ${rework} | ${keepalive(state, summary.tasks ?? [])}`);
 }
 
 // ── answer ─────────────────────────────────────────────────────────────────────────────────────
@@ -966,12 +1128,15 @@ async function finish() {
   console.log(`Room ${state.room_id} stays open for owner review (status shows asks and usage); close it once the merge request lands.`);
 }
 
+// Imported (scripts/e2e/sprint.mjs needs the verdict decision as a function), the flow below only runs as a program.
+const invokedDirectly = Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 try {
-  if (action === "start") await start();
+  if (!invokedDirectly) { /* module import: the exported decision function only */ }
+  else if (action === "start") await start();
   else if (action === "status") await status();
   else if (action === "answer") await answer();
   else if (action === "finish") await finish();
-  else fail("Usage: node scripts/sprint.mjs start --spec <spec.md> --name <room> --workers N [--host hermes-bot] [--worker-prefix worker] [--from main] [--remote origin] [--invite-to telegram:chat|none] [--capabilities code,files] [--roster auto|manual|off] [--ui-tester [--ui-tester-name ui-tester]] [--server url] [--state sprint.json] [--helper j01n.js] [--dry-run] | status | answer <msg-id|seq> <text> [--kind finding] | finish [--reviewed] [--title <text>] [--dry-run]");
+  else fail("Usage: node scripts/sprint.mjs start --spec <spec.md> --name <room> --workers N [--host hermes-bot] [--worker-prefix worker] [--from main] [--remote origin] [--invite-to telegram:chat|none] [--capabilities code,files] [--roster auto|manual|off] [--ui-tester [--ui-tester-name ui-tester]] [--server url] [--state sprint.json] [--helper j01n.js] [--dry-run] | status (one duty-loop tick: board, asks, usage, invite keepalive and the compare-verdict watch) | answer <msg-id|seq> <text> [--kind finding] | finish [--reviewed] [--title <text>] [--dry-run]");
 } catch (error) {
   // SPRINT_DEBUG=1 keeps the stack for operators; the normal message stays one line.
   console.error(redact(process.env.SPRINT_DEBUG && error instanceof Error && error.stack ? error.stack : error?.message ?? String(error)));

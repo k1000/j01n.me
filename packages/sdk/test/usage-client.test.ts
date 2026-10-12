@@ -449,7 +449,8 @@ function assignRoom(options: { participants?: FakeParticipant[]; board?: Record<
       return { status: 200, body: { ok: true, id: `message-${seq}`, seq } };
     }
     if (method === "GET" && tail.length === 0) {
-      const visible = messages.filter((m) => m.from !== me && (m.to === "all" || (Array.isArray(m.to) ? m.to.includes(me) : m.to === me)));
+      const includeSelf = url.searchParams.get("include_self") === "true";
+      const visible = messages.filter((m) => (includeSelf || m.from !== me) && (m.to === "all" || (Array.isArray(m.to) ? m.to.includes(me) : m.to === me)));
       return { status: 200, body: { cursor: seq, messages: visible } };
     }
     return { status: 404, body: { error: "not found" } };
@@ -640,5 +641,156 @@ describe("assign", () => {
     // Two guarded writes: the claim and its undo, so the board never shows a worker who was never told.
     expect(room.writes.map((w) => `${w.key}@${w.ifVersion}`)).toEqual(["task.t1@3", "task.t1@4"]);
     expect(room.board["task.t1"].value).toEqual(assignTask());
+  });
+});
+
+// ── refine: a losing verdict becomes a routed follow-up task ────────────────
+// refineTask(client, taskId, { from, note }) plus the `j01n refine <taskId> [--from <seq>] [--note text]` verb:
+// read the parent, take the compare.verdict as the reason, seed one NEW guarded task.<parentId>r<n> that copies the
+// parent's files/role/needs and depends on it, and post a sealed task.refined notice to all. Only the verdict's
+// author may refine it; the host always may. Every refusal leaves the board and the inbox untouched.
+
+const LONG_REASON = "worker-2 kept the modal rows stacked, so every field needs one flex row";
+const refineTaskFixture = (over: Record<string, unknown> = {}) => assignTask({ needs: ["shell"], contract: "rows stay single-line", ...over });
+const refined = (over: Record<string, unknown> = {}) => refineTaskFixture({
+  title: "refine t1: keep the rows single-line", files: [TASK_FILE], depends_on: ["t1"], status: "done",
+  owner: "worker-1", summary: "reworked", evidence: { commits: ["abc123"], tests: "vitest -> 3 passed" }, ...over,
+});
+
+async function verdictFrom(judge: RoomClient, reason = LONG_REASON) {
+  return await runRoomCommand(judge, "verdict", ["7", "B", "--reason", reason]) as { seq: number };
+}
+
+describe("refine", () => {
+  it("seeds the follow-up from the verdict and announces task.refined to all", async () => {
+    const room = assignRoom({ board: { "task.t1": entry(refineTaskFixture(), 2) } });
+    const judge = await room.client("worker-1");
+    const peer = await room.client("worker-2");
+    await syncKeys(judge, peer, await room.client("hermes-bot"));
+    const verdict = await verdictFrom(judge);
+
+    const result = await runRoomCommand(judge, "refine", ["t1", "--from", String(verdict.seq)]) as
+      { id: string; task: Record<string, unknown>; notice: { seq: number } };
+
+    expect(result.id).toBe("t1r1");
+    expect(result.task).toMatchObject({ title: `refine t1: ${LONG_REASON.slice(0, 60)}`, depends_on: ["t1"], status: "open" });
+    expect(room.board["task.t1r1"].value).toEqual({
+      title: `refine t1: ${LONG_REASON.slice(0, 60)}`,
+      files: [TASK_FILE],
+      depends_on: ["t1"],
+      status: "open",
+      brief: `verdict ${verdict.seq}: ${LONG_REASON}; t1: ${refineTaskFixture().brief}`,
+      role: "builder",
+      needs: ["shell"],
+      contract: "rows stay single-line",
+    });
+    expect(room.board["task.t1r1"].version).toBe(1);
+    // One write, and only the new key: the parent keeps the version it was read at.
+    expect(room.writes).toEqual([{ key: "task.t1r1", ifVersion: 0, by: "worker-1" }]);
+
+    const posted = room.messages.find((m) => m.intent === "task.refined") as Record<string, unknown>;
+    expect(posted.to).toBe("all");
+    expect(posted.from).toBe("worker-1");
+    expect((posted.body as { encrypted?: boolean }).encrypted).toBe(true);
+    expect(JSON.stringify(posted.body)).not.toContain("stacked");
+
+    const notice = (await peer.read()).find((m) => m.intent === "task.refined");
+    expect(notice?.decrypt_error).toBeUndefined();
+    expect(notice!.body as object).toMatchObject({
+      task: "t1r1", task_id: "t1r1", refines: "t1", reason: `verdict ${verdict.seq}`, by: "worker-1",
+      title: `refine t1: ${LONG_REASON.slice(0, 60)}`,
+    });
+    expect(String((notice!.body as { text?: string }).text)).toBe(`t1r1 opened from t1: ${LONG_REASON.slice(0, 60)}`);
+  });
+
+  it("titles from --note, keeps the verdict in the brief, and bumps the child number for the next refine", async () => {
+    const room = assignRoom({ board: { "task.t1": entry(refineTaskFixture(), 2) } });
+    const judge = await room.client("worker-1");
+    await syncKeys(judge, await room.client("hermes-bot"));
+    const verdict = await verdictFrom(judge);
+
+    const first = await runRoomCommand(judge, "refine", ["t1", "--from", String(verdict.seq), "--note", "put every field back on one line"]) as { id: string };
+    expect(first.id).toBe("t1r1");
+    expect(room.board["task.t1r1"].value).toMatchObject({
+      title: "refine t1: put every field back on one line",
+      brief: `verdict ${verdict.seq}: ${LONG_REASON}; note: put every field back on one line; t1: ${refineTaskFixture().brief}`,
+    });
+
+    // The first child counts, so the next follow-up lands on t1r2 rather than rewriting it.
+    const second = await runRoomCommand(judge, "refine", ["t1", "--from", String(verdict.seq)]) as { id: string };
+    expect(second.id).toBe("t1r2");
+    expect(room.writes.map((w) => `${w.key}@${w.ifVersion}`)).toEqual(["task.t1r1@0", "task.t1r2@0"]);
+  });
+
+  it("takes the newest verdict when --from is left out, and its message id works too", async () => {
+    const room = assignRoom({ board: { "task.t1": entry(refineTaskFixture(), 2) } });
+    const judge = await room.client("worker-1");
+    await syncKeys(judge, await room.client("hermes-bot"));
+    const older = await verdictFrom(judge, "older reason: the modal still stacks");
+    const newer = await verdictFrom(judge, "newer reason: the rows are still stacked");
+    expect(newer.seq).toBeGreaterThan(older.seq);
+
+    const latest = await runRoomCommand(judge, "refine", ["t1"]) as { id: string; task: Record<string, unknown> };
+    expect(latest.task.brief).toBe(`verdict ${newer.seq}: newer reason: the rows are still stacked; t1: ${refineTaskFixture().brief}`);
+
+    const byId = await runRoomCommand(judge, "refine", ["t1", "--from", `message-${older.seq}`]) as { id: string; task: Record<string, unknown> };
+    expect(byId.task.brief).toBe(`verdict ${older.seq}: older reason: the modal still stacks; t1: ${refineTaskFixture().brief}`);
+  });
+
+  it("refuses a peer who did not write the verdict, and lets the host refine the same one", async () => {
+    const room = assignRoom({ board: { "task.t1": entry(refineTaskFixture(), 2) } });
+    const judge = await room.client("worker-1");
+    const peer = await room.client("worker-2");
+    const host = await room.client("hermes-bot");
+    await syncKeys(judge, peer, host);
+    const verdict = await verdictFrom(judge);
+
+    await expect(runRoomCommand(peer, "refine", ["t1", "--from", String(verdict.seq)])).rejects.toThrow(
+      new RegExp(`refine t1: verdict ${verdict.seq} is worker-1's to refine, or ask the host`),
+    );
+    expect(room.writes).toEqual([]);
+    expect(room.messages.filter((m) => m.intent === "task.refined")).toEqual([]);
+
+    const byHost = await runRoomCommand(host, "refine", ["t1", "--from", String(verdict.seq)]) as { id: string };
+    expect(byHost.id).toBe("t1r1");
+    expect(room.writes).toEqual([{ key: "task.t1r1", ifVersion: 0, by: "hermes-bot" }]);
+  });
+
+  it("refuses to rewrite a child key that already exists, and never touches the parent", async () => {
+    const room = assignRoom({
+      board: {
+        "task.t1": entry(refineTaskFixture(), 2),
+        "task.t1r1": entry(refined(), 1),
+        // A gap in the sequence: counting children puts the next follow-up on t1r3, which somebody already wrote.
+        "task.t1r3": entry(refined({ title: "refine t1: hand-written follow-up" }), 4),
+      },
+    });
+    const judge = await room.client("worker-1");
+    await syncKeys(judge, await room.client("hermes-bot"));
+    const verdict = await verdictFrom(judge);
+
+    await expect(runRoomCommand(judge, "refine", ["t1", "--from", String(verdict.seq)])).rejects.toThrow(
+      "refine t1 cannot seed task t1r3: it already exists",
+    );
+    expect(room.writes).toEqual([]);
+    expect(room.board["task.t1r3"].value).toEqual(refined({ title: "refine t1: hand-written follow-up" }));
+  });
+
+  it("refuses a missing task, a missing verdict, a verdict that is not one and a bad flag, all before any write", async () => {
+    const room = assignRoom({ board: { "task.t1": entry(refineTaskFixture(), 2) } });
+    const judge = await room.client("worker-1");
+    await syncKeys(judge, await room.client("hermes-bot"));
+
+    await expect(runRoomCommand(judge, "refine", ["nope", "--from", "1"])).rejects.toThrow("task nope does not exist");
+    await expect(runRoomCommand(judge, "refine", ["t1"])).rejects.toThrow("refine needs a compare.verdict message to point at");
+
+    const verdict = await verdictFrom(judge);
+    await expect(runRoomCommand(judge, "refine", ["t1", "--from", "999"])).rejects.toThrow("refine --from 999 is not a compare.verdict message in this room");
+    await expect(runRoomCommand(judge, "refine", ["t1", "--from", String(verdict.seq), "--from", String(verdict.seq)])).rejects.toThrow("refine needs: <task id> [--from <verdict seq|id>] [--note text]");
+    await expect(runRoomCommand(judge, "refine", ["t1", "--note"])).rejects.toThrow("refine needs: <task id> [--from <verdict seq|id>] [--note text]");
+    await expect(runRoomCommand(judge, "refine", ["t1", "--bogus", "x"])).rejects.toThrow("refine needs: <task id> [--from <verdict seq|id>] [--note text]");
+    await expect(runRoomCommand(judge, "refine", ["--from", "1"])).rejects.toThrow("refine needs: <task id> [--from <verdict seq|id>] [--note text]");
+    expect(room.writes).toEqual([]);
+    expect(room.messages.filter((m) => m.intent === "task.refined")).toEqual([]);
   });
 });

@@ -83,6 +83,14 @@ ${HOME_PALETTE}
     & .kanban-card p { white-space: pre-wrap; font-size: 0.85rem; }
     & .kanban-card .button { font-size: 0.85rem; padding: 0.4rem 0.65rem; margin-bottom: 0; }
     & .kanban-card-owner { color: var(--console-dim); opacity: 1; }
+    /* The state dot t3 built for the live view, so task cards and the task modal read the same in both views.
+       The live-state-pulse animation is deliberately not repeated here: LIVE_ROOM_STYLES declares it at top
+       level and both style strings land in the same <style> (apps/web/src/html.ts). */
+    & .live-state { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--console-dim); font-size: 0.625rem; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; }
+    & .live-state::before { content: ""; flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--console-rule); }
+    & .live-state[data-state=busy] { color: var(--console-cream); }
+    & .live-state[data-state=busy]::before { background: var(--console-cream); animation: live-state-pulse 2s ease-in-out infinite; }
+    & .live-state[data-state=free]::before { background: transparent; outline: 1px solid var(--console-dim); outline-offset: -1px; }
     & .reservation-list li { border-color: var(--console-rule); }
 
     & .participant-card { background: var(--console-panel); color: var(--console-text); border-color: var(--console-rule); }
@@ -120,7 +128,7 @@ ${HOME_PALETTE}
       & .room-navigation > a:first-child { flex-basis: 100%; }
       & .connection-status { margin: 0.5rem 0 0; }
     }
-    @media (prefers-reduced-motion: reduce) { & .message-new { animation: none; } }
+    @media (prefers-reduced-motion: reduce) { & .message-new { animation: none; } & .live-state[data-state=busy]::before { animation: none; transform: none; outline: 0; } }
   }
   @keyframes message-arrive {
     from { background-color: color-mix(in srgb, var(--console-cream) 4%, var(--console-ink)); outline: 1px solid var(--console-cream); }

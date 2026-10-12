@@ -6,6 +6,7 @@ import {
 import { roomPageHtml } from "../src/html";
 import app from "../src/index";
 import { LIVE_ROOM_STYLES } from "../src/live-room-view";
+import { ROOM_CONSOLE_STYLES } from "../src/room-console";
 
 const roomPageScript = await (await app.request("/client/room-page.js")).text();
 
@@ -727,6 +728,15 @@ describe("task card details modal", () => {
     expect(model.verdicts).toEqual([{ seq: 3, from: "peer", winner: "B", reason: "task.t4 reads better in a dialog", of: "m-1", request: 2 }]);
     const unreadable = modalHarness({ "task.t4": { value: { title: "Modal", status: "open" }, version: 1 } }, { messages });
     expect(await unreadable.buildTaskCardModel("t4")).toMatchObject({ verdicts: [] });
+  });
+
+  it("gives the console view the same state dot as the live view, from one @keyframes", () => {
+    expect(ROOM_CONSOLE_STYLES).toMatch(/& \.live-state::before \{[^}]*border-radius: 50%/);
+    expect(ROOM_CONSOLE_STYLES).toMatch(/& \.live-state\[data-state=busy\]::before \{[^}]*animation: live-state-pulse/);
+    expect(ROOM_CONSOLE_STYLES).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?& \.live-state\[data-state=busy\]::before \{ animation: none;/);
+    // Both style strings land in the same <style>, so the pulse animation must stay defined exactly once.
+    expect(ROOM_CONSOLE_STYLES).not.toMatch(/@keyframes live-state-pulse/);
+    expect(LIVE_ROOM_STYLES).toMatch(/@keyframes live-state-pulse/);
   });
 
   it("refreshes an open dialog in place and drops it when the task is gone", async () => {

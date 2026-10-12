@@ -586,6 +586,32 @@
     const doneIds = Object.entries(board)
       .filter(([key, item]) => key.startsWith("task.") && taskStatusOf(boardDisplayValue(item?.value)) === "done")
       .map(([key]) => key.slice(5));
+    // A losing compare verdict leaves a refine child behind: a task whose depends_on names its parent and whose
+    // title starts "refine ". Both board shapes carry those cards, so the thread is read across every task entry
+    // rather than only the one being displayed.
+    const taskCards = new Map();
+    for (const [key, item] of Object.entries(board)) {
+      if (!key.startsWith("task.")) continue;
+      const value = boardDisplayValue(item?.value);
+      if (value && typeof value === "object") taskCards.set(key.slice(5), value);
+    }
+    if (kanban && typeof kanban === "object" && !Array.isArray(kanban)) {
+      for (const [otherId, value] of Object.entries(kanban)) {
+        if (!taskCards.has(otherId) && value && typeof value === "object") taskCards.set(otherId, value);
+      }
+    }
+    const titleOf = (value) => String(value?.title ?? "").replace(/\s+/g, " ").trim();
+    const depsOf = (value) => Array.isArray(value?.depends_on) ? value.depends_on.map(dep => String(dep).replace(/^task\./, "")).filter(Boolean) : [];
+    const isRefineCard = (value) => /^refine\s/i.test(titleOf(value));
+    const refinedIdOf = (value) => depsOf(value)[0] || (/^refine\s+([A-Za-z0-9_.-]+)/i.exec(titleOf(value)) || [])[1] || "";
+    const followUps = [...taskCards.entries()]
+      .filter(([otherId, value]) => otherId !== id && isRefineCard(value) && (depsOf(value).includes(id) || refinedIdOf(value) === id))
+      .map(([otherId, value]) => {
+        const status = taskStatusOf(value);
+        return { id: otherId, title: titleOf(value), status, done: status === "done" };
+      })
+      .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+    const refines = isRefineCard(raw) ? refinedIdOf(raw) : "";
     const evidence = raw.evidence && typeof raw.evidence === "object" ? raw.evidence : null;
     const commits = Array.isArray(evidence?.commits) ? evidence.commits.map(String).filter(Boolean) : [];
     const tests = evidence?.tests ? String(evidence.tests) : "";
@@ -603,6 +629,8 @@
       ownerLabel: owner ? String(data?.participants?.[owner]?.display_name || owner) : "",
       files: Array.isArray(raw.files) ? raw.files.map(String) : [],
       dependsOn: Array.isArray(raw.depends_on) ? raw.depends_on.map(dep => ({ id: String(dep), done: doneIds.includes(String(dep)) })) : [],
+      refines,
+      followUps,
       contract: firstText(raw.contract, raw.description),
       brief: raw.brief ? String(raw.brief) : "",
       needs: Array.isArray(raw.needs) ? raw.needs.map(String) : [],
@@ -615,12 +643,28 @@
     };
   }
 
+  // Ids inside the dialog are cards too: the same data-task-card hook the board uses, so a reader can walk a
+  // verdict thread from a parent to its follow-up without leaving the modal.
+  function taskThreadLink(taskId, title) {
+    return '<a class="task-card-link" data-task-card="' + escAttr(taskId) + '" href="#task-' + escAttr(taskId) + '"'
+      + ' style="text-decoration:underline;text-underline-offset:0.15em"'
+      + ' title="' + escAttr("Open " + taskId + (title ? " · " + title : "")) + '">' + esc(taskId) + '</a>';
+  }
+
   function taskDetailsHtml(model) {
     if (!model) return "";
     const text = (value) => '<span class="json-text">' + esc(value) + '</span>';
     const code = (value) => '<code class="json-text">' + esc(value) + '</code>';
     const row = (term, value) => value ? '<div style="display:flex;gap:0.75rem;align-items:baseline;padding:0.15rem 0;border-bottom:1px dashed var(--console-rule)"><dt style="flex:0 0 6.5rem;margin:0;font-weight:600">' + esc(term) + '</dt><dd style="flex:1;margin:0;min-width:0;overflow-wrap:anywhere">' + value + '</dd></div>' : "";
     const list = (items) => items.length ? '<ul class="json-list" style="display:inline;list-style:none;margin:0;padding:0">' + items.map(item => '<span style="display:inline-flex;gap:0.25rem;align-items:baseline;margin:0 0.4rem 0 0">' + code(item) + '</span>').join("") + '</ul>' : "";
+    const threadChip = (id, title, state) => '<span style="display:inline-flex;gap:0.3rem;align-items:baseline;margin:0 0.4rem 0 0">' + taskThreadLink(id, title)
+      + (state ? ' <span class="task-dep-state" data-done="' + escAttr(state === "done" ? "true" : "false") + '">' + esc(state) + '</span>' : '') + '</span>';
+    const threads = Array.isArray(model.followUps) ? model.followUps : [];
+    const followUps = threads.length
+      ? '<ul class="json-list" style="display:inline;list-style:none;margin:0;padding:0">' + threads.map(item =>
+        threadChip(item.id, item.title, item.status)).join("") + '</ul>'
+      : "";
+    const refines = model.refines ? threadChip(model.refines, "", "") : "";
     const depends = model.dependsOn.length
       ? '<ul class="json-list" style="display:inline;list-style:none;margin:0;padding:0">' + model.dependsOn.map(dep => '<span style="display:inline-flex;gap:0.3rem;align-items:baseline;margin:0 0.4rem 0 0">' + code(dep.id) +
         ' <span class="task-dep-state" data-done="' + escAttr(dep.done ? "true" : "false") + '">' + (dep.done ? "done" : "open") + '</span></span>').join("") + '</ul>'
@@ -646,7 +690,7 @@
       '<dl class="live-task-modal-fields">' +
       row("id", code(model.id)) + row("status", text(model.status)) + row("role", model.role ? text(model.role) : "") +
       row("owner", model.owner ? text(model.ownerLabel) : "") + row("files", list(model.files)) +
-      row("depends_on", depends) + row("needs", list(model.needs)) +
+      row("depends_on", depends) + row("refines", refines) + row("follow-ups", followUps) + row("needs", list(model.needs)) +
       row("contract", model.contract ? text(model.contract) : "") + row("brief", model.brief ? text(model.brief) : "") +
       row("blocked", model.blockedReason ? text(model.blockedReason) : "") +
       '</dl>' + evidence + verdicts +
@@ -705,9 +749,32 @@
     dialog.focus({ preventScroll: true });
   }
 
+  // Follow a thread id from inside the dialog. A board that no longer holds that card leaves the reader where
+  // they were instead of closing the modal out from under them.
+  async function openTaskCardFromModal(id) {
+    if (!id || !latest) return;
+    const next = await buildTaskCardModel(id).catch(() => null);
+    if (!next) return;
+    if (!openTaskCardId) {
+      const active = document.activeElement;
+      if (active && active !== document.body) taskModalReturnFocus = active;
+    }
+    openTaskCardId = id;
+    await renderTaskModal({ focus: true });
+  }
+
   function wireTaskModal(dialog) {
     if (!dialog) return;
     for (const control of Array.from(dialog.querySelectorAll("[data-task-modal-close]"))) control.addEventListener("click", closeTaskCard);
+    for (const link of Array.from(dialog.querySelectorAll("[data-task-card]") || [])) {
+      if (link.dataset.taskLinkWired === "1") continue;
+      link.dataset.taskLinkWired = "1";
+      link.addEventListener("click", (event) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        openTaskCardFromModal(link.dataset.taskCard);
+      });
+    }
     // A click that lands on the dialog box itself is the backdrop or its padding ring, never the content.
     dialog.addEventListener("click", (event) => { if (event.target === dialog) closeTaskCard(); });
     dialog.addEventListener("cancel", closeTaskCard);
@@ -742,7 +809,8 @@
     const model = await buildTaskCardModel(openTaskCardId).catch(() => null);
     if (!model) { openTaskCardId = ""; clearTaskModal(); return; }
     const host = taskModalHost();
-    const signature = [model.boardKey, model.status, model.owner, model.updated, model.verdicts.length].join("|");
+    const signature = [model.boardKey, model.status, model.owner, model.updated, model.verdicts.length, model.refines,
+      (model.followUps || []).map(follow => follow.id + ":" + follow.status).join(",")].join("|");
     if (!options.focus && host.dataset.taskModalSignature === signature) return;
     const hadFocus = host.contains(document.activeElement);
     host.dataset.taskModalSignature = signature;

@@ -545,9 +545,16 @@ describe("task card details modal", () => {
   type CardEvent = { target: { closest: (selector: string) => unknown } };
   type BoardEntry = { value: unknown; version: number; updated_by?: string };
 
-  function modalHarness(board: Record<string, unknown> = {}, options: { isHost?: boolean; messages?: unknown[]; participants?: Record<string, unknown>; decrypt?: (message: { id?: string }) => Promise<{ ok: boolean; value?: unknown }> } = {}) {
+  // The ids a dialog links to are wired one at a time: taskLinks names the cards the fake dialog hands back,
+  // linkHandlers keeps their click handlers so a test can walk a verdict thread the way a reader does.
+  function modalHarness(board: Record<string, unknown> = {}, options: { isHost?: boolean; messages?: unknown[]; participants?: Record<string, unknown>; decrypt?: (message: { id?: string }) => Promise<{ ok: boolean; value?: unknown }>; taskLinks?: string[] } = {}) {
     const dialogEvents: Record<string, ((event: never) => void)[]> = {};
     const closeEvents: Record<string, (() => void)[]> = {};
+    const linkHandlers: Record<string, (event: { target: unknown }) => void> = {};
+    const taskLinks = (options.taskLinks || []).map(id => ({
+      dataset: { taskCard: id } as Record<string, string>,
+      addEventListener: (type: string, handler: (event: { target: unknown }) => void) => { if (type === "click") linkHandlers[id] = handler; },
+    }));
     const closeButton = { addEventListener: (type: string, handler: () => void) => { (closeEvents[type] ||= []).push(handler); } };
     const dialog = {
       open: false,
@@ -555,7 +562,7 @@ describe("task card details modal", () => {
       focus: vi.fn(),
       classList: { add: vi.fn() },
       addEventListener: (type: string, handler: (event: never) => void) => { (dialogEvents[type] ||= []).push(handler); },
-      querySelectorAll: (selector: string) => (selector === "[data-task-modal-close]" ? [closeButton] : []),
+      querySelectorAll: (selector: string) => (selector === "[data-task-modal-close]" ? [closeButton] : selector === "[data-task-card]" ? taskLinks : []),
     };
     const host = {
       innerHTML: "", dataset: {} as Record<string, string>, className: "",
@@ -573,13 +580,20 @@ describe("task card details modal", () => {
       decryptMessageBody: options.decrypt || (async () => ({ ok: false })),
       esc: escape, escAttr: escape, extractValue: (value: unknown) => value, boardDisplayValue: (value: unknown) => value,
     }, "return { taskStatusOf, taskStatusDot, taskCanEdit, taskEditHtml, taskCardModel, taskDetailsHtml, taskVerdictLines, buildTaskCardModel, wireTaskCards, openTaskCard, renderTaskModal, closeTaskCard };");
-    return { ...functions, card, cardHandlers, dialog, dialogEvents, closeButton, closeEvents, host, returnFocus };
+    return { ...functions, card, cardHandlers, dialog, dialogEvents, closeButton, closeEvents, host, returnFocus, taskLinks, linkHandlers };
   }
 
   const claimedTask: Record<string, unknown> = {
     title: "Task details modal", status: "claimed", owner: "worker-4", role: "builder",
     files: ["apps/web/src/room-page.js"], depends_on: ["t3"], needs: ["frontend"],
     contract: "Ship <b>the</b> modal contract", brief: "click opens a dialog",
+  };
+
+  // What `j01n refine t4` seeds on the board: a child that depends on the parent and says so in its title.
+  const refineChild: Record<string, unknown> = {
+    title: "refine t4: verdict B over A", status: "open", role: "builder",
+    files: ["apps/web/src/room-page.js"], depends_on: ["t4"], needs: ["frontend"],
+    brief: "reason: clearer dialog · verdict seq 5", contract: "rows again, single-line",
   };
 
   it("opens the details modal from a card click, escaped, with the contract and t3's status dot", async () => {
@@ -728,6 +742,99 @@ describe("task card details modal", () => {
     expect(model.verdicts).toEqual([{ seq: 3, from: "peer", winner: "B", reason: "task.t4 reads better in a dialog", of: "m-1", request: 2 }]);
     const unreadable = modalHarness({ "task.t4": { value: { title: "Modal", status: "open" }, version: 1 } }, { messages });
     expect(await unreadable.buildTaskCardModel("t4")).toMatchObject({ verdicts: [] });
+  });
+
+  it("threads the rework a verdict leaves: the parent lists its refine children, the child names its parent", () => {
+    const room = modalHarness();
+    const board = {
+      // Inserted newest-first on purpose: the thread reads in id order, not board order.
+      "task.t4": { value: claimedTask, version: 3 },
+      "task.t4r2": { value: { ...refineChild, title: "refine t4: second pass", status: "done" }, version: 2 },
+      "task.t4r1": { value: refineChild, version: 1 },
+      // A plain dependent is not rework, and a task nobody refines keeps an empty thread.
+      "task.t7": { value: { title: "Polish rows", status: "open", depends_on: ["t4"] }, version: 1 },
+      "task.t9": { value: { title: "Unrelated", status: "open", depends_on: [] }, version: 1 },
+    };
+    const parent = room.taskCardModel("t4", { board, participants: {} });
+    expect(parent.refines).toBe("");
+    expect(parent.followUps).toEqual([
+      { id: "t4r1", title: "refine t4: verdict B over A", status: "open", done: false },
+      { id: "t4r2", title: "refine t4: second pass", status: "done", done: true },
+    ]);
+    const child = room.taskCardModel("t4r1", { board, participants: {} });
+    expect(child.refines).toBe("t4");
+    expect(child.followUps).toEqual([]);
+    expect(room.taskCardModel("t9", { board, participants: {} }).followUps).toEqual([]);
+  });
+
+  it("reads the lineage from the title or a task-prefixed dependency, in both board shapes", () => {
+    const room = modalHarness();
+    const titled = { "task.t4": { value: claimedTask, version: 1 }, "task.t4r1": { value: { ...refineChild, depends_on: [] }, version: 1 } };
+    expect(room.taskCardModel("t4", { board: titled, participants: {} }).followUps.map((follow: { id: string }) => follow.id)).toEqual(["t4r1"]);
+    expect(room.taskCardModel("t4r1", { board: titled, participants: {} }).refines).toBe("t4");
+    const prefixed = { "task.t4": { value: claimedTask, version: 1 }, "task.t4r1": { value: { ...refineChild, depends_on: ["task.t4"] }, version: 1 } };
+    expect(room.taskCardModel("t4r1", { board: prefixed, participants: {} }).refines).toBe("t4");
+    const kanban = { tasks: { value: { t4: claimedTask, t4r1: refineChild } } };
+    expect(room.taskCardModel("t4", { board: kanban, participants: {} }).followUps.map((follow: { id: string }) => follow.id)).toEqual(["t4r1"]);
+    expect(room.taskCardModel("t4r1", { board: kanban, participants: {} }).refines).toBe("t4");
+  });
+
+  it("renders the thread as single-line rows of id chips, escaped", () => {
+    const room = modalHarness();
+    const board = {
+      "task.t4": { value: claimedTask, version: 3 },
+      "task.t4r1": { value: refineChild, version: 1 },
+      "task.t4r2": { value: { ...refineChild, title: 'refine t4: "quoted" <img src=x onerror=alert(1)>', status: "claimed" }, version: 1 },
+    };
+    const html = room.taskDetailsHtml(room.taskCardModel("t4", { board, participants: {} }));
+    expect(html).toContain(">follow-ups<");
+    expect(html).toContain('data-task-card="t4r1"');
+    expect(html).toMatch(/data-done="false">claimed</);
+    expect(html).not.toContain("<img");
+    // The chips sit inline in the row's own dd: one dl of flex rows, never a stacked list per field.
+    expect((html.match(/<dl/g) ?? []).length).toBe(1);
+    expect(html).toMatch(/<dd style="flex:1[^"]*"><ul class="json-list" style="display:inline[^"]*"><span[^>]*><a class="task-card-link" data-task-card="t4r1"/);
+    const childHtml = room.taskDetailsHtml(room.taskCardModel("t4r1", { board, participants: {} }));
+    expect(childHtml).toContain(">refines<");
+    expect(childHtml).toContain('data-task-card="t4"');
+  });
+
+  it("walks the thread: a follow-up id opens that card's modal, a stale id leaves the dialog alone", async () => {
+    const board: Record<string, unknown> = {
+      "task.t4": { value: claimedTask, version: 3 },
+      "task.t4r1": { value: refineChild, version: 1 },
+    };
+    const room = modalHarness(board, { taskLinks: ["t4r1"] });
+    room.wireTaskCards();
+    room.cardHandlers.click({ target: { closest: () => null } });
+    await settle();
+    expect(room.host.innerHTML).toContain("Task details modal");
+    room.linkHandlers.t4r1({ target: {} });
+    await settle();
+    expect(room.host.innerHTML).toContain("t4r1 · refine t4: verdict B over A");
+    expect(room.host.innerHTML).toContain(">refines<");
+    expect(room.host.innerHTML).toContain('data-task-card="t4"');
+
+    const stale = modalHarness(board, { taskLinks: ["t4r9"] });
+    stale.wireTaskCards();
+    stale.cardHandlers.click({ target: { closest: () => null } });
+    await settle();
+    const before = stale.host.innerHTML;
+    stale.linkHandlers.t4r9({ target: {} });
+    await settle();
+    expect(stale.host.innerHTML).toBe(before);
+  });
+
+  it("refreshes an open dialog when a verdict spawns a follow-up", async () => {
+    const board: Record<string, BoardEntry | undefined> = { "task.t4": { value: claimedTask, version: 3 } };
+    const room = modalHarness(board);
+    room.wireTaskCards();
+    room.cardHandlers.click({ target: { closest: () => null } });
+    await settle();
+    expect(room.host.innerHTML).not.toContain("follow-ups");
+    board["task.t4r1"] = { value: refineChild, version: 1 };
+    await room.renderTaskModal();
+    expect(room.host.innerHTML).toContain('data-task-card="t4r1"');
   });
 
   it("gives the console view the same state dot as the live view, from one @keyframes", () => {

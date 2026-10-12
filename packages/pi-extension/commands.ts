@@ -793,9 +793,19 @@ const COMMANDS: Record<string, (parsed: ParsedArgs) => Promise<string>> = {
   profile: handleProfile,
 };
 
+export const J01N_HELP = [
+  "Usage: /j01n <command> ... (or j01n tool args: [\"<command>\", ...])",
+  "Help: /j01n help or j01n args=[\"help\"]",
+  `Commands: ${["help", ...Object.keys(COMMANDS), "live"].join(" | ")}`,
+  "Start: /j01n create '{\"host_id\":\"host\"}' --join, or /j01n join <invite-link> <participant-id>",
+  "After joining: /j01n send all <text>, /j01n read, /j01n board, /j01n doctor",
+  "Room commands use the active room in this directory; pass an invitation and participant ID to select a room explicitly.",
+].join("\n");
+
 export async function runj01n(args: string[]): Promise<string> {
+  if (!args.length || args[0] === "help" || args[0] === "--help") return J01N_HELP;
   const parsed = parseCommand(args);
   const handler = COMMANDS[parsed.cmd];
-  if (!handler) throw new Error(`unknown command: ${parsed.cmd}. Usage: create|join|send|read|inbox|doctor`);
+  if (!handler) throw new Error(`unknown command: ${parsed.cmd}. Run /j01n help (or j01n args=["help"]) for commands.`);
   return handler(parsed);
 }

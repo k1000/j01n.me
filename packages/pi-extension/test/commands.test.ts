@@ -39,6 +39,19 @@ describe("pi-extension sessions", () => {
     process.chdir(originalCwd);
   });
 
+  it("shows help without a room and points unknown commands to it", async () => {
+    const { runj01n } = await import("../commands");
+    const help = await runj01n(["help"]);
+    expect(help).toContain("/j01n help");
+    expect(help).toContain("join");
+    expect(help).toContain("board_set");
+    expect(help).toContain("live");
+    expect(await runj01n(["--help"])).toBe(help);
+    expect(await runj01n([])).toBe(help);
+    await expect(runj01n(["bogus"])).rejects.toThrow(/help/);
+    expect(calls).toHaveLength(0);
+  });
+
   it("keeps an empty Pi wait timeout unset while preserving numeric zero", async () => {
     const wait = vi.fn().mockResolvedValue({ timeout: true });
     const client = { wait } as unknown as RoomClient;

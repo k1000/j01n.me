@@ -1,14 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { splitArgs } from "./args";
-import { autojoinNote, autojoinRoom, runj01n } from "./commands";
+import { autojoinNote, autojoinRoom, J01N_HELP, runj01n } from "./commands";
 import { registerLive } from "./live";
 import { registerPeerSpawnTool } from "./peer-spawn-tool";
 import { registerRepoInviteTool } from "./repo-invite";
 import { registerIntegratorTool } from "./integrator";
 import { getExtensionDiagnostics } from "./version";
-
-const USAGE = "Usage: /j01n <create|join|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|herdr_agents|invite_herdr|leave|close|participants|room_status|transition|host|profile|reserve|release|reservations|tasks|claim|done|conflicts|worktrees|live> ...";
 
 type Notify = (message: string, level: "info" | "error") => void;
 
@@ -26,7 +24,7 @@ export default function (pi: ExtensionAPI) {
   registerRepoInviteTool(pi);
   registerIntegratorTool(pi);
   pi.registerCommand("j01n", {
-    description: "j01n.me encrypted room helper: create, join, use, doctor, send, read, board, board_set, board_patch, board_delete, status, webhook, wait, register, allow, invite, listen, herdr_agents, invite_herdr, leave, close, participants, room_status, transition, host, profile, reserve, release, reservations, tasks, claim, done, conflicts, worktrees, live",
+    description: "j01n.me encrypted room helper. Run /j01n help for commands.",
     handler: async (args, ctx) => {
       const notify: Notify = ctx.ui.notify.bind(ctx.ui);
       const argv = splitArgs(args || "");
@@ -39,9 +37,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "j01n",
     label: "j01n.me",
-    description: "Use the j01n.me encrypted room helper. Args match the j01n client, e.g. ['read','docs-review.json','agent-b'] or ['board','docs-review.json','agent-b'] or ['status','docs-review.json','agent-b','free','working on docs'].",
+    description: "Use the j01n.me encrypted room helper. Args: ['help'] lists commands; e.g. ['read','docs-review.json','agent-b'] or ['board','docs-review.json','agent-b'].",
     parameters: Type.Object({
-      args: Type.Array(Type.String(), { description: "Arguments: create|join|use|doctor|send|read|board|board_set|board_patch|board_delete|status|webhook|wait|register|allow|invite|listen|herdr_agents|invite_herdr|leave|close|participants|room_status|transition|host|profile|reserve|release|reservations|tasks|claim|done|conflicts|worktrees|live ..." }),
+      args: Type.Array(Type.String(), { description: "Arguments: help | create | join | send | read | board | ...; use ['help'] for the full list" }),
     }),
     async execute(_toolCallId, params) {
       if (params.args[0] === "live") return toolResult(live.setEnabled(params.args[1] !== "off"), params.args);
@@ -72,7 +70,7 @@ function registerAutojoin(pi: ExtensionAPI): void {
 
 async function runCommandFromText(input: string, notify: Notify): Promise<void> {
   const argv = splitArgs(input);
-  if (argv.length === 0) return notify(USAGE, "info");
+  if (argv.length === 0) return notify(J01N_HELP, "info");
   return notifyCommandResult(argv, notify);
 }
 

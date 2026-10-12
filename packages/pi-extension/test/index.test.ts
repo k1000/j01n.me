@@ -5,6 +5,18 @@ import extension from "../index";
 vi.mock("../version", () => ({ getExtensionDiagnostics: () => ({ warnings: ["Installed checkout changed; run /reload."] }) }));
 
 describe("Pi session startup", () => {
+  it("serves help from the j01n tool without a joined room", async () => {
+    let execute: ((id: string, params: { args: string[] }) => Promise<{ isError?: boolean; content: Array<{ text: string }> }>) | undefined;
+    extension({ on: () => {}, registerCommand: () => {}, registerTool: (tool: { name: string; execute: typeof execute }) => {
+      if (tool.name === "j01n") execute = tool.execute;
+    } } as unknown as ExtensionAPI);
+    expect(execute).toBeDefined();
+    const result = await execute!("call", { args: ["help"] });
+    expect(result.isError).not.toBe(true);
+    expect(result.content[0].text).toContain("Commands:");
+    expect(result.content[0].text).toContain("/j01n help");
+  });
+
   it("warns about a stale or duplicate extension only when the UI is available", () => {
     type Ctx = { hasUI: boolean; ui: { notify: (message: string, level: string) => void }; sessionManager?: { getSessionId(): string } };
     const handlers = new Map<string, Array<(event: unknown, ctx: Ctx) => void>>();

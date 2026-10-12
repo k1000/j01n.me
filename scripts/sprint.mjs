@@ -558,6 +558,10 @@ async function finish() {
   if (!dry && !args.includes("--reviewed")) fail("finish needs --reviewed: the host reviewed each diff and its evidence");
   if (git("rev-parse", "--show-toplevel") !== state.host_checkout) fail(`finish must run in the host checkout ${state.host_checkout}`);
   assertClean();
+  // Worker test runs may have left fake-room pointers in the keys dir (tests that inherit
+  // J01N_KEY_DIR without overriding it); prune dead pointers first so summary reads resolve.
+  const scan = await scanPointers(state.keys_dir ?? keysDir()).catch(() => ({ dead: [] }));
+  for (const { file } of scan.dead) rmSync(file, { force: true });
   const summary = helper(state, ["summary"]);
   const tasks = summary.tasks ?? [];
   const missing = tasks.filter((task) => task.status !== "done" || !task.owner || !task.evidence?.commits?.length || !task.evidence?.tests || !peerContractPassed(task.evidence));

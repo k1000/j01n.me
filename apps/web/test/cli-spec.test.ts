@@ -423,3 +423,151 @@ describe("CLI extend command", () => {
     expect(unknown.stderr).toMatch(/Usage: [^\n]*\bextend\b/);
   });
 });
+
+// ── CLI report: one-command run record for the champion loop (t4) ──
+// The real cli.ts runs against a mock room that owns tasks, usage, asks and verdict messages,
+// so these pin the record shape (family, room, repo, workers, tasks, usage, open_asks, verdicts),
+// that no credential leaks into the JSON, and that --out writes the file.
+import { sealUsage } from "@j01n/sdk";
+
+describe("CLI report command", () => {
+  const reportRoomId = "report-1";
+  const reportSecret = "test-room-secret-0123456789";
+  const reportToken = "report-participant-token";
+  const reportDir = mkdtempSync(join(tmpdir(), "j01n-cli-report-"));
+  const reportCli = fileURLToPath(new URL("../../../packages/helper/src/cli.ts", import.meta.url));
+  const reportTsx = fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url));
+  let reportServer: ReturnType<typeof createServer>;
+  let reportPort: number;
+  let reportBoard: Record<string, BoardEntry> = {};
+  let reportMessages: Array<{ id: string; seq: number; from: string; to: string; intent: string; body: unknown; created_at: string }> = [];
+  const roomUrl = () => `http://127.0.0.1:${reportPort}/r/${reportRoomId}`;
+
+  /** Run the CLI; a non-zero exit comes back as { code, stderr } instead of throwing. */
+  const run = async (...args: string[]): Promise<{ code: number; stdout: string; stderr: string; json: any }> => {
+    try {
+      const result = await exec(process.execPath, [reportTsx, reportCli, ...args], { cwd: reportDir, env: { ...process.env, J01N_KEY_DIR: reportDir } });
+      return { code: 0, stdout: result.stdout, stderr: result.stderr, json: JSON.parse(result.stdout) };
+    } catch (error) {
+      const failure = error as { code?: number; stdout?: string; stderr?: string };
+      return { code: failure.code ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "", json: undefined };
+    }
+  };
+
+  const route = async (req: { url?: string; method?: string }, res: { statusCode: number; end: (body: string) => void }) => {
+    const url = req.url || "";
+    const path = url.split("?")[0];
+    const reply = (value: unknown) => res.end(JSON.stringify(value));
+
+    if (req.method === "POST" && path === "/rooms") {
+      const api = (suffix: string) => `${roomUrl()}/${suffix}`;
+      return reply({
+        intro: "intro", next_step: "join", room_id: reportRoomId,
+        room: { name: "report", purpose: "report", host_id: "host", max_participants: 8 },
+        join_secret: reportSecret, room_url: roomUrl(),
+        api: { join: api("participants/{id}"), send: roomUrl(), read: roomUrl(), read_all: `${roomUrl()}?view=all`, events: api("events"), board: api("board"), participants: api("participants"), status: api("status"), extend: api("extend"), export: api("export"), leave: api("participants/{id}"), kick: api("participants/{id}"), close: roomUrl() },
+        skill: "skill", expires_at: new Date(Date.now() + 600_000).toISOString(),
+      });
+    }
+    if (path === `/r/${reportRoomId}/participants/host`) return reply({ ok: true, cursor: 0, participant_token: reportToken, peers: [] });
+    if (path === `/r/${reportRoomId}/participants`) return reply({ participants: [{ id: "host" }, { id: "worker-1" }, { id: "worker-2" }] });
+    if (path === `/r/${reportRoomId}/board` && req.method === "GET") return reply({ board: reportBoard, board_schema: null });
+    if (path === `/r/${reportRoomId}/asks`) return reply({ asks: [{ ask_id: "ask-1", seq: 10, from: "worker-1", due_at: new Date(Date.now() + 60_000).toISOString(), overdue: false, message: { id: "m10", seq: 10, from: "worker-1", to: "host", intent: "msg", body: { text: "which scope?" }, created_at: new Date().toISOString(), reply_to: null, priority: "normal" } }] });
+    if ((path === `/r/${reportRoomId}` || path === `/r/${reportRoomId}/`) && req.method === "GET") return reply({ cursor: 0, messages: reportMessages });
+    if ((path === `/r/${reportRoomId}` || path === `/r/${reportRoomId}/`) && req.method === "POST") return reply({ ok: true, id: "message-1", seq: 1 });
+    res.statusCode = 404;
+    res.end("not found");
+  };
+
+  beforeAll(async () => {
+    reportServer = createServer((req, res) => { void route(req, res); });
+    await new Promise<void>((done) => reportServer.listen(0, "127.0.0.1", done));
+    reportPort = (reportServer.address() as { port: number }).port;
+    const created = await run("create", `http://127.0.0.1:${reportPort}`, JSON.stringify({ host_id: "host", room_name: "report" }));
+    expect(created.code, created.stderr).toBe(0);
+    writeFileSync(join(reportDir, "invite.json"), created.stdout);
+    const joinedRoom = await run("join", "invite.json", "host");
+    expect(joinedRoom.code, joinedRoom.stderr).toBe(0);
+    // Seed board with tasks: one done (with evidence + contract), one claimed, one blocked
+    reportBoard = {
+      "task.t1": { value: { title: "Build", files: ["src/build.ts"], depends_on: [], status: "done", owner: "worker-1", summary: "built it", evidence: { commits: ["abc123"], tests: "passed", contract: "pnpm check:contract --peer passed" } }, version: 1 },
+      "task.t2": { value: { title: "Test", files: ["src/test.ts"], depends_on: [], status: "claimed", owner: "worker-2" }, version: 1 },
+      "task.t3": { value: { title: "Deploy", files: ["src/deploy.ts"], depends_on: ["t1"], status: "blocked", owner: "host", blocked_reason: "waiting for t1" }, version: 1 },
+    };
+    // Seed usage for one participant (sealed with room key)
+    const usageSnapshot = { participant: "worker-1", reports: 1, updated_at: new Date().toISOString(), active_ms: 60_000, input_tokens: 1000, output_tokens: 500, cost_usd: 0.1, model: "qwen3.8-flash" };
+    const sealedUsage = await sealUsage(usageSnapshot, reportSecret, reportRoomId);
+    reportBoard["usage.worker-1"] = { value: sealedUsage, version: 1 };
+    // Seed messages: one compare.verdict
+    reportMessages = [
+      { id: "msg-1", seq: 1, from: "worker-2", to: "all", intent: "compare.verdict", body: { of: "t1", winner: "A", reason: "faster" }, created_at: new Date().toISOString() },
+    ];
+  });
+
+  afterAll(async () => {
+    if (reportServer?.listening) await new Promise<void>((done) => reportServer.close(() => done()));
+  });
+
+  it("composes a stable record shape with tasks, usage, asks and verdicts", async () => {
+    const result = await run("report");
+    expect(result.code, result.stderr).toBe(0);
+    const record = result.json;
+    expect(record.family).toMatch(/:feature$/);
+    expect(record.room).toBe(reportRoomId);
+    expect(typeof record.repo).toBe("string");
+    expect(record.workers).toBe(3);
+    expect(record.tasks).toEqual({ total: 3, done: 1, blocked: 1, all_have_evidence: false, all_contract_phrased: false });
+    expect(record.usage.rows).toHaveLength(3);
+    const worker1Row = record.usage.rows.find((r: { participant: string }) => r.participant === "worker-1");
+    expect(worker1Row).toBeDefined();
+    expect(worker1Row.snapshot).toMatchObject({ active_ms: 60_000, input_tokens: 1000 });
+    expect(record.usage.totals).toMatchObject({ participants: 1 });
+    expect(record.open_asks).toBe(1);
+    expect(record.verdicts).toEqual([{ seq: 1, by: "worker-2", of: "t1", winner: "A", reason: "faster" }]);
+    expect(typeof record.generated_at).toBe("string");
+  });
+
+  it("never prints participant tokens or room secrets in the record", async () => {
+    const result = await run("report");
+    expect(result.code, result.stderr).toBe(0);
+    const json = result.stdout;
+    expect(json).not.toContain(reportSecret);
+    expect(json).not.toContain(reportToken);
+    // Sealed ciphertext (jsk1:) must not appear; usage rows are decrypted snapshots
+    expect(json).not.toContain("jsk1:");
+  });
+
+  it("writes the record to a file with --out", async () => {
+    const outPath = join(reportDir, "run-record.json");
+    const result = await run("report", "--out", outPath);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.json).toMatchObject({ ok: true, out: outPath, room: reportRoomId });
+    const fileContent = readFileSync(outPath, "utf8");
+    const record = JSON.parse(fileContent);
+    expect(record.family).toMatch(/:feature$/);
+    expect(record.room).toBe(reportRoomId);
+    expect(record.tasks.total).toBe(3);
+    expect(fileContent).not.toContain(reportSecret);
+    expect(fileContent).not.toContain(reportToken);
+  });
+
+  it("rejects unknown flags and missing --out value", async () => {
+    const cases: Array<{ args: string[]; matches: RegExp }> = [
+      { args: ["report", "--unknown"], matches: /report needs: \[--out <file>\]/ },
+      { args: ["report", "--out"], matches: /--out needs a file path/ },
+      { args: ["report", "--out", "--flag"], matches: /--out needs a file path/ },
+      { args: ["report", "--out", "a.json", "--out", "b.json"], matches: /report takes one --out path/ },
+    ];
+    for (const { args, matches } of cases) {
+      const failed = await run(...args);
+      expect(failed.code, `${args.join(" ")} -> ${failed.stderr}`).not.toBe(0);
+      expect(failed.stderr).toMatch(matches);
+    }
+  });
+
+  it("lists report in the command usage", async () => {
+    const unknown = await run("report-not-a-command");
+    expect(unknown.code).not.toBe(0);
+    expect(unknown.stderr).toMatch(/Usage: [^\n]*\breport\b/);
+  });
+});

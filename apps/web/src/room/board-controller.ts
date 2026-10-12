@@ -142,7 +142,9 @@ function boardChangeText(updatedBy: string, changes: Record<string, BoardChange>
     const prior = taskValue(before[key]);
     if (task && task.status !== prior?.status) {
       const id = key.slice(5);
-      if (task.status === "claimed") return `${String(task.owner ?? updatedBy)} claimed ${id}`;
+      // A seeded spec `contract:` is the task's required check: echo it so a late joiner sees it when claimed.
+      const contract = typeof task.contract === "string" && task.contract.trim() ? ` — contract: ${task.contract.trim().slice(0, 300)}` : "";
+      if (task.status === "claimed") return `${String(task.owner ?? updatedBy)} claimed ${id}${contract}`;
       if (task.status === "done") return `${id} done: ${String(task.summary ?? "completed").slice(0, 300)}`;
       if (task.status === "blocked") return `${id} blocked: ${String(task.blocked_reason ?? "no reason given").slice(0, 300)}`;
       if (task.status === "open") return `${id} is open`;

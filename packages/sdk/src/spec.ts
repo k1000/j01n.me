@@ -1,6 +1,10 @@
 import type { CreateRoomOptions } from "./room-client";
 
-export type SprintTask = NonNullable<CreateRoomOptions["tasks"]>[number];
+/** Parsed sprint task. `contract` is the one-line required check; the rest of the shape comes from the create options. */
+export type SprintTask = NonNullable<CreateRoomOptions["tasks"]>[number] & {
+  /** One-line required check for this task, seeded into the board so late joiners read it there. */
+  contract?: string;
+};
 
 /** Parse the ## Tasks section of a sprint Markdown spec. All other sections remain in the sealed kickoff. */
 export function parseSprintSpec(spec: string): SprintTask[] {
@@ -22,7 +26,7 @@ export function parseSprintSpec(spec: string): SprintTask[] {
       fields.clear();
       continue;
     }
-    const field = line.match(/^  +(?:- )?(files|depends|role|worktree|brief):\s*(.*?)\s*$/);
+    const field = line.match(/^  +(?:- )?(files|depends|role|worktree|brief|contract):\s*(.*?)\s*$/);
     if (!current || !field || fields.has(field[1])) throw new Error(`invalid spec task line: ${line}`);
     const [, name, value] = field;
     fields.add(name);
@@ -32,6 +36,7 @@ export function parseSprintSpec(spec: string): SprintTask[] {
     if (name === "role") current.role = value;
     if (name === "worktree") current.worktree = value;
     if (name === "brief") current.brief = value;
+    if (name === "contract") current.contract = value;
   }
   if (!tasks.length) throw new Error("spec ## Tasks section is empty");
   const ids = new Set(tasks.map((task) => task.id));

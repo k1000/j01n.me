@@ -15,6 +15,27 @@ import {
   type RoomFixture,
 } from "./room/helpers";
 
+type ParsedTask = ReturnType<typeof parseSprintSpec>[number];
+
+/** Create a sprint room through the real create path, like a host would from a parsed spec. */
+async function sprintRoom(tasks: ParsedTask[]): Promise<RoomFixture> {
+  const session = new RendezvousSession(createMockState(), {} as never);
+  const env = { RENDEZVOUS: {
+    idFromName: (name: string) => name,
+    get: () => ({ fetch: (url: string, init: RequestInit) => session.fetch(new Request(url, init)) }),
+  } as unknown as DurableObjectNamespace };
+  const { roomId, joinSecret } = await createRoomDirect(env, { template: "sprint", host_id: "host", tasks }, "https://j01n.me");
+  return { session, roomId, joinSecret, roomPath: `/r/${roomId}`, participantTokens: {} };
+}
+
+const taskValues = async (fix: RoomFixture, as: string) =>
+  (await getRoomJson<{ board: Record<string, { value: unknown }> }>(fix, "/board", as)).board;
+
+/** Readable board notices the server posted, oldest first. */
+const notices = async (fix: RoomFixture, as: string) =>
+  (await getRoomJson<{ messages: Array<{ intent: string; body: { text?: string } }> }>(fix, "/?view=all", as))
+    .messages.filter((message) => message.intent === "board.changed").map((message) => message.body.text ?? "");
+
 describe("board", () => {
   let fix: RoomFixture;
 
@@ -256,21 +277,6 @@ describe("sprint spec briefs on the board", () => {
     "  files: packages/sdk/src/tasks.ts",
   ].join("\n");
   const BRIEF = "late joiners read  briefs from the board, never from chat";
-  type ParsedTask = ReturnType<typeof parseSprintSpec>[number];
-
-  /** Create a sprint room through the real create path, like a host would from a parsed spec. */
-  async function sprintRoom(tasks: ParsedTask[]): Promise<RoomFixture> {
-    const session = new RendezvousSession(createMockState(), {} as never);
-    const env = { RENDEZVOUS: {
-      idFromName: (name: string) => name,
-      get: () => ({ fetch: (url: string, init: RequestInit) => session.fetch(new Request(url, init)) }),
-    } as unknown as DurableObjectNamespace };
-    const { roomId, joinSecret } = await createRoomDirect(env, { template: "sprint", host_id: "host", tasks }, "https://j01n.me");
-    return { session, roomId, joinSecret, roomPath: `/r/${roomId}`, participantTokens: {} };
-  }
-
-  const taskValues = async (fix: RoomFixture, as: string) =>
-    (await getRoomJson<{ board: Record<string, { value: unknown }> }>(fix, "/board", as)).board;
 
   it("keeps a one-line brief with its inner spacing while parsing the spec", () => {
     expect(parseSprintSpec(spec)).toEqual([
@@ -299,6 +305,75 @@ describe("sprint spec briefs on the board", () => {
 
   it("refuses a multi-line or blank brief before the room exists", () => {
     const task = (brief: string): ParsedTask => ({ id: "t1", title: "A", files: ["a.ts"], brief });
+    expect(() => applyTemplate("sprint", { tasks: [task("one\ntwo")] })).toThrow("invalid sprint task");
+    expect(() => applyTemplate("sprint", { tasks: [task("   ")] })).toThrow("invalid sprint task");
+  });
+});
+
+describe("sprint spec contract on the board", () => {
+  const CONTRACT = "node scripts/check-contract.mjs --peer   ->   Contract check passed";
+  const spec = [
+    "# Sprint goal",
+    "",
+    "## Tasks",
+    "- t1 Required checks",
+    "  files: packages/sdk/src/spec.ts",
+    "  role: builder",
+    "  brief: contract is a first-class spec field",
+    `  contract: ${CONTRACT}`,
+    "- t2 No contract",
+    "  files: packages/sdk/src/tasks.ts",
+  ].join("\n");
+
+  it("seeds the contract into the task board value and leaves tasks without one unchanged", async () => {
+    const fix = await sprintRoom(parseSprintSpec(spec));
+    await joinParticipant(fix, "host");
+    const board = await taskValues(fix, "host");
+    expect(board["task.t1"].value).toEqual({
+      title: "Required checks", files: ["packages/sdk/src/spec.ts"], depends_on: [], role: "builder",
+      brief: "contract is a first-class spec field", contract: CONTRACT, status: "open",
+    });
+    expect(board["task.t2"].value).toEqual({ title: "No contract", files: ["packages/sdk/src/tasks.ts"], depends_on: [], status: "open" });
+  });
+
+  it("lets a participant that joins after creation read the required checks from the board", async () => {
+    const fix = await sprintRoom(parseSprintSpec(spec));
+    await joinParticipant(fix, "late-agent");
+    const board = await taskValues(fix, "late-agent");
+    expect((board["task.t1"].value as { contract?: string }).contract).toBe(CONTRACT);
+    expect("contract" in (board["task.t2"].value as Record<string, unknown>)).toBe(false);
+  });
+
+  /** Claim exactly like the SDK does: write the seeded value back with status and owner. */
+  async function claim(fix: RoomFixture, id: string, as: string): Promise<number> {
+    const seeded = (await taskValues(fix, as))[`task.${id}`] as { value: Record<string, unknown> };
+    const res = await roomRequest(fix, `/board/task.${id}`, {
+      method: "PUT",
+      headers: { ...participantAuthHeaders(fix, as), "content-type": "application/json" },
+      body: JSON.stringify({ ...seeded.value, status: "claimed", owner: as }),
+    });
+    return res.status;
+  }
+
+  it("echoes the contract text in the claim notice and keeps it on the board value", async () => {
+    const fix = await sprintRoom(parseSprintSpec(spec));
+    await joinParticipant(fix, "worker-1");
+    expect(await claim(fix, "t1", "worker-1")).toBe(200);
+    const [notice] = (await notices(fix, "worker-1")).filter((text) => text.includes("claimed t1"));
+    expect(notice).toContain("worker-1 claimed t1");
+    expect(notice).toContain(CONTRACT);
+    expect((await taskValues(fix, "worker-1"))["task.t1"].value).toMatchObject({ status: "claimed", owner: "worker-1", contract: CONTRACT });
+  });
+
+  it("keeps the claim notice unchanged for a task without a contract", async () => {
+    const fix = await sprintRoom(parseSprintSpec(spec));
+    await joinParticipant(fix, "worker-2");
+    expect(await claim(fix, "t2", "worker-2")).toBe(200);
+    expect((await notices(fix, "worker-2")).filter((text) => text.includes("claimed"))).toEqual(["worker-2 claimed t2"]);
+  });
+
+  it("refuses a multi-line or blank contract before the room exists", () => {
+    const task = (contract: string): ParsedTask => ({ id: "t1", title: "A", files: ["a.ts"], contract });
     expect(() => applyTemplate("sprint", { tasks: [task("one\ntwo")] })).toThrow("invalid sprint task");
     expect(() => applyTemplate("sprint", { tasks: [task("   ")] })).toThrow("invalid sprint task");
   });

@@ -623,7 +623,11 @@ async function finish() {
   assertClean();
   if (!state.finish.checked) {
     announce(state, "Sprint integration: running the full contract check (not --peer).");
-    exec(process.execPath, ["scripts/check-contract.mjs"], { label: "node scripts/check-contract.mjs" });
+    // The suite spawns CLI helpers whose fallback keys dir is the inherited J01N_KEY_DIR; run the
+    // gate with it removed so test runs can neither pollute the sprint's live keys directory nor
+    // misread it as their own state (each test overrides the dir it needs explicitly).
+    const gateEnv = { ...process.env }; delete gateEnv.J01N_KEY_DIR;
+    exec(process.execPath, ["scripts/check-contract.mjs"], { label: "node scripts/check-contract.mjs", env: gateEnv });
     state.finish.checked = true;
     saveState(state);
   }

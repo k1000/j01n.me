@@ -490,9 +490,6 @@
           '<span class="kanban-card-title">' + esc(title) + '</span>' +
           (owner ? '<span class="kanban-card-owner">Owner: ' + owner + '</span>' : '') +
           (task?.priority === "high" || task?.priority === "low" ? '<span class="kanban-card-priority" data-priority="' + task.priority + '">' + task.priority + ' priority</span>' : '') +
-          (task?.description || taskExtras(task) ? '<details class="kanban-card-details" data-collapse="' + escAttr('task:' + id) + '"><summary>Details</summary>' +
-            (task?.description ? '<p>' + esc(task.description) + '</p>' : '') +
-            (taskExtras(task) ? '<div class="board-value">' + renderValue(taskExtras(task)) + '</div>' : '') + '</details>' : '') +
           (!liveView ? taskEditHtml(task, { id, aria: 'Edit ' + title, viewer: { isHost } }) : '') +
         '</div>';
       };
@@ -510,12 +507,10 @@
     const card = ({ key, id, value }) => {
       const task = value && typeof value === "object" && !Array.isArray(value) ? value : {};
       const waiting = Array.isArray(task.depends_on) ? task.depends_on.filter(dep => !done.has(dep)) : [];
-      const details = Object.fromEntries(Object.entries(task).filter(([field]) => !["title", "status", "owner"].includes(field)));
       return '<article class="kanban-card" data-sprint-task-id="' + escAttr(id) + '" data-task-card="' + escAttr(id) + '" tabindex="0" title="Open task details">' +
         '<span class="kanban-card-title">' + esc(id) + ' · ' + esc(task.title || id) + '</span>' +
         (task.owner ? '<span class="kanban-card-owner">Owner: ' + esc(task.owner) + '</span>' : '') +
         (waiting.length ? '<span class="sprint-task-waiting">waits for ' + esc(waiting.join(', ')) + '</span>' : '') +
-        '<details class="kanban-card-details" data-collapse="' + escAttr('key:' + key) + '"><summary>Details</summary><div class="board-value">' + renderValue(details) + '</div></details>' +
         taskEditHtml(task, { id, boardKey: key, small: true, aria: 'Edit board key ' + key, viewer: { isHost } }) + '</article>';
     };
     return '<div class="kanban-board sprint-task-board" aria-label="Sprint tasks">' + ["open", "claimed", "blocked", "done"].map(status => {
@@ -624,11 +619,11 @@
     if (!model) return "";
     const text = (value) => '<span class="json-text">' + esc(value) + '</span>';
     const code = (value) => '<code class="json-text">' + esc(value) + '</code>';
-    const row = (term, value) => value ? '<div><dt>' + esc(term) + '</dt><dd>' + value + '</dd></div>' : "";
-    const list = (items) => items.length ? '<ul class="json-list">' + items.map(item => '<li>' + code(item) + '</li>').join("") + '</ul>' : "";
+    const row = (term, value) => value ? '<div style="display:flex;gap:0.75rem;align-items:baseline;padding:0.15rem 0;border-bottom:1px dashed var(--console-rule)"><dt style="flex:0 0 6.5rem;margin:0;font-weight:600">' + esc(term) + '</dt><dd style="flex:1;margin:0;min-width:0;overflow-wrap:anywhere">' + value + '</dd></div>' : "";
+    const list = (items) => items.length ? '<ul class="json-list" style="display:inline;list-style:none;margin:0;padding:0">' + items.map(item => '<span style="display:inline-flex;gap:0.25rem;align-items:baseline;margin:0 0.4rem 0 0">' + code(item) + '</span>').join("") + '</ul>' : "";
     const depends = model.dependsOn.length
-      ? '<ul class="json-list">' + model.dependsOn.map(dep => '<li>' + code(dep.id) +
-        ' <span class="task-dep-state" data-done="' + escAttr(dep.done ? "true" : "false") + '">' + (dep.done ? "done" : "open") + '</span></li>').join("") + '</ul>'
+      ? '<ul class="json-list" style="display:inline;list-style:none;margin:0;padding:0">' + model.dependsOn.map(dep => '<span style="display:inline-flex;gap:0.3rem;align-items:baseline;margin:0 0.4rem 0 0">' + code(dep.id) +
+        ' <span class="task-dep-state" data-done="' + escAttr(dep.done ? "true" : "false") + '">' + (dep.done ? "done" : "open") + '</span></span>').join("") + '</ul>'
       : "";
     const evidence = model.done
       ? '<section class="live-task-modal-evidence"><h3>Done evidence</h3><dl>' +

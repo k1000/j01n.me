@@ -318,7 +318,8 @@ describe("room page", () => {
     expect(roomPageScript).toContain("!key.startsWith('task.')");
     expect(roomPageScript).toContain("sprintTasks.length ? renderSprintTaskBoard(sprintTasks) : ''");
     expect(roomPageScript).toContain('data-edit-board-key="');
-    expect(roomPageHtml("room-1")).toContain(".sprint-task-board .kanban-card-details > summary");
+    expect(roomPageHtml("room-1")).not.toContain("kanban-card-details");
+    expect(roomPageScript).toContain("live-task-modal-fields");
   });
 
   it("keeps the Kanban controls readable and the columns within the board", () => {

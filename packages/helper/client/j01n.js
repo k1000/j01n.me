@@ -487,7 +487,7 @@ function parseSprintSpec(spec) {
       fields.clear();
       continue;
     }
-    const field = line.match(/^  +(?:- )?(files|depends|role|worktree|brief):\s*(.*?)\s*$/);
+    const field = line.match(/^  +(?:- )?(files|depends|role|worktree|brief|contract):\s*(.*?)\s*$/);
     if (!current || !field || fields.has(field[1])) throw new Error(`invalid spec task line: ${line}`);
     const [, name, value] = field;
     fields.add(name);
@@ -497,6 +497,7 @@ function parseSprintSpec(spec) {
     if (name === "role") current.role = value;
     if (name === "worktree") current.worktree = value;
     if (name === "brief") current.brief = value;
+    if (name === "contract") current.contract = value;
   }
   if (!tasks.length) throw new Error("spec ## Tasks section is empty");
   const ids = new Set(tasks.map((task) => task.id));
@@ -1192,6 +1193,15 @@ function kinds(value) {
   if (!values.length || values.some((kind) => !MESSAGE_KINDS.includes(kind))) throw new Error(`--kind needs: ${MESSAGE_KINDS.join("|")}`);
   return values;
 }
+var COMPARE_INTENTS = { request: "compare.request", verdict: "compare.verdict" };
+var COMPARE_WINNERS = ["A", "B", "tie"];
+function compareWinner(value) {
+  const winner = value && value.toLowerCase() !== "tie" ? value.toUpperCase() : value?.toLowerCase();
+  if (!winner || !COMPARE_WINNERS.includes(winner)) throw new Error(`verdict needs winner: ${COMPARE_WINNERS.join("|")}`);
+  return winner;
+}
+var COMPARE_USAGE = "compare needs: <a> <b> --criteria x,y [--wait]";
+var VERDICT_USAGE = `verdict needs: <msg-id-or-seq> <${COMPARE_WINNERS.join("|")}> --reason <text> [--reply-to <id>]`;
 async function roomSummary(client) {
   const [board, tasks, reservations, participants] = await Promise.all([
     client.board(),
@@ -1301,6 +1311,38 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
     const sendOptions = { replyTo, expectsReply: expectsReply || kind === "question" || kind === "blocker", kind };
     const sent = await client.send(to, parseRoomBody(words.join(" ")), sendOptions);
     return andWait ? { sent, ...await waitRoom(client, options.waitDefault, {}, prefix) } : sent;
+  }
+  if (cmd2 === "compare") {
+    const [a, b, ...args2] = rest;
+    let criteria;
+    let andWait = false;
+    for (let i = 0; i < args2.length; i++) {
+      if (args2[i] === "--criteria") criteria = (args2[++i] ?? "").split(",").map((criterion) => criterion.trim()).filter(Boolean);
+      else if (args2[i] === "--wait") andWait = true;
+      else throw new Error(COMPARE_USAGE);
+    }
+    if (!a || !b || a.startsWith("--") || b.startsWith("--") || !criteria?.length) throw new Error(COMPARE_USAGE);
+    await options.beforeSend?.();
+    const sent = await client.send("all", { a, b, criteria }, { intent: COMPARE_INTENTS.request, kind: "question", expectsReply: true });
+    return andWait ? { sent, ...await waitRoom(client, options.waitDefault, {}, prefix) } : sent;
+  }
+  if (cmd2 === "verdict") {
+    const [target, winnerRaw, ...args2] = rest;
+    let reason, replyTo;
+    for (let i = 0; i < args2.length; i++) {
+      if (args2[i] === "--reason") {
+        const words = [];
+        for (i++; i < args2.length && !args2[i].startsWith("--"); ) words.push(args2[i++]);
+        reason = words.join(" ");
+        i--;
+      } else if (args2[i] === "--reply-to") replyTo = args2[++i];
+      else throw new Error(VERDICT_USAGE);
+    }
+    if (!target || target.startsWith("--") || !winnerRaw || winnerRaw.startsWith("--")) throw new Error(VERDICT_USAGE);
+    const winner = compareWinner(winnerRaw);
+    if (!reason) throw new Error(VERDICT_USAGE);
+    await options.beforeSend?.();
+    return client.send("all", { of: target, winner, reason }, { intent: COMPARE_INTENTS.verdict, kind: "finding", ...replyTo ? { replyTo } : {} });
   }
   if (cmd2 === "read" || cmd2 === "inbox") {
     return roomReplyHints(await client.read({ all: options.readAll || cmd2 === "inbox", includeSelf: true }), prefix);
@@ -1956,7 +1998,7 @@ async function main() {
     output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true }));
     return;
   }
-  if (["webhook", "tasks", "claim", "done", "block", "unblock", "conflicts", "summary", "note", "decide"].includes(cmd || "")) {
+  if (["webhook", "tasks", "claim", "done", "block", "unblock", "conflicts", "summary", "note", "decide", "compare", "verdict"].includes(cmd || "")) {
     output(await roomCommand(client, cmd, rest));
     return;
   }
@@ -1981,22 +2023,89 @@ async function main() {
     }));
     return;
   }
-  if (cmd === "usage") {
-    const sealSecret = [joinSecret, state.joinSecret, positionalSecret].find((value) => value && value !== "resume-only") || "";
-    if (!sealSecret) throw Error("usage needs the room link or invitation (usage is sealed with the room key, and a participant token is not one): usage <room link> <me> [report ...], or run it in the directory that joined the room");
+  const sealSecret = [joinSecret, state.joinSecret, positionalSecret].find((value) => value && value !== "resume-only") || "";
+  const usageClient = async (missing) => {
+    if (!sealSecret) throw Error(missing);
+    if (sealSecret === client.invite.join_secret) return client;
     const sealInvite = buildMinimalInvite(roomUrl, sealSecret);
     sealInvite.participant_token = token || state.participantToken;
-    const usageClient = sealSecret === client.invite.join_secret ? client : await resumeRoom(sealInvite, me, session);
+    return resumeRoom(sealInvite, me, session);
+  };
+  if (cmd === "usage") {
+    if (!sealSecret) throw Error("usage needs the room link or invitation (usage is sealed with the room key, and a participant token is not one): usage <room link> <me> [report ...], or run it in the directory that joined the room");
+    const usageClientInstance = await usageClient("usage needs the room link or invitation (usage is sealed with the room key, and a participant token is not one): usage <room link> <me> [report ...], or run it in the directory that joined the room");
     const [sub, ...args2] = rest;
     if (sub === "report") {
-      const row = await usageClient.reportUsage(usageDeltaFromFlags(args2));
+      const row = await usageClientInstance.reportUsage(usageDeltaFromFlags(args2));
       output({ ok: true, participant: row.participant, key: row.key, version: row.version, snapshot: row.snapshot, line: formatUsageRow(row) });
       return;
     }
     if (sub !== void 0) throw Error(`unknown usage command: ${sub}; expected "report" or nothing
 Usage: ${usageHelp("usage [report]")}`);
-    const { rows, totals, reported, stale } = await usageClient.usageReport();
+    const { rows, totals, reported, stale } = await usageClientInstance.usageReport();
     output({ rows, totals, reported, stale, lines: [...rows.map((row) => formatUsageRow(row)), formatUsage(totals, "room")] });
+    return;
+  }
+  if (cmd === "report") {
+    let outPath;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--out") {
+        if (outPath !== void 0) throw Error("report takes one --out path");
+        outPath = rest[++i];
+        if (!outPath || outPath.startsWith("--")) throw Error("--out needs a file path");
+      } else throw Error(`report needs: [--out <file>], got "${rest[i]}"`);
+    }
+    const [summary, messages, asks] = await Promise.all([
+      roomCommand(client, "summary", []),
+      client.read({ all: true, includeSelf: true }),
+      client.openQuestions().catch(() => [])
+    ]);
+    const WINNERS = ["A", "B", "tie"];
+    const verdicts = messages.filter((m) => m.intent === "compare.verdict").map((m) => {
+      const body = m.body ?? {};
+      return {
+        seq: Number(m.seq ?? 0),
+        by: m.from,
+        of: typeof body.of === "string" ? body.of : null,
+        winner: WINNERS.includes(String(body.winner)) ? String(body.winner) : null,
+        reason: typeof body.reason === "string" ? body.reason : null
+      };
+    });
+    const tasks = summary.tasks;
+    const taskStats = {
+      total: tasks.length,
+      done: tasks.filter((t) => t.status === "done").length,
+      blocked: tasks.filter((t) => t.status === "blocked").length,
+      all_have_evidence: tasks.length ? tasks.every((t) => (t.evidence?.commits?.length ?? 0) > 0) : null,
+      all_contract_phrased: tasks.length ? tasks.every((t) => String(t.evidence?.contract ?? "").includes("check:contract --peer passed")) : null
+    };
+    let usage = null;
+    try {
+      const usageReader = await usageClient("usage needs the room link or invitation (usage is sealed with the room key, and a participant token is not one): usage <room link> <me> [report ...], or run it in the directory that joined the room");
+      const { rows, totals } = await usageReader.usageReport();
+      usage = { rows, totals };
+    } catch {
+    }
+    const { id: repoId, root: repoRoot } = repo();
+    const repoName = repoId ? repoId.split("/").pop()?.replace(/\.git$/, "") || repoId : repoRoot.split("/").pop() || repoRoot;
+    const record = {
+      generated_at: (/* @__PURE__ */ new Date()).toISOString(),
+      family: `${repoName}:feature`,
+      room: client.invite.room_id,
+      repo: repoName,
+      workers: summary.participants.length,
+      tasks: taskStats,
+      usage,
+      open_asks: asks.length,
+      verdicts
+    };
+    if (outPath) {
+      await fs.mkdir(resolve2(outPath, ".."), { recursive: true });
+      await fs.writeFile(outPath, JSON.stringify(record, null, 2));
+      output({ ok: true, out: outPath, room: client.invite.room_id });
+    } else {
+      output(record);
+    }
     return;
   }
   if (cmd === "leave") {
@@ -2022,7 +2131,7 @@ Usage: ${usageHelp("usage [report]")}`);
     output({ ok: true, expires_at: extended.expires_at });
     return;
   }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|extend|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|usage|invite-link|note|decide|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|extend|reserve|release|reservations|tasks|claim|done|block|unblock|conflicts|summary|usage|report|invite-link|note|decide|leave`);
 }
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));

@@ -1259,6 +1259,69 @@ function compareWinner(value) {
 }
 var COMPARE_USAGE = "compare needs: <a> <b> --criteria x,y [--wait]";
 var VERDICT_USAGE = `verdict needs: <msg-id-or-seq> <${COMPARE_WINNERS.join("|")}> --reason <text> [--reply-to <id>]`;
+var REFINE_INTENT = "task.refined";
+var REFINE_USAGE = "refine needs: <task id> [--from <verdict seq|id>] [--note text]";
+var REFINE_TITLE_CHARS = 60;
+async function isRoomHost(client) {
+  if ((await client.team()).find((p) => p.id === client.participantId)?.role === "host") return true;
+  return (await client.status()).room.host_id === client.participantId;
+}
+async function verdictToRefine(client, from) {
+  const messages = await client.read({ all: true, includeSelf: true });
+  const verdicts = messages.filter((message) => message.intent === COMPARE_INTENTS.verdict);
+  if (!verdicts.length) throw new Error(`refine needs a ${COMPARE_INTENTS.verdict} message to point at: post one, or pass --from <seq>`);
+  if (from === void 0) return verdicts.reduce((latest, message) => message.seq > latest.seq ? message : latest);
+  const found = verdicts.find((message) => String(message.seq) === from || message.id === from);
+  if (!found) throw new Error(`refine --from ${from} is not a ${COMPARE_INTENTS.verdict} message in this room`);
+  return found;
+}
+async function refineTask(client, taskId, options = {}) {
+  key(taskId);
+  const tasks = await listTasks(client);
+  const parent = tasks.find((task2) => task2.id === taskId);
+  if (!parent) throw new Error(`task ${taskId} does not exist`);
+  const verdict = await verdictToRefine(client, options.from === void 0 ? void 0 : String(options.from));
+  if (!await isRoomHost(client) && verdict.from !== client.participantId) {
+    throw new Error(`refine ${taskId}: verdict ${verdict.seq} is ${verdict.from}'s to refine, or ask the host`);
+  }
+  const note = options.note?.trim() ?? "";
+  const opened = verdict.body;
+  const reasonText = typeof opened?.reason === "string" ? opened.reason.trim() : "";
+  const detail = note || reasonText.slice(0, REFINE_TITLE_CHARS);
+  if (!detail) throw new Error(`refine ${taskId} needs --note, or a verdict reason this client can open`);
+  const childPattern = new RegExp(`^${taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}r\\d+$`);
+  const children = tasks.filter((task2) => childPattern.test(task2.id));
+  const id = `${taskId}r${children.length + 1}`;
+  if (children.some((task2) => task2.id === id)) throw new Error(`refine ${taskId} cannot seed task ${id}: it already exists`);
+  const reason = `verdict ${verdict.seq}`;
+  const task = {
+    title: `refine ${taskId}: ${detail}`,
+    files: [...parent.files],
+    depends_on: [taskId],
+    status: "open",
+    brief: [`${reason}${reasonText ? `: ${reasonText}` : ""}`, note ? `note: ${note}` : "", parent.brief ? `${taskId}: ${parent.brief}` : ""].filter(Boolean).join("; "),
+    ...parent.role ? { role: parent.role } : {},
+    ...parent.needs?.length ? { needs: [...parent.needs] } : {},
+    ...parent.contract ? { contract: parent.contract } : {}
+  };
+  try {
+    await client.setBoardKey(key(id), task, { ifVersion: 0 });
+  } catch (error) {
+    if (error instanceof RoomApiError && error.status === 409) throw new Error(`refine ${taskId} cannot seed task ${id}: it already exists`);
+    throw error;
+  }
+  const body = {
+    text: `${id} opened from ${taskId}: ${detail}`,
+    task: id,
+    task_id: id,
+    title: task.title,
+    refines: taskId,
+    reason,
+    by: client.participantId
+  };
+  const notice = await client.send("all", body, { intent: REFINE_INTENT });
+  return { id, task, notice };
+}
 async function roomSummary(client) {
   const [board, tasks, reservations, participants] = await Promise.all([
     client.board(),
@@ -1321,6 +1384,23 @@ async function runRoomCommand(client, cmd2, rest, options = {}) {
     if (!id || !worker || id.startsWith("--") || worker.startsWith("--")) throw new Error("assign needs: <task id> <participant> [reason]");
     const reason = reasonWords.join(" ").trim();
     return { task: await client.assign(id, worker, reason ? { reason } : {}) };
+  }
+  if (cmd2 === "refine") {
+    const [id, ...args2] = rest;
+    if (!id || id.startsWith("--")) throw new Error(REFINE_USAGE);
+    const flags = {};
+    for (let i = 0; i < args2.length; i++) {
+      const name = args2[i];
+      const value = args2[i + 1];
+      if (name !== "--from" && name !== "--note") throw new Error(REFINE_USAGE);
+      const already = name === "--from" ? flags.from : flags.note;
+      if (!value || value.startsWith("--") || already !== void 0) throw new Error(REFINE_USAGE);
+      if (name === "--from") flags.from = value;
+      else flags.note = value;
+      i++;
+    }
+    await options.beforeSend?.();
+    return refineTask(client, id, flags);
   }
   if (cmd2 === "done") {
     const [id, ...args2] = rest;
@@ -2090,7 +2170,7 @@ async function main() {
     output(await client.send("all", { encrypted_payload: await sealForRoom(parseRoomBody(rest.join(" ")), roomSecret, invite.room_id) }, { intent: "kickoff", plain: true }));
     return;
   }
-  if (["webhook", "tasks", "claim", "assign", "unassign", "done", "block", "unblock", "conflicts", "summary", "note", "decide", "compare", "verdict"].includes(cmd || "")) {
+  if (["webhook", "tasks", "claim", "assign", "refine", "unassign", "done", "block", "unblock", "conflicts", "summary", "note", "decide", "compare", "verdict"].includes(cmd || "")) {
     output(await roomCommand(client, cmd, rest));
     return;
   }
@@ -2223,7 +2303,7 @@ Usage: ${usageHelp("usage [report]")}`);
     output({ ok: true, expires_at: extended.expires_at });
     return;
   }
-  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|extend|reserve|release|reservations|tasks|claim|assign|unassign|done|block|unblock|conflicts|summary|usage|report|invite-link|note|decide|leave`);
+  throw Error(`unknown command: ${cmd}. Usage: create|join|send|read|team|inbox|watch|wait|doctor|webhook|kickoff|profile|host|extend|reserve|release|reservations|tasks|claim|assign|refine|unassign|done|block|unblock|conflicts|summary|usage|report|invite-link|note|decide|leave`);
 }
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));

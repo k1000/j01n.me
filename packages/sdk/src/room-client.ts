@@ -15,6 +15,9 @@ import type {
   Participant,
 } from "./types";
 import { RoomApiError } from "./errors";
+import { listReservations, pathsOverlap } from "./reservations";
+import { listTasks } from "./tasks";
+import type { Task } from "./tasks";
 import {
   nextUsage,
   openUsage,
@@ -91,6 +94,29 @@ export interface Invite {
 function boardKeyUrl(roomUrl: string, key: string, ifVersion?: number): string {
   return `${roomUrl}/board/${encodeURIComponent(key)}${ifVersion === undefined ? "" : `?if_version=${ifVersion}`}`;
 }
+
+const TASK_ID = /^[a-zA-Z0-9_-]+$/;
+/** The board key holding a task, and the guard that keeps a caller from writing outside `task.*`. */
+function taskKey(id: string): string {
+  if (!TASK_ID.test(id)) throw new Error("invalid task id");
+  return `task.${id}`;
+}
+
+/** The board marker assign leaves behind: who offered the task, when and why. Flat fields, so a board reader
+ * needs no new import to tell an accepted claim from an unaccepted offer (`assigned_by` only exists on offers). */
+export interface AssignOptions {
+  /** Free text for the worker: why this task, why now, why them. */
+  reason?: string;
+}
+
+/** A task as assign writes it: claimed by the worker, with the offer recorded next to the owner. */
+export type AssignedTask = Task & {
+  /** The worker this task was offered to; equals owner while the offer stands. */
+  assigned?: string;
+  assigned_by?: string;
+  assigned_at?: string;
+  assigned_reason?: string;
+};
 
 /** A question waiting for your reply: answer with send(..., { replyTo: id }). */
 export interface OpenQuestion {
@@ -185,6 +211,15 @@ export interface RoomClient {
   transition(event: string): Promise<{ ok: true; from: string; event: string; to: string }>;
   /** Host only: hand the host role to another participant in the room (everyone gets a host.changed message). */
   transferHost(to: string): Promise<{ ok: true; host_id: string }>;
+  /**
+   * Host only: offer an open, unblocked task to a free joined worker. Writes `task.<id>` (guarded by if_version)
+   * with `owner: <participantId>, status: "claimed", assigned: <participantId>, assigned_by/at/reason` and posts a
+   * direct sealed `task.assigned` notice (body: task, from, reason) so the worker wakes with the offer.
+   * Refuses a caller who is not the host, a target that is not joined and free, a task that is not open or still
+   * waiting on a dependency, and files covered by a live reservation in this checkout (that task's own pending
+   * reservation aside). An offer, not a force: the worker still reports done themselves.
+   */
+  assign(taskId: string, participantId: string, options?: AssignOptions): Promise<AssignedTask>;
   extend(options?: { extendMs?: number }): Promise<{ ok: true; extended_ms: number; expires_at: string }>;
   export(): Promise<RoomExportResponse>;
   /**
@@ -440,6 +475,74 @@ export async function buildRoomClient(
     },
     async transferHost(to: string) {
       return request<{ ok: true; host_id: string }>(`${invite.room_url}/host`, invite, { method: "POST", participantId, body: { to } });
+    },
+    async assign(taskId: string, workerId: string, options = {}) {
+      if (!TASK_ID.test(taskId)) throw new Error("invalid task id");
+      if (!TASK_ID.test(workerId)) throw new Error("invalid participant id");
+      const reason = options.reason?.trim() || undefined;
+
+      // Host-only is a room-trust rule the server does not police for board writes, so the client checks it and
+      // says who to ask. The announced team role is the normal signal; host_id is the fallback for a host whose
+      // role row never landed.
+      const team = await client.team();
+      if (team.find((p) => p.id === participantId)?.role !== "host") {
+        const hostId = (await client.status()).room.host_id;
+        if (hostId !== participantId) throw new Error(`assign is host only: ask ${hostId} to assign ${taskId}`);
+      }
+
+      const target = team.find((p) => p.id === workerId);
+      if (!target) throw new Error(`${workerId} is not joined in this room: invite them first`);
+      if (target.state !== "free") throw new Error(`${workerId} is ${target.state}: assign only offers work to a free participant`);
+
+      const tasks = await listTasks(client);
+      const task = tasks.find((t) => t.id === taskId);
+      if (!task) throw new Error(`task ${taskId} does not exist`);
+      if (task.status !== "open") throw new Error(`task ${taskId} is ${task.status}${task.owner ? ` by ${task.owner}` : ""}: assign only takes open tasks`);
+      if (task.blocked_by.length) throw new Error(`task ${taskId} waits for ${task.blocked_by.join(", ")}`);
+
+      // A live reservation means somebody is editing those files right now; handing the task over would put two
+      // agents on one path. Only the same checkout can collide (reservations never cross worktrees), and the
+      // target's own reservation for this very task is not a conflict.
+      const conflicts = (await listReservations(client)).filter((r) =>
+        (!r.checkout || !target.checkout || r.checkout === target.checkout) &&
+        r.paths.some((path) => task.files.some((file) => pathsOverlap(path, file))) &&
+        !(r.by === workerId && r.reason === `task ${taskId}`));
+      if (conflicts.length) {
+        throw new Error(`task ${taskId} files overlap a live reservation: ${conflicts.map((r) => `${r.by}${r.reason ? ` (${r.reason})` : ""}`).join(", ")}`);
+      }
+
+      const entry = (await client.board()).board[taskKey(taskId)];
+      if (!entry) throw new Error(`task ${taskId} does not exist`);
+      const at = new Date().toISOString();
+      const next = {
+        ...(entry.value as object),
+        status: "claimed",
+        owner: workerId,
+        assigned: workerId,
+        assigned_by: participantId,
+        assigned_at: at,
+        ...(reason ? { assigned_reason: reason } : {}),
+      } as AssignedTask;
+      await client.setBoardKey(taskKey(taskId), next, { ifVersion: entry.version ?? 0 });
+      try {
+        // task_id and assigned mirror the routed task.unblocked notice vocabulary, so one reader handles both.
+        await client.send(workerId, {
+          text: `${taskId} assigned to you${reason ? `: ${reason}` : ""}`,
+          task: taskId,
+          task_id: taskId,
+          title: task.title,
+          assigned: workerId,
+          from: participantId,
+          assigned_by: participantId,
+          assigned_at: at,
+          ...(reason ? { reason } : {}),
+        }, { intent: "task.assigned" });
+      } catch (error) {
+        // Nobody got the offer: put the task back so it does not sit claimed by a worker who was never told.
+        await client.setBoardKey(taskKey(taskId), entry.value, { ifVersion: (entry.version ?? 0) + 1 }).catch(() => undefined);
+        throw error;
+      }
+      return next;
     },
     async extend(options = {}) {
       return request<{ ok: true; extended_ms: number; expires_at: string }>(

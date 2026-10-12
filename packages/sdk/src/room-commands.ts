@@ -97,6 +97,12 @@ export async function runRoomCommand(client: RoomClient, cmd: string, rest: stri
     if (!rest[0]) throw new Error("claim needs: <id>");
     return { task: await claimTask(client, rest[0], options.repo ?? "") };
   }
+  if (cmd === "assign") {
+    const [id, worker, ...reasonWords] = rest;
+    if (!id || !worker || id.startsWith("--") || worker.startsWith("--")) throw new Error("assign needs: <task id> <participant> [reason]");
+    const reason = reasonWords.join(" ").trim();
+    return { task: await client.assign(id, worker, reason ? { reason } : {}) };
+  }
   if (cmd === "done") {
     const [id, ...args] = rest;
     if (!id) throw new Error("done needs: <id> --summary <text> --commit <sha>... --tests <text> [--contract <text>]");

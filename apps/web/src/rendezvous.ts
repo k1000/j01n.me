@@ -14,7 +14,7 @@ import { activeParticipants, publicParticipant } from "./room/participants";
 import { RoomParticipantController } from "./room/participant-controller";
 import { createHook, deleteHook } from "./room/hooks";
 import { routeRoomRequest } from "./room/router";
-import { RoomStorage } from "./room/storage";
+import { RoomStorage, touchRoomActivity } from "./room/storage";
 import type { Env, InviteState } from "./types";
 
 export class RendezvousSession implements DurableObject {
@@ -240,11 +240,14 @@ export class RendezvousSession implements DurableObject {
       const extendMs = Math.min(Math.max(requested, MIN_INVITE_TTL_MS), Math.max(maxExtend, MIN_INVITE_TTL_MS));
 
       const newExpiresAt = invite.expiresAt + extendMs;
-      await this.storage.patchAndSave(invite, { expiresAt: newExpiresAt });
+      // Report what actually lands in storage: the shared activity window may hold a short extend at least
+      // ACTIVE_ROOM_GRACE_MS open, and a host keepalive loop announces this timestamp.
+      const extended = touchRoomActivity({ ...invite, expiresAt: newExpiresAt });
+      await this.storage.putInvite(extended, { activity: false });
       return json({
         ok: true,
         extended_ms: extendMs,
-        expires_at: new Date(newExpiresAt).toISOString(),
+        expires_at: new Date(extended.expiresAt).toISOString(),
       });
     });
   }

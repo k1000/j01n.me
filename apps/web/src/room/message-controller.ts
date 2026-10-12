@@ -1,4 +1,3 @@
-import { ACTIVE_ROOM_GRACE_MS } from "../constants";
 import { json } from "../format";
 import type { InviteState, Participant } from "../types";
 import { joinedThen } from "./auth-context";
@@ -45,10 +44,8 @@ export class RoomMessageController {
         updatedParticipant = updatedInvite.participants[auth.participantId];
       }
 
-      // Keep an active room alive: after any message at least ACTIVE_ROOM_GRACE_MS remain before it expires.
-      const keepAliveUntil = Date.now() + ACTIVE_ROOM_GRACE_MS;
-      if (updatedInvite.expiresAt < keepAliveUntil) updatedInvite = { ...updatedInvite, expiresAt: keepAliveUntil };
-
+      // The room write funnel (RoomStorage.putInvite) applies the shared activity window, exactly like board,
+      // participant and system-announcement writes: after any message at least ACTIVE_ROOM_GRACE_MS remain.
       await this.storage.putInvite(updatedInvite);
       if (updatedParticipant) {
         this.events.notifyParticipant(auth.participantId, "updated", updatedParticipant);

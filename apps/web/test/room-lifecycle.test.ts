@@ -2,11 +2,12 @@ import { openRoomSeal, sealForRoom } from "@j01n/sdk/crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_EXTEND_MS, MAX_BODY_BYTES, MAX_INVITE_TTL_MS, MIN_INVITE_TTL_MS } from "../src/constants";
 import { hashJoinSecret } from "@j01n/sdk/crypto";
-import type { RoomMessage } from "../src/types";
+import type { InviteState, RoomMessage } from "../src/types";
 import {
   announceKey,
   bootstrapRoom,
   closeRoom,
+  createMockState,
   decodedPayload,
   encryptedPayload,
   deleteParticipant,
@@ -179,13 +180,16 @@ describe("room lifecycle", () => {
   });
 
   it("keeps an active room alive for at least 10 more minutes after a message", async () => {
-    const short = await bootstrapRoom({ expiresInMs: 60_000 });
+    const state = createMockState();
+    const short = await bootstrapRoom({ expiresInMs: 60_000 }, state);
+    // Creating the room is not activity: the 1 minute TTL the host asked for stands until something happens in it.
+    const created = (await state.storage.get<InviteState>("invite"))?.expiresAt ?? 0;
+    expect(created).toBeLessThan(Date.now() + 61_000);
+
     await joinParticipant(short, "agent-a");
-    const before = await getRoomJson<{ expires_at: string }>(short, "/status", "agent-a");
     await sendMessage(short, "agent-a", "all", { text: "still working" });
     const after = await getRoomJson<{ expires_at: string }>(short, "/status", "agent-a");
 
-    expect(Date.parse(before.expires_at)).toBeLessThan(Date.now() + 61_000);
     expect(Date.parse(after.expires_at)).toBeGreaterThan(Date.now() + 9 * 60_000);
     expect(Date.parse(after.expires_at)).toBeLessThanOrEqual(Date.now() + 10 * 60_000);
   });
